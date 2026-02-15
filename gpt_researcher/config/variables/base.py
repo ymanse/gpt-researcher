@@ -43,6 +43,9 @@ class BaseConfig(TypedDict):
     MCP_ALLOWED_ROOT_PATHS: List[str]
     MCP_STRATEGY: str
     REASONING_EFFORT: str
+    # Smart retriever settings
+    SMART_RETRIEVER_CONFIG: dict
+    SMART_RETRIEVER_FORCE_CATEGORY: Union[str, None]
     # Image generation settings
     IMAGE_GENERATION_MODEL: Union[str, None]
     IMAGE_GENERATION_MAX_IMAGES: int

@@ -12,6 +12,7 @@ from .serper.serper import SerperSearch
 from .tavily.tavily_search import TavilySearch
 from .exa.exa import ExaSearch
 from .mcp import MCPRetriever
+from .smart.smart_retriever import SmartRetriever
 
 __all__ = [
     "TavilySearch",
@@ -27,5 +28,6 @@ __all__ = [
     "SemanticScholarSearch",
     "PubMedCentralSearch",
     "ExaSearch",
-    "MCPRetriever"
+    "MCPRetriever",
+    "SmartRetriever"
 ]

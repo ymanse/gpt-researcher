@@ -22,12 +22,13 @@ async def get_search_results(query: str, retriever: Any, query_domains: List[str
     Returns:
         A list of search results
     """
-    # Check if this is an MCP retriever and pass the researcher instance
-    if "mcpretriever" in retriever.__name__.lower():
+    # Check if this is an MCP or Smart retriever and pass the researcher instance
+    retriever_name = retriever.__name__.lower()
+    if "mcpretriever" in retriever_name or "smartretriever" in retriever_name:
         search_retriever = retriever(
-            query, 
+            query,
             query_domains=query_domains,
-            researcher=researcher  # Pass researcher instance for MCP retrievers
+            researcher=researcher
         )
     else:
         search_retriever = retriever(query, query_domains=query_domains)

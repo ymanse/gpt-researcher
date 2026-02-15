@@ -88,6 +88,11 @@ def get_retriever(retriever: str):
 
             return MCPRetriever
 
+        case "smart":
+            from gpt_researcher.retrievers import SmartRetriever
+
+            return SmartRetriever
+
         case _:
             return None
 
