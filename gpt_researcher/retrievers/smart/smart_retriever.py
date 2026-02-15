@@ -77,9 +77,15 @@ class SmartRetriever:
             logger.info(f"SmartRetriever classified query as: {category}")
 
             retriever_configs = self._route_to_retrievers(category)
+            if not retriever_configs and category != "general_web":
+                logger.warning(f"No available retrievers for '{category}', falling back to general_web")
+                retriever_configs = self._route_to_retrievers("general_web")
             if not retriever_configs:
-                logger.warning("No available retrievers after availability check, falling back to duckduckgo")
-                retriever_configs = [("duckduckgo", max_results, {})]
+                logger.warning("No available retrievers at all, trying tavily/duckduckgo as last resort")
+                if self._check_retriever_availability("tavily"):
+                    retriever_configs = [("tavily", max_results, {})]
+                else:
+                    retriever_configs = [("duckduckgo", max_results, {})]
 
             results = self._execute_retrievers(retriever_configs)
             results = self._deduplicate_results(results)
@@ -178,15 +184,20 @@ class SmartRetriever:
                 future = executor.submit(self._run_single_retriever, name, max_res, extra_kwargs)
                 futures[future] = name
 
-            for future in as_completed(futures, timeout=60):
-                name = futures[future]
-                try:
-                    results = future.result(timeout=30)
-                    if results:
-                        logger.info(f"Retriever '{name}' returned {len(results)} results")
-                        all_results.extend(results)
-                except Exception as e:
-                    logger.warning(f"Retriever '{name}' failed: {e}")
+            try:
+                for future in as_completed(futures, timeout=60):
+                    name = futures[future]
+                    try:
+                        results = future.result(timeout=30)
+                        if results:
+                            logger.info(f"Retriever '{name}' returned {len(results)} results")
+                            all_results.extend(results)
+                    except Exception as e:
+                        logger.warning(f"Retriever '{name}' failed: {e}")
+            except TimeoutError:
+                # Some futures didn't complete in time — keep partial results
+                timed_out = [futures[f] for f in futures if not f.done()]
+                logger.warning(f"Retrievers timed out: {timed_out}. Returning partial results.")
 
         return all_results
 
