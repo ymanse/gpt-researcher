@@ -116,9 +116,12 @@ class SmartRetriever:
             prompt = CLASSIFICATION_PROMPT.format(query=self.query)
             messages = [{"role": "user", "content": prompt}]
 
-            # Run the async LLM call from sync context
-            loop = _get_or_create_event_loop()
-            response = loop.run_until_complete(
+            # Run the async LLM call to completion. The MCP server invokes the
+            # retriever from inside a running event loop, where the old
+            # `loop.run_until_complete` raised "This event loop is already
+            # running" — making classification ALWAYS fail and silently fall
+            # back to general_web. `_run_coro_blocking` works in both contexts.
+            response = _run_coro_blocking(
                 create_chat_completion(
                     model=self.cfg.fast_llm_model,
                     messages=messages,
@@ -129,7 +132,7 @@ class SmartRetriever:
                 )
             )
 
-            category = response.strip().lower().replace(" ", "_")
+            category = str(response).strip().lower().replace(" ", "_")
             if category in ROUTING_TABLE:
                 return category
 
@@ -270,16 +273,27 @@ class SmartRetriever:
             return url.lower()
 
 
-def _get_or_create_event_loop():
-    """Get the running event loop or create a new one if none exists."""
+def _run_coro_blocking(coro):
+    """Run an async coroutine to completion from a sync function, whether or not
+    the current thread already has a running event loop.
+
+    SmartRetriever.search() is synchronous but is called from the MCP server's
+    running event loop. Calling ``loop.run_until_complete`` there raises
+    "This event loop is already running". When a loop is already running we run
+    the coroutine on a fresh loop in a separate thread; otherwise we use
+    ``asyncio.run`` directly.
+    """
     import asyncio
+
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        return loop
+        asyncio.get_running_loop()
     except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop
+        # No running loop in this thread — safe to drive one directly.
+        return asyncio.run(coro)
+
+    # A loop is already running in this thread: execute in a worker thread that
+    # owns its own event loop so we don't touch the running one.
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: asyncio.run(coro)).result()

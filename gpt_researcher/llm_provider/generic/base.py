@@ -290,12 +290,49 @@ class GenericLLMProvider:
         return cls(llm, chat_log, verbose=verbose)
 
 
+    @staticmethod
+    def _normalize_content(content) -> str:
+        """Coerce a LangChain message content into a plain ``str``.
+
+        Some providers (notably Gemini via ``langchain_google_genai``, where the
+        model may return multiple content parts / AFC-style structured output)
+        deliver ``AIMessage.content`` as a ``list[str | dict]`` instead of a
+        ``str``. Every downstream consumer in gpt-researcher (``json.loads`` /
+        ``json_repair`` for sub-query & agent planning, regex extraction, and
+        ``str`` slicing) assumes a ``str`` — a list silently breaks them and the
+        research yields 0 sources. Normalizing once here, at the single point all
+        responses flow through, fixes every caller instead of patching each one.
+        """
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if item is None:
+                    continue
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    # langchain content blocks: {"type":"text","text":...} etc.
+                    for key in ("text", "content", "value"):
+                        inner = item.get(key)
+                        if isinstance(inner, str):
+                            parts.append(inner)
+                            break
+                    # Skip non-text blocks (e.g. function_call / thinking) silently.
+                else:
+                    parts.append(str(item))
+            return "".join(parts)
+        return str(content)
+
     async def get_chat_response(self, messages, stream, websocket=None, **kwargs):
         if not stream:
             # Getting output from the model chain using ainvoke for asynchronous invoking
             output = await self.llm.ainvoke(messages, **kwargs)
 
-            res = output.content
+            res = self._normalize_content(output.content)
 
         else:
             res = await self.stream_response(messages, websocket, **kwargs)
@@ -311,14 +348,13 @@ class GenericLLMProvider:
 
         # Streaming the response using the chain astream method from langchain
         async for chunk in self.llm.astream(messages, **kwargs):
-            content = chunk.content
-            if not content:
-                continue
-            response += content
-            paragraph += content
-            if "\n" in paragraph:
-                await self._send_output(paragraph, websocket)
-                paragraph = ""
+            content = self._normalize_content(chunk.content)
+            if content:
+                response += content
+                paragraph += content
+                if "\n" in paragraph:
+                    await self._send_output(paragraph, websocket)
+                    paragraph = ""
 
         if paragraph:
             await self._send_output(paragraph, websocket)
