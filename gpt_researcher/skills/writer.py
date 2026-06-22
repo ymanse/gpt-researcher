@@ -100,6 +100,10 @@ class ReportGenerator:
         report_params["custom_prompt"] = custom_prompt
         report_params["available_images"] = available_images  # Pass pre-generated images
 
+        # Pass multi-LLM review insights if available
+        if hasattr(self.researcher, '_multi_llm_review') and self.researcher._multi_llm_review:
+            report_params["multi_llm_review"] = self.researcher._multi_llm_review
+
         if self.researcher.report_type == "subtopic_report":
             report_params.update({
                 "main_topic": self.researcher.parent_query,

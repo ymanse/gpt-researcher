@@ -4,9 +4,9 @@ DEFAULT_CONFIG: BaseConfig = {
     "RETRIEVER": "tavily",
     "EMBEDDING": "openai:text-embedding-3-small",
     "SIMILARITY_THRESHOLD": 0.42,
-    "FAST_LLM": "openai:gpt-5-mini",
-    "SMART_LLM": "openai:gpt-5.2",  # Flagship model, long responses (2k+ words).
-    "STRATEGIC_LLM": "openai:gpt-5.2",  # Reasoning tasks. o4-mini retiring Feb 2026.
+    "FAST_LLM": "google_genai:gemini-3.5-flash",
+    "SMART_LLM": "google_genai:gemini-3.5-flash",  # Flagship model, long responses (2k+ words).
+    "STRATEGIC_LLM": "google_genai:gemini-3.5-flash",  # Reasoning tasks.
     "FAST_TOKEN_LIMIT": 3000,
     "SMART_TOKEN_LIMIT": 6000,
     "STRATEGIC_TOKEN_LIMIT": 4000,
@@ -56,4 +56,12 @@ DEFAULT_CONFIG: BaseConfig = {
     "IMAGE_GENERATION_ENABLED": False,  # Master switch for inline image generation
     "IMAGE_GENERATION_STYLE": "dark",  # Image style: "dark" (matches app theme), "light", or "auto"
     "IMAGE_GENERATION_PROVIDER": "google",  # Image provider: "google" or "modelslab"
+    # Multi-LLM Review settings (independent multi-perspective review of research context)
+    "MULTI_LLM_REVIEW_ENABLED": False,
+    "MULTI_LLM_REVIEW_MODELS": [
+        "google_genai:gemini-3.5-flash",
+    ],
+    "MULTI_LLM_REVIEW_TOKEN_LIMIT": 2000,
+    "MULTI_LLM_REVIEW_SUPPLEMENTARY": True,
+    "MULTI_LLM_REVIEW_MAX_QUERIES": 3,
 }

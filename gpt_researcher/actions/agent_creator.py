@@ -55,6 +55,11 @@ async def choose_agent(
             **kwargs
         )
 
+        # B-tier permanent patch: some LLM providers (Gemini AFC, multi-LLM review)
+        # return `list[ContentPart]` or `list[str]` instead of `str`.
+        # json.loads/json_repair.loads require str/bytes — coerce here.
+        response = _coerce_response_to_text(response)
+
         agent_dict = json.loads(response)
         return agent_dict["server"], agent_dict["agent_role_prompt"]
 
@@ -62,22 +67,61 @@ async def choose_agent(
         return await handle_json_error(response)
 
 
-async def handle_json_error(response: str | None):
+def _coerce_response_to_text(value) -> str | None:
+    """Coerce arbitrary LLM response to str for downstream json/regex parsing.
+
+    Gemini AFC (Automatic Function Calling) and some provider SDKs return
+    content as `list[ContentPart]`/`list[str]` instead of `str`. This helper
+    normalizes those shapes to a single concatenated string so that
+    `json.loads`, `json_repair.loads`, regex extraction, and slicing all work.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if item is None:
+                continue
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                for key in ("text", "content", "value"):
+                    inner = item.get(key)
+                    if isinstance(inner, str):
+                        parts.append(inner)
+                        break
+                else:
+                    parts.append(str(item))
+            else:
+                parts.append(str(item))
+        return "".join(parts)
+    return str(value)
+
+
+async def handle_json_error(response):
     """Handle JSON parsing errors from LLM responses.
 
     Attempts to recover agent information from malformed JSON responses
     using json_repair and regex extraction as fallbacks.
 
     Args:
-        response: The LLM response string that failed initial JSON parsing.
+        response: The LLM response that failed initial JSON parsing.
+            Normally `str`; lists/dicts (Gemini AFC) are coerced to str here.
 
     Returns:
         A tuple of (agent_name, agent_role_prompt). Returns default agent
         if all parsing attempts fail.
     """
+    # B-tier permanent patch: ensure response is str before all downstream parsers
+    response = _coerce_response_to_text(response)
+
     try:
         agent_dict = json_repair.loads(response)
-        if agent_dict.get("server") and agent_dict.get("agent_role_prompt"):
+        # json_repair may return a string instead of a dict for malformed input;
+        # guard `.get` access.
+        if isinstance(agent_dict, dict) and agent_dict.get("server") and agent_dict.get("agent_role_prompt"):
             return agent_dict["server"], agent_dict["agent_role_prompt"]
     except Exception as e:
         error_type = type(e).__name__

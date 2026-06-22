@@ -209,6 +209,66 @@ STYLE REQUIREMENTS:
 - If showing data or comparisons, use clear labels and legends
 - Suitable for both digital viewing and printing"""
 
+    # Multi-LLM Review prompts
+    @staticmethod
+    def generate_multi_llm_review_prompt(query: str, context: str) -> str:
+        """Generate prompt for multi-LLM review of research context."""
+        return f"""You are reviewing research context gathered for the following query:
+
+RESEARCH QUERY: "{query}"
+
+GATHERED RESEARCH CONTEXT:
+{context[:15000]}
+
+YOUR TASK: Critically evaluate this research context and identify:
+
+1. **GAPS**: What important aspects of the query are NOT covered by the research?
+   What information is missing that would be needed for a comprehensive report?
+
+2. **ADDITIONAL QUERIES**: Suggest 2-4 specific search queries that would fill
+   the identified gaps. These should be concrete, searchable queries.
+
+3. **CRITIQUES**: What problems do you see with the gathered context?
+   - Are there contradictions between sources?
+   - Is any information potentially outdated or unreliable?
+   - Are important perspectives missing?
+   - Is the coverage too shallow on any important subtopic?
+
+4. **CONFIDENCE**: Rate your confidence in the overall research quality (0.0-1.0).
+   Consider: coverage breadth, source quality, factual consistency, recency.
+
+5. **STRENGTHS**: What does this research context do well?
+
+Respond with a JSON object containing: gaps, additional_queries, critiques, confidence, strengths.
+Each field should be a list of strings, except confidence which is a float."""
+
+    @staticmethod
+    def generate_review_merge_prompt(query: str, reviews: str) -> str:
+        """Generate prompt for merging multiple LLM reviews."""
+        return f"""You are synthesizing research feedback from multiple independent LLM reviewers.
+
+ORIGINAL RESEARCH QUERY: "{query}"
+
+REVIEWER FEEDBACK:
+{reviews}
+
+YOUR TASK: Merge these independent reviews into a single actionable summary:
+
+1. **CONSENSUS GAPS**: Gaps identified by 2 or more reviewers (high priority).
+2. **UNIQUE GAPS**: Valuable gaps identified by only 1 reviewer.
+3. **PRIORITIZED QUERIES**: Deduplicate and rank the suggested additional queries
+   by their potential to improve the research. Keep only the top 5 most valuable.
+4. **CONSENSUS CRITIQUES**: Critiques agreed upon by the majority of reviewers.
+5. **KEY STRENGTHS**: Notable strengths mentioned by reviewers.
+
+When prioritizing queries, prefer those that:
+- Fill consensus gaps (mentioned by multiple reviewers)
+- Would add the most new information not already in the context
+- Are specific and searchable (not vague)
+
+Respond with a JSON object containing: consensus_gaps, unique_gaps, prioritized_queries, consensus_critiques, key_strengths.
+Each field should be a list of strings."""
+
     @staticmethod
     def generate_search_queries_prompt(
         question: str,

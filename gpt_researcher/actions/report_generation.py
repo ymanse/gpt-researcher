@@ -247,6 +247,7 @@ async def generate_report(
 
     """
     available_images = available_images or []
+    multi_llm_review = kwargs.pop("multi_llm_review", None)
     generate_prompt = get_prompt_by_report_type(report_type, prompt_family)
     report = ""
 
@@ -256,6 +257,18 @@ async def generate_report(
         content = f"{custom_prompt}\n\nContext: {context}"
     else:
         content = f"{generate_prompt(query, context, report_source, report_format=cfg.report_format, tone=tone, total_words=cfg.total_words, language=cfg.language)}"
+
+    # Enrich report prompt with multi-LLM review insights
+    if multi_llm_review and hasattr(multi_llm_review, 'consensus_gaps'):
+        review_hints = "\n\nMULTI-PERSPECTIVE REVIEW INSIGHTS:\n"
+        if multi_llm_review.consensus_gaps:
+            review_hints += f"- Known research gaps to address if possible: {'; '.join(multi_llm_review.consensus_gaps[:3])}\n"
+        if multi_llm_review.consensus_critiques:
+            review_hints += f"- Reviewer critiques to consider: {'; '.join(multi_llm_review.consensus_critiques[:3])}\n"
+        if multi_llm_review.key_strengths:
+            review_hints += f"- Research strengths to emphasize: {'; '.join(multi_llm_review.key_strengths[:3])}\n"
+        review_hints += "Use these insights to improve the depth and balance of your report."
+        content += review_hints
     
     # Add available images instruction if images were pre-generated
     if available_images:

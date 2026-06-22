@@ -26,6 +26,7 @@ from .skills.context_manager import ContextManager
 from .skills.curator import SourceCurator
 from .skills.deep_research import DeepResearchSkill
 from .skills.image_generator import ImageGenerator
+from .skills.multi_llm_reviewer import MultiLLMReviewer
 from .skills.researcher import ResearchConductor
 from .skills.writer import ReportGenerator
 from .utils.enum import ReportSource, ReportType, Tone
@@ -164,6 +165,7 @@ class GPTResearcher:
         self.research_costs = 0.0
         self.step_costs: dict[str, float] = {}
         self._current_step: str = "general"
+        self._multi_llm_review = None
         self.log_handler = log_handler
         self.prompt_family = get_prompt_family(prompt_family or self.cfg.prompt_family, self.cfg)
         
@@ -194,6 +196,9 @@ class GPTResearcher:
         # Initialize image generator (optional - only if configured)
         self.image_generator: Optional[ImageGenerator] = ImageGenerator(self)
         self.available_images: list = []  # Pre-generated images ready for embedding
+
+        # Initialize multi-LLM reviewer (optional - requires multiple LLM provider API keys)
+        self.multi_llm_reviewer: Optional[MultiLLMReviewer] = MultiLLMReviewer(self)
         self._research_id: str = ""  # Unique ID for this research session
 
         # Handle MCP strategy configuration with backwards compatibility
@@ -382,7 +387,28 @@ class GPTResearcher:
         await self._log_event("research", step="research_completed", details={
             "context_length": len(self.context)
         })
-        
+
+        # Multi-LLM consensus review (between research and report writing)
+        if self.multi_llm_reviewer and self.multi_llm_reviewer.is_enabled():
+            await self._log_event("research", step="multi_llm_review_start")
+            max_queries = getattr(self.cfg, 'multi_llm_review_max_queries', 3)
+            merged_review = await self.multi_llm_reviewer.review_context(
+                query=self.query,
+                context=self.context,
+                max_additional_queries=max_queries,
+            )
+            if merged_review.supplementary_context:
+                if isinstance(self.context, list):
+                    self.context.append(merged_review.supplementary_context)
+                elif isinstance(self.context, str):
+                    self.context += "\n\n" + merged_review.supplementary_context
+            self._multi_llm_review = merged_review
+            await self._log_event("research", step="multi_llm_review_complete", details={
+                "reviewer_count": merged_review.reviewer_count,
+                "consensus_gaps": len(merged_review.consensus_gaps),
+                "review_cost": merged_review.total_cost,
+            })
+
         # Pre-generate images if enabled (happens BEFORE report writing for better UX)
         self.available_images = []
         if self.image_generator and self.image_generator.is_enabled():

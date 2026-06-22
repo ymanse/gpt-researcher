@@ -343,7 +343,22 @@ class ResearchConductor:
         # Generate Sub-Queries including original query
         sub_queries = await self.plan_research(query, query_domains)
         self.logger.info(f"Generated sub-queries: {sub_queries}")
-        
+
+        # B-tier permanent patch: plan_research may return str (raw LLM output) or
+        # None when the strategic LLM falls back to AFC mode and JSON parsing fails.
+        # Normalize to a list so the downstream `.append(query)` and iteration work.
+        if sub_queries is None:
+            sub_queries = []
+        elif isinstance(sub_queries, str):
+            stripped = sub_queries.strip()
+            if not stripped:
+                sub_queries = []
+            else:
+                lines = [ln.strip(" \t\"',-•*") for ln in stripped.splitlines() if ln.strip()]
+                sub_queries = lines if len(lines) > 1 else [stripped]
+        elif not isinstance(sub_queries, list):
+            sub_queries = [str(sub_queries)]
+
         # If this is not part of a sub researcher, add original query to research for better results
         if self.researcher.report_type != "subtopic_report":
             sub_queries.append(query)

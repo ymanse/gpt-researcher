@@ -52,3 +52,9 @@ class BaseConfig(TypedDict):
     IMAGE_GENERATION_ENABLED: bool
     IMAGE_GENERATION_STYLE: str  # Image style: "dark", "light", or "auto"
     IMAGE_GENERATION_PROVIDER: str  # Image provider: "google" or "modelslab"
+    # Multi-LLM Review settings
+    MULTI_LLM_REVIEW_ENABLED: bool
+    MULTI_LLM_REVIEW_MODELS: List[str]
+    MULTI_LLM_REVIEW_TOKEN_LIMIT: int
+    MULTI_LLM_REVIEW_SUPPLEMENTARY: bool
+    MULTI_LLM_REVIEW_MAX_QUERIES: int
