@@ -46,6 +46,8 @@ websockets = "^13.1"
 # Model Context Protocol support
 mcp = { version = ">=1.0.0", markers = "platform_system != 'Windows'" }
 langchain-mcp-adapters = ">=0.1.0"
+# Claude subscription via Agent SDK (CLI OAuth) — claude_agent LLM provider
+claude-agent-sdk = ">=0.1.48"
 
 [build-system]
 requires = ["poetry-core"]
@@ -228,6 +230,7 @@ requirements-txt = [
     "langchain-gigachat",
     "langchain-google-genai",
     "langchain-google-vertexai",
+    "claude-agent-sdk>=0.1.48",
     "langchain-groq",
     "langchain-huggingface",
     "langchain-mistralai",

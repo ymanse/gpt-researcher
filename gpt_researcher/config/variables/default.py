@@ -4,9 +4,9 @@ DEFAULT_CONFIG: BaseConfig = {
     "RETRIEVER": "tavily",
     "EMBEDDING": "openai:text-embedding-3-small",
     "SIMILARITY_THRESHOLD": 0.42,
-    "FAST_LLM": "google_genai:gemini-3.5-flash",
-    "SMART_LLM": "google_genai:gemini-3.5-flash",  # Flagship model, long responses (2k+ words).
-    "STRATEGIC_LLM": "google_genai:gemini-3.5-flash",  # Reasoning tasks.
+    "FAST_LLM": "claude_agent:sonnet",  # Claude subscription via Agent SDK (no API token cost).
+    "SMART_LLM": "claude_agent:sonnet",  # Flagship model, long responses (2k+ words).
+    "STRATEGIC_LLM": "claude_agent:sonnet",  # Reasoning tasks.
     "FAST_TOKEN_LIMIT": 3000,
     "SMART_TOKEN_LIMIT": 6000,
     "STRATEGIC_TOKEN_LIMIT": 4000,
