@@ -36,6 +36,7 @@ _SUPPORTED_PROVIDERS = {
     "forge",
     "avian",
     "minimax",
+    "claude_agent",
 }
 
 NO_SUPPORT_TEMPERATURE_MODELS = [
@@ -120,6 +121,21 @@ class GenericLLMProvider:
             from langchain_anthropic import ChatAnthropic
 
             llm = ChatAnthropic(**kwargs)
+        elif provider == "claude_agent":
+            # Claude subscription via the Agent SDK (CLI OAuth) — no API token cost.
+            _check_pkg("claude_agent_sdk")
+            from gpt_researcher.llm_provider.claude_agent import ChatClaudeAgent
+            from gpt_researcher.llm_provider.claude_agent._subscription import _resolve_model_id
+
+            raw = kwargs.pop("model", None) or kwargs.pop("model_name", None) or "sonnet"
+            # Drop API-shaped kwargs the SDK does not accept (subscription CLI
+            # ignores temperature/max_tokens/etc.).
+            for k in ("temperature", "max_tokens", "reasoning_effort", "openai_api_base"):
+                kwargs.pop(k, None)
+            llm = ChatClaudeAgent(
+                model=_resolve_model_id(raw),
+                timeout_seconds=int(os.environ.get("CLAUDE_AGENT_TIMEOUT", "300")),
+            )
         elif provider == "azure_openai":
             _check_pkg("langchain_openai")
             from langchain_openai import AzureChatOpenAI
