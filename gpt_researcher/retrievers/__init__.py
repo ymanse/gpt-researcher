@@ -17,6 +17,7 @@ from .xquik.xquik import XquikSearch
 from .hackernews.hackernews import HackerNewsSearch
 from .bluesky.bluesky import BlueskySearch
 from .reddit.reddit import RedditSearch
+from .github.github import GithubSearch
 from .smart.smart_retriever import SmartRetriever
 
 __all__ = [
@@ -39,5 +40,6 @@ __all__ = [
     "HackerNewsSearch",
     "BlueskySearch",
     "RedditSearch",
+    "GithubSearch",
     "SmartRetriever"
 ]

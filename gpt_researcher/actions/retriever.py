@@ -33,6 +33,7 @@ def get_retriever(retriever: str):
         - hackernews: Hacker News (Algolia, keyless) tech/dev discussions
         - bluesky: Bluesky (AT Protocol, keyless) social posts
         - reddit: Reddit discussions via Firecrawl (needs FIRECRAWL_API_KEY)
+        - github: GitHub repositories (Search API, stars-sorted trending proxy; keyless)
     """
     match retriever:
         case "google":
@@ -114,6 +115,11 @@ def get_retriever(retriever: str):
             from gpt_researcher.retrievers import RedditSearch
 
             return RedditSearch
+
+        case "github":
+            from gpt_researcher.retrievers import GithubSearch
+
+            return GithubSearch
 
         case "smart":
             from gpt_researcher.retrievers import SmartRetriever

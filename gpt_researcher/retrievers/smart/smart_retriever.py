@@ -21,6 +21,7 @@ ROUTING_TABLE = {
     "code_technical": [
         ("exa", 6, {"search_type": "neural"}),
         ("serper", 4, {"query_domains": ["github.com", "stackoverflow.com"]}),
+        ("github", 5, {}),
     ],
     "academic": [
         ("arxiv", 5, {}),
@@ -43,6 +44,7 @@ ROUTING_TABLE = {
         ("hackernews", 2, {}),
         ("bluesky", 2, {}),
         ("reddit", 2, {}),
+        ("github", 2, {}),
     ],
 }
 
