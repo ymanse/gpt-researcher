@@ -29,6 +29,9 @@ ROUTING_TABLE = {
     "news_current": [
         ("tavily", 8, {"topic": "news"}),
         ("serper", 4, {"time_range": "qdr:w"}),
+        ("hackernews", 5, {"by_date": True}),
+        ("bluesky", 5, {"sort": "latest"}),
+        ("reddit", 4, {}),
     ],
     "comprehensive": [
         ("tavily", 3, {}),
@@ -37,6 +40,9 @@ ROUTING_TABLE = {
         ("arxiv", 2, {}),
         ("semantic_scholar", 2, {}),
         ("serper", 2, {}),
+        ("hackernews", 2, {}),
+        ("bluesky", 2, {}),
+        ("reddit", 2, {}),
     ],
 }
 
@@ -58,6 +64,7 @@ _RETRIEVER_API_KEYS = {
     "tavily": "TAVILY_API_KEY",
     "exa": "EXA_API_KEY",
     "serper": "SERPER_API_KEY",
+    "reddit": "FIRECRAWL_API_KEY",
 }
 
 

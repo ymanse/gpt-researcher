@@ -14,6 +14,9 @@ from .exa.exa import ExaSearch
 from .mcp import MCPRetriever
 from .bocha.bocha import BoChaSearch
 from .xquik.xquik import XquikSearch
+from .hackernews.hackernews import HackerNewsSearch
+from .bluesky.bluesky import BlueskySearch
+from .reddit.reddit import RedditSearch
 from .smart.smart_retriever import SmartRetriever
 
 __all__ = [
@@ -33,5 +36,8 @@ __all__ = [
     "MCPRetriever",
     "BoChaSearch",
     "XquikSearch",
+    "HackerNewsSearch",
+    "BlueskySearch",
+    "RedditSearch",
     "SmartRetriever"
 ]

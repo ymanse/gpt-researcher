@@ -30,6 +30,9 @@ def get_retriever(retriever: str):
         - custom: Custom user-defined retriever
         - mcp: Model Context Protocol retriever
         - xquik: Xquik X/Twitter search
+        - hackernews: Hacker News (Algolia, keyless) tech/dev discussions
+        - bluesky: Bluesky (AT Protocol, keyless) social posts
+        - reddit: Reddit discussions via Firecrawl (needs FIRECRAWL_API_KEY)
     """
     match retriever:
         case "google":
@@ -96,6 +99,21 @@ def get_retriever(retriever: str):
             from gpt_researcher.retrievers import XquikSearch
 
             return XquikSearch
+
+        case "hackernews":
+            from gpt_researcher.retrievers import HackerNewsSearch
+
+            return HackerNewsSearch
+
+        case "bluesky":
+            from gpt_researcher.retrievers import BlueskySearch
+
+            return BlueskySearch
+
+        case "reddit":
+            from gpt_researcher.retrievers import RedditSearch
+
+            return RedditSearch
 
         case "smart":
             from gpt_researcher.retrievers import SmartRetriever
