@@ -124,8 +124,9 @@ def exc_summary(e: BaseException) -> str:
 
 
 def _pid_alive(pid: int) -> bool:
-    r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True)
-    return str(pid) in r.stdout
+    r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True,
+                       errors="replace")
+    return str(pid) in (r.stdout or "")
 
 
 def _acquire_smoke_lock() -> None:
