@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import shutil
+import weakref
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -149,23 +150,30 @@ def _get_cli_env() -> dict[str, str]:
 
 # ── Concurrency control ───────────────────────────────────────────────
 
-_semaphore: asyncio.Semaphore | None = None
+# Per-event-loop semaphores: smart_retriever runs coros via asyncio.run() in worker
+# threads, so a single process-wide semaphore gets bound to a transient loop and every
+# later call on the main loop dies with "bound to a different event loop".
+_semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def get_concurrency_semaphore() -> asyncio.Semaphore:
-    """Lazily build a process-wide semaphore bounding concurrent CLI calls.
+    """Lazily build a per-event-loop semaphore bounding concurrent CLI calls.
 
     Bound is ``CLAUDE_AGENT_MAX_CONCURRENCY`` (default 2) to stay within
-    subscription rate limits. Lazy construction binds it to the running event
-    loop on first use.
+    subscription rate limits. One semaphore per running loop; dead loops drop
+    out of the WeakKeyDictionary automatically.
     """
-    global _semaphore
-    if _semaphore is None:
+    loop = asyncio.get_running_loop()
+    sem = _semaphores.get(loop)
+    if sem is None:
         try:
             limit = int(os.environ.get("CLAUDE_AGENT_MAX_CONCURRENCY", "2"))
         except ValueError:
             limit = 2
         limit = max(1, limit)
-        _semaphore = asyncio.Semaphore(limit)
+        sem = asyncio.Semaphore(limit)
+        _semaphores[loop] = sem
         logger.debug("Claude Agent SDK concurrency semaphore initialized: limit=%d", limit)
-    return _semaphore
+    return sem

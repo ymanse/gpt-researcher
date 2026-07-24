@@ -144,12 +144,14 @@ Format each question on a new line starting with 'Question: '"""}
                      if q.strip().startswith('Question:')]
         return questions[:num_questions]
 
-    async def process_research_results(self, query: str, context: str, num_learnings: int = 3) -> Dict[str, List[str]]:
+    async def process_research_results(self, query: str, context: str, num_learnings: Optional[int] = None) -> Dict[str, List[str]]:
         """Process research results to extract learnings and follow-up questions"""
+        if num_learnings is None:
+            num_learnings = getattr(self.researcher.cfg, 'deep_research_learnings', 8)
         messages = [
             {"role": "system", "content": "You are an expert researcher analyzing search results."},
             {"role": "user",
-             "content": f"Given the following research results for the query '{query}', extract key learnings and suggest follow-up questions. For each learning, include a citation to the source URL if available. Format each learning as 'Learning [source_url]: <insight>' and each question as 'Question: <question>':\n\n{context}"}
+             "content": f"Given the following research results for the query '{query}', extract the {num_learnings} most important key learnings and suggest follow-up questions. For each learning, include a citation to the source URL if available. Format each learning as 'Learning [source_url]: <insight>' and each question as 'Question: <question>':\n\n{context}"}
         ]
 
         response = await create_chat_completion(
@@ -158,7 +160,7 @@ Format each question on a new line starting with 'Question: '"""}
             model=self.researcher.cfg.strategic_llm_model,
             temperature=0.4,
             reasoning_effort=ReasoningEfforts.High.value,
-            max_tokens=1000
+            max_tokens=getattr(self.researcher.cfg, 'deep_research_learnings_tokens', 2500)
         )
 
         lines = response.split('\n')
@@ -190,8 +192,10 @@ Format each question on a new line starting with 'Question: '"""}
             elif line.startswith('Question:'):
                 questions.append(line.replace('Question:', '').strip())
 
+        learnings = learnings[:num_learnings]
+        print(f"TIERA_EVIDENCE stage=2 learnings_count={len(learnings)}", flush=True)
         return {
-            'learnings': learnings[:num_learnings],
+            'learnings': learnings,
             'followUpQuestions': questions[:num_learnings],
             'citations': citations
         }

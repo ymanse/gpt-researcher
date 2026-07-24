@@ -36,6 +36,8 @@ DEFAULT_CONFIG: BaseConfig = {
     "DEEP_RESEARCH_BREADTH": 3,
     "DEEP_RESEARCH_DEPTH": 2,
     "DEEP_RESEARCH_CONCURRENCY": 4,
+    "DEEP_RESEARCH_LEARNINGS": 8,
+    "DEEP_RESEARCH_LEARNINGS_TOKENS": 2500,
     
     # MCP retriever specific settings
     "MCP_SERVERS": [],  # List of predefined MCP server configurations
