@@ -15,7 +15,7 @@ def main() -> int:
             ev["scope_on_mcp_ok"] = True
         except Exception as e:
             ev["scope_on_mcp_ok"] = False
-            ev["mcp_error_on"] = str(e)[:400]
+            ev["mcp_error_on"] = smoke_lib.exc_summary(e)
         on_lines = smoke_lib.tiera_lines(smoke_lib.docker_logs_since(ts_on), 5)
         if on_lines:
             last = on_lines[-1]
@@ -29,7 +29,7 @@ def main() -> int:
             off_ok = True
         except Exception as e:
             off_ok = False
-            ev["mcp_error_off"] = str(e)[:400]
+            ev["mcp_error_off"] = smoke_lib.exc_summary(e)
         off_lines = smoke_lib.tiera_lines(smoke_lib.docker_logs_since(ts_off), 5)
         ev["scope_off_ok"] = bool(off_ok and not off_lines)
     smoke_lib.finish(5, ev)

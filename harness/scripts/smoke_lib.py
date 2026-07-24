@@ -107,8 +107,53 @@ def mcp_call(tool: str, arguments: dict, timeout_s: int = 3600) -> dict:
     return asyncio.run(_call(tool, arguments, timeout_s))
 
 
+def exc_summary(e: BaseException) -> str:
+    """Flatten ExceptionGroup leaves so evidence records the real error, not
+    'unhandled errors in a TaskGroup'."""
+    leaves: list[str] = []
+
+    def walk(x: BaseException) -> None:
+        if isinstance(x, BaseExceptionGroup):
+            for sub in x.exceptions:
+                walk(sub)
+        else:
+            leaves.append(f"{type(x).__name__}: {x}")
+
+    walk(e)
+    return " | ".join(leaves)[:400]
+
+
+def _pid_alive(pid: int) -> bool:
+    r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True)
+    return str(pid) in r.stdout
+
+
+def _acquire_smoke_lock() -> None:
+    """One smoke at a time: every smoke force-recreates the SHARED container, so a second
+    concurrent run kills the first one's MCP session mid-call (measured: 43 orphaned smoke
+    processes recreating over each other produced 'unhandled errors in a TaskGroup').
+    Refuse to start while another smoke is alive; stale locks self-clear."""
+    import atexit
+    import os
+    lock = hconf.HARNESS / "no_read" / "smoke.lock"
+    if lock.exists():
+        try:
+            pid = int(lock.read_text().strip())
+        except ValueError:
+            pid = 0
+        if pid and _pid_alive(pid):
+            print(f"SMOKE LOCKED: another smoke run (PID {pid}) is in progress — do NOT start "
+                  f"a second one (it would force-recreate the shared container and kill the "
+                  f"running MCP call). Wait for it to finish, then read the evidence it writes.")
+            raise SystemExit(2)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(str(os.getpid()))
+    atexit.register(lambda: lock.unlink(missing_ok=True))
+
+
 def smoke_preamble(stage: int) -> dict:
     """recreate + health; returns the common evidence header (fail-closed values on error)."""
+    _acquire_smoke_lock()
     ok = recreate()
     health = wait_health() if ok else 0
     return {"stage": stage, "recreated": bool(ok), "health": health,
