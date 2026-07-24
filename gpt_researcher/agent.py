@@ -333,7 +333,7 @@ class GPTResearcher:
                 import logging
                 logging.getLogger('research').error(f"Error in _log_event: {e}", exc_info=True)
 
-    async def conduct_research(self, on_progress=None):
+    async def conduct_research(self, on_progress=None, scope: bool = False):
         """Conduct the research process.
 
         This method orchestrates the main research workflow including
@@ -341,6 +341,7 @@ class GPTResearcher:
 
         Args:
             on_progress: Optional callback for progress updates during deep research.
+            scope: Deep research only — build a 1-round scope brief before researching.
 
         Returns:
             The accumulated research context.
@@ -355,7 +356,7 @@ class GPTResearcher:
         # Handle deep research separately
         if self.report_type == ReportType.DeepResearch.value and self.deep_researcher:
             self._current_step = "deep_research"
-            return await self._handle_deep_research(on_progress)
+            return await self._handle_deep_research(on_progress, scope=scope)
 
         if not (self.agent and self.role):
             self._current_step = "agent_selection"
@@ -426,7 +427,7 @@ class GPTResearcher:
         
         return self.context
 
-    async def _handle_deep_research(self, on_progress=None):
+    async def _handle_deep_research(self, on_progress=None, scope: bool = False):
         """Handle deep research execution and logging.
 
         Args:
@@ -452,7 +453,7 @@ class GPTResearcher:
         })
 
         # Run deep research and get context
-        self.context = await self.deep_researcher.run(on_progress=on_progress)
+        self.context = await self.deep_researcher.run(on_progress=on_progress, scope=scope)
 
         # Get total research costs
         total_costs = self.get_costs()

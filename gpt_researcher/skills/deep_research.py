@@ -61,6 +61,7 @@ class DeepResearchSkill:
         self.learnings = []
         self.research_sources = []  # Track all research sources
         self.context = []  # Track all context
+        self.scope_brief = None  # Set by run(scope=True): {"query", "questions", "scope_statement"}
 
     async def generate_search_queries(self, query: str, num_queries: int = 3) -> List[Dict[str, str]]:
         """Generate SERP queries for research"""
@@ -373,7 +374,7 @@ Format each question on a new line starting with 'Question: '"""}
             'sources': all_sources
         }
 
-    async def run(self, on_progress=None) -> str:
+    async def run(self, on_progress=None, scope: bool = False) -> str:
         """Run the deep research process and generate final report"""
         print(f"\n🔍 DEEP RESEARCH: Starting with breadth={self.breadth}, depth={self.depth}, concurrency={self.concurrency_limit}", flush=True)
         start_time = time.time()
@@ -382,10 +383,37 @@ Format each question on a new line starting with 'Question: '"""}
         initial_costs = self.researcher.get_costs()
 
         follow_up_questions = await self.generate_research_plan(self.researcher.query)
-        answers = ["Automatically proceeding with research"] * len(follow_up_questions)
 
-        qa_pairs = [f"Q: {q}\nA: {a}" for q, a in zip(follow_up_questions, answers)]
-        combined_query = f"""
+        if scope:
+            # Stage 5: 1-round scope brief — resolve the clarification questions with
+            # an LLM scope statement instead of the auto-answer boilerplate.
+            questions_block = "\n".join(f"- {q}" for q in follow_up_questions)
+            scope_statement = await create_chat_completion(
+                messages=[
+                    {"role": "system",
+                     "content": "You are an expert researcher. Resolve clarification questions into one concise scope statement."},
+                    {"role": "user",
+                     "content": f"Original query: {self.researcher.query}\n\nClarification questions:\n{questions_block}\n\nAnswer them with the most reasonable defaults and write a single concise scope statement pinning down the research scope."},
+                ],
+                llm_provider=self.researcher.cfg.strategic_llm_provider,
+                model=self.researcher.cfg.strategic_llm_model,
+                temperature=0.2,
+            )
+            self.scope_brief = {
+                "query": self.researcher.query,
+                "questions": list(follow_up_questions),
+                "scope_statement": scope_statement,
+            }
+            brief_text = f"{questions_block}\n{scope_statement}"
+            print(f"TIERA_EVIDENCE stage=5 brief_present=1 brief_len={len(brief_text)}", flush=True)
+            combined_query = f"""
+        Initial Query: {self.researcher.query}\nConfirmed Scope:\n{scope_statement}
+        """
+        else:
+            answers = ["Automatically proceeding with research"] * len(follow_up_questions)
+
+            qa_pairs = [f"Q: {q}\nA: {a}" for q, a in zip(follow_up_questions, answers)]
+            combined_query = f"""
         Initial Query: {self.researcher.query}\nFollow - up Questions and Answers:\n
         """ + "\n".join(qa_pairs)
 
