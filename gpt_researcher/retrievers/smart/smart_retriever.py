@@ -25,6 +25,7 @@ ROUTING_TABLE = {
         ("github", 5, {}),
     ],
     "academic": [
+        ("firecrawl_research", 8, {"recency_days": 730}),
         ("arxiv", 5, {}),
         ("semantic_scholar", 5, {}),
     ],
@@ -71,6 +72,7 @@ _RETRIEVER_API_KEYS = {
     "serper": "SERPER_API_KEY",
     "reddit": "FIRECRAWL_API_KEY",
     "firecrawl": "FIRECRAWL_API_KEY",
+    "firecrawl_research": "FIRECRAWL_API_KEY",
 }
 
 

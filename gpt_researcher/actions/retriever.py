@@ -127,6 +127,11 @@ def get_retriever(retriever: str):
 
             return FirecrawlSearch
 
+        case "firecrawl_research":
+            from gpt_researcher.retrievers import FirecrawlResearchSearch
+
+            return FirecrawlResearchSearch
+
         case "smart":
             from gpt_researcher.retrievers import SmartRetriever
 
