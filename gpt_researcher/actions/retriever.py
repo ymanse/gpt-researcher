@@ -34,6 +34,7 @@ def get_retriever(retriever: str):
         - bluesky: Bluesky (AT Protocol, keyless) social posts
         - reddit: Reddit discussions via Firecrawl (needs FIRECRAWL_API_KEY)
         - github: GitHub repositories (Search API, stars-sorted trending proxy; keyless)
+        - firecrawl: Firecrawl /v2/search with full-page markdown (needs FIRECRAWL_API_KEY)
     """
     match retriever:
         case "google":
@@ -120,6 +121,11 @@ def get_retriever(retriever: str):
             from gpt_researcher.retrievers import GithubSearch
 
             return GithubSearch
+
+        case "firecrawl":
+            from gpt_researcher.retrievers import FirecrawlSearch
+
+            return FirecrawlSearch
 
         case "smart":
             from gpt_researcher.retrievers import SmartRetriever

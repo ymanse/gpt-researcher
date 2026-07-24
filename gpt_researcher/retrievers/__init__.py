@@ -18,6 +18,7 @@ from .hackernews.hackernews import HackerNewsSearch
 from .bluesky.bluesky import BlueskySearch
 from .reddit.reddit import RedditSearch
 from .github.github import GithubSearch
+from .firecrawl.firecrawl import FirecrawlSearch
 from .smart.smart_retriever import SmartRetriever
 
 __all__ = [
@@ -41,5 +42,6 @@ __all__ = [
     "BlueskySearch",
     "RedditSearch",
     "GithubSearch",
+    "FirecrawlSearch",
     "SmartRetriever"
 ]

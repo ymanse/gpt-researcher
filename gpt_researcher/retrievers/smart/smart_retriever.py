@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 ROUTING_TABLE = {
     "general_web": [
         ("tavily", 7, {}),
+        ("firecrawl", 5, {}),
         ("duckduckgo", 5, {}),
     ],
     "code_technical": [
@@ -33,6 +34,7 @@ ROUTING_TABLE = {
         ("hackernews", 5, {"by_date": True}),
         ("bluesky", 5, {"sort": "latest"}),
         ("reddit", 4, {}),
+        ("firecrawl", 5, {"tbs": "qdr:w"}),
     ],
     "comprehensive": [
         ("tavily", 3, {}),
@@ -45,6 +47,7 @@ ROUTING_TABLE = {
         ("bluesky", 2, {}),
         ("reddit", 2, {}),
         ("github", 2, {}),
+        ("firecrawl", 3, {}),
     ],
 }
 
@@ -67,6 +70,7 @@ _RETRIEVER_API_KEYS = {
     "exa": "EXA_API_KEY",
     "serper": "SERPER_API_KEY",
     "reddit": "FIRECRAWL_API_KEY",
+    "firecrawl": "FIRECRAWL_API_KEY",
 }
 
 
