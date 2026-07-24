@@ -175,7 +175,9 @@ Format each question on a new line starting with 'Question: '"""}
                 url_match = re.search(r'\[(.*?)\]:', line)
                 if url_match:
                     url = url_match.group(1)
-                    learning = line.split(':', 1)[1].strip()
+                    # split after the "[url]:" marker — split(':', 1) would cut at
+                    # the "https:" inside the brackets and corrupt the learning text
+                    learning = line[url_match.end():].strip()
                     learnings.append(learning)
                     citations[learning] = url
                 else:
@@ -392,6 +394,15 @@ Format each question on a new line starting with 'Question: '"""}
             breadth=self.breadth,
             depth=self.depth,
             on_progress=on_progress
+        )
+
+        # Citation-verification post-pass over collected claims (stage 3)
+        from .citation_verification import CitationAgent
+        verification = await asyncio.to_thread(CitationAgent().verify, results['citations'])
+        print(
+            f"TIERA_EVIDENCE stage=3 total_claims={verification['total_claims']} "
+            f"grounded={verification['grounded']} unverified={verification['unverified']}",
+            flush=True,
         )
 
         # Get costs after deep research
