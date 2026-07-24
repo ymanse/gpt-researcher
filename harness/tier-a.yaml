@@ -1,0 +1,439 @@
+# tier-a.yaml — gralph profile: gpt-researcher fork Tier A upgrade (6 patch stages).
+#
+# Graph: s1-red -> s1-green -> s1-smoke -> s2-red -> ... -> s6-smoke -> final-verify -> DONE
+# Each stage advances ONLY when its Lua gate mechanically verifies tool-emitted evidence:
+#   RED   = new pytest exists and FAILS (junit-derived JSON, no implementation yet)
+#   GREEN = in-gate re-run: verify_green.py recomputes test-file hashes vs RED + runs the
+#           stage suite AND the full cumulative tests/tier_a suite (regression, fail-closed)
+#   SMOKE = live container: --force-recreate + /health 200 + real MCP call, thresholds read
+#           from no_read/evidence/stageN_smoke.json; commit [tier-a][stageN] verified in-gate
+# Stop hierarchy: gate-pass > cursor progress > fail_threshold(3) session rotation >
+# `gralph run --max-iterations N` (hard seatbelt, set by run-until-done.sh).
+# Usage limits are absorbed OUTSIDE gralph by ./run-until-done.sh (never a GALP launcher).
+
+agent:
+  command: ["claude", "-p", "{{prompt}}", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+  timeout: 75m
+
+fail_threshold: 3
+lua_timeout: 90s
+
+commands:
+  # ════════ STAGE 1 — SmartRetriever routing: add firecrawl /search ════════
+  - name: s1-red
+    guidance: |
+      [tier-a loop] Repo D:/dev_ext/gpt-researcher (branch feature/tier-a-upgrade), MCP repo
+      D:/dev_ext/gptr-mcp (same branch). CWD = harness/. Test python: ../venv/Scripts/python.
+      Spec: spec/tier-a-prompt.md (Stage 1). HARD RULES: never edit harness/scripts/* or
+      no_read/evidence/* by hand; never delete/skip/weaken tests; commit only to feature/tier-a-upgrade.
+
+      Write FAILING (RED) pytest tests in ../tests/tier_a/stage1/ — implementation does NOT
+      exist yet, do NOT implement. Deterministic, no network (mock the Firecrawl HTTP API).
+      Cover:
+        (a) a new FirecrawlSearch adapter (gpt_researcher/retrievers/firecrawl/) normalizes a
+            mocked /v2/search response (categories, tbs, scrapeOptions.formats=["markdown"])
+            into [{href,title,body}] with body = non-empty clean markdown
+        (b) SmartRetriever ROUTING_TABLE includes "firecrawl" for general_web (and
+            comprehensive, news_current) and _RETRIEVER_API_KEYS maps firecrawl -> FIRECRAWL_API_KEY
+        (c) without FIRECRAWL_API_KEY the firecrawl retriever is excluded by the existing
+            availability logic (no regression)
+      Then RUN: python scripts/pytest_evidence.py --stage 1 --phase red
+      (runs pytest, writes no_read/evidence/stage1_red.json from the junit xml + file hashes).
+      Confirm it reports collected>=1, errors=0, passed=0, failed>=1.
+      Submit: gralph do s1-red --report no_read/evidence/stage1_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage1_red.json" }
+    lua: scripts/s1_red.lua
+    next: [s1-green]
+
+  - name: s1-green
+    lua_timeout: 900s
+    guidance: |
+      [tier-a loop] Repo D:/dev_ext/gpt-researcher (branch feature/tier-a-upgrade). CWD = harness/.
+      Test python: ../venv/Scripts/python. Spec: spec/tier-a-prompt.md (Stage 1).
+      HARD RULES: never edit harness/scripts/* or no_read/evidence/* by hand; leave the RED test
+      files in ../tests/tier_a/stage1/ BYTE-UNCHANGED (the gate recomputes their sha256 against
+      the RED record); never delete/skip/weaken tests.
+
+      Implement Stage 1 until the stage1 tests are GREEN:
+      - New package gpt_researcher/retrievers/firecrawl/ with a FirecrawlSearch class calling
+        Firecrawl /v2/search (categories, tbs, scrapeOptions.formats=["markdown"]), normalizing
+        to [{href,title,body}] (body = clean markdown). Register it wherever existing retrievers
+        are registered (follow the tavily/exa adapters' registration points).
+      - smart_retriever.py: add ("firecrawl", n, {...}) entries to ROUTING_TABLE general_web,
+        comprehensive, news_current; add _RETRIEVER_API_KEYS["firecrawl"]="FIRECRAWL_API_KEY".
+      - Live-evidence contract: after a real firecrawl search returns, the adapter emits ONE line
+        to stdout: print(f"TIERA_EVIDENCE stage=1 firecrawl_results={n} max_body_len={m}", flush=True)
+        (n = result count, m = max body length). The smoke gate harvests docker logs for it.
+      Preflight: python scripts/verify_green.py --stage 1  (must print ok=1: stage tests green,
+      full tests/tier_a suite green, hash_match=1). The gate re-runs this itself — you cannot
+      submit around it.
+      Submit: gralph do s1-green --report no_read/evidence/stage1_green.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage1_green.json" }
+    lua: scripts/s1_green.lua
+    next: [s1-smoke]
+
+  - name: s1-smoke
+    guidance: |
+      [tier-a loop] CWD = harness/. Live smoke for Stage 1 (firecrawl routing).
+      RUN: python scripts/smoke_stage1.py
+      (recreates the container via docker compose --force-recreate, waits for /health, calls
+      quick_search("latest developments in solid-state battery manufacturing 2026") over MCP,
+      harvests TIERA_EVIDENCE stage=1 from docker logs, writes no_read/evidence/stage1_smoke.json).
+      Gate thresholds: firecrawl_sources>=1 AND max_firecrawl_body_len>400 (clean markdown, not
+      a snippet). If unmet: the fix belongs in the IMPLEMENTATION (never in harness/scripts or
+      evidence) — fix, re-run python scripts/verify_green.py --stage 1 (must stay ok=1), re-run
+      the smoke script.
+      When met, COMMIT everything in D:/dev_ext/gpt-researcher on feature/tier-a-upgrade with
+      message starting: [tier-a][stage1]  (tracked tree must be clean afterwards).
+      Submit: gralph do s1-smoke --report no_read/evidence/stage1_smoke.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage1_smoke.json" }
+    lua: scripts/s1_smoke.lua
+    next: [s2-red]
+
+  # ════════ STAGE 2 — learnings 손실 압축 완화 (3->8, tokens 1000->2500) ════════
+  - name: s2-red
+    guidance: |
+      [tier-a loop] Repo D:/dev_ext/gpt-researcher (branch feature/tier-a-upgrade). CWD = harness/.
+      Spec: spec/tier-a-prompt.md (Stage 2). HARD RULES: never edit harness/scripts/* or
+      no_read/evidence/* by hand; never delete/skip/weaken tests (tests/tier_a/stage1 stays intact).
+
+      Write FAILING (RED) pytest tests in ../tests/tier_a/stage2/ — do NOT implement yet.
+      Target: gpt_researcher/skills/deep_research.py process_research_results.
+      Cover (mock the LLM, deterministic):
+        (a) with a mock LLM returning 10 learnings, the function returns 8 (config default
+            DEEP_RESEARCH_LEARNINGS=8), NOT the old cap of 3
+        (b) env override works (e.g. DEEP_RESEARCH_LEARNINGS=5 -> 5 returned)
+        (c) citation/source parsing behavior is unchanged (no regression in the returned shape)
+      Then RUN: python scripts/pytest_evidence.py --stage 2 --phase red
+      Submit: gralph do s2-red --report no_read/evidence/stage2_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage2_red.json" }
+    lua: scripts/s2_red.lua
+    next: [s2-green]
+
+  - name: s2-green
+    lua_timeout: 900s
+    guidance: |
+      [tier-a loop] CWD = harness/. Spec: spec/tier-a-prompt.md (Stage 2). HARD RULES: RED test
+      files byte-unchanged; never delete/skip/weaken tests; no hand-edits under harness/.
+
+      Implement Stage 2: in deep_research.py process_research_results, num_learnings default
+      3 -> config DEEP_RESEARCH_LEARNINGS (default 8), max_tokens 1000 -> config
+      DEEP_RESEARCH_LEARNINGS_TOKENS (default 2500), both env-overridable.
+      Live-evidence contract: each process_research_results call emits
+      print(f"TIERA_EVIDENCE stage=2 learnings_count={len(learnings)}", flush=True).
+      Preflight: python scripts/verify_green.py --stage 2 (gate re-runs it; full tier_a suite
+      must be green — stage1 regression counts as failure).
+      Submit: gralph do s2-green --report no_read/evidence/stage2_green.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage2_green.json" }
+    lua: scripts/s2_green.lua
+    next: [s2-smoke]
+
+  - name: s2-smoke
+    guidance: |
+      [tier-a loop] CWD = harness/. Live smoke for Stage 2.
+      RUN: python scripts/smoke_stage2.py
+      (recreate + health, then deep_research("impact of EU AI Act enforcement on open-source
+      model providers") over MCP — this is a long call; the script waits. It harvests
+      TIERA_EVIDENCE stage=2 learnings_count lines from docker logs and records the MAX as
+      learnings_count in no_read/evidence/stage2_smoke.json.)
+      Gate threshold: learnings_count>=6 (baseline was capped at 3). If unmet, fix the
+      implementation, keep verify_green --stage 2 ok=1, re-run smoke.
+      When met, COMMIT in D:/dev_ext/gpt-researcher with message: [tier-a][stage2] ...
+      Submit: gralph do s2-smoke --report no_read/evidence/stage2_smoke.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage2_smoke.json" }
+    lua: scripts/s2_smoke.lua
+    next: [s3-red]
+
+  # ════════ STAGE 3 — citation-verification 패스 ════════
+  - name: s3-red
+    guidance: |
+      [tier-a loop] Repo D:/dev_ext/gpt-researcher (branch feature/tier-a-upgrade). CWD = harness/.
+      Spec: spec/tier-a-prompt.md (Stage 3). HARD RULES: no hand-edits under harness/; never
+      delete/skip/weaken tests (stages 1-2 stay intact).
+
+      Write FAILING (RED) pytest tests in ../tests/tier_a/stage3/ — do NOT implement yet.
+      Target: a lightweight CitationAgent (citation-verification pass over deep research
+      learnings): re-fetch each core learning's citation URL via firecrawl scrape(max_age=0),
+      match the cited quote against the fetched source (string containment or normalized
+      match); unmatched -> flagged "unverified".
+      Cover (mock scrape, deterministic):
+        (a) quote present in mocked source -> verified/grounded
+        (b) quote absent -> flagged unverified
+        (c) counts are reported: total_claims / grounded / unverified consistent
+      Then RUN: python scripts/pytest_evidence.py --stage 3 --phase red
+      Submit: gralph do s3-red --report no_read/evidence/stage3_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage3_red.json" }
+    lua: scripts/s3_red.lua
+    next: [s3-green]
+
+  - name: s3-green
+    lua_timeout: 900s
+    guidance: |
+      [tier-a loop] CWD = harness/. Spec: spec/tier-a-prompt.md (Stage 3). HARD RULES: RED test
+      files byte-unchanged; never delete/skip/weaken tests; no hand-edits under harness/.
+
+      Implement Stage 3: CitationAgent wired into the deep research flow (a post-pass over
+      learnings/claims; integration with the existing multi_llm_reviewer path is acceptable).
+      Firecrawl scrape with max_age=0 for re-fetch; unmatched quotes flagged unverified.
+      Live-evidence contract: after the pass, emit
+      print(f"TIERA_EVIDENCE stage=3 total_claims={t} grounded={g} unverified={u}", flush=True).
+      Preflight: python scripts/verify_green.py --stage 3 (gate re-runs; full tier_a suite green).
+      Submit: gralph do s3-green --report no_read/evidence/stage3_green.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage3_green.json" }
+    lua: scripts/s3_green.lua
+    next: [s3-smoke]
+
+  - name: s3-smoke
+    guidance: |
+      [tier-a loop] CWD = harness/. Live smoke for Stage 3.
+      RUN: python scripts/smoke_stage3.py
+      (recreate + health, deep_research("impact of EU AI Act enforcement on open-source model
+      providers"), harvest TIERA_EVIDENCE stage=3; writes stage3_smoke.json with total_claims,
+      grounded, unverified, grounded_ratio_pct.)
+      Gate thresholds: total_claims>=1 AND grounded_ratio_pct>=70 AND the unverified count is
+      reported. If unmet, fix the implementation, keep verify_green --stage 3 ok=1, re-run smoke.
+      When met, COMMIT in D:/dev_ext/gpt-researcher with message: [tier-a][stage3] ...
+      Submit: gralph do s3-smoke --report no_read/evidence/stage3_smoke.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage3_smoke.json" }
+    lua: scripts/s3_smoke.lua
+    next: [s4-red]
+
+  # ════════ STAGE 4 — 논문 레인 Firecrawl research 승격 ════════
+  - name: s4-red
+    guidance: |
+      [tier-a loop] Repo D:/dev_ext/gpt-researcher (branch feature/tier-a-upgrade). CWD = harness/.
+      Spec: spec/tier-a-prompt.md (Stage 4). HARD RULES: no hand-edits under harness/; never
+      delete/skip/weaken tests (stages 1-3 stay intact).
+
+      Write FAILING (RED) pytest tests in ../tests/tier_a/stage4/ — do NOT implement yet.
+      Target: SmartRetriever "academic" routing promoted from arxiv+semantic_scholar to a
+      Firecrawl research adapter (paper search + related-papers mode="citers"), with from/to
+      recency filtering and citers expansion adding newer papers that cite the seeds.
+      Cover (mock the research API, deterministic):
+        (a) the adapter returns papers with id, title, date from a mocked paper-search response
+        (b) citers expansion adds papers NEWER than the seed papers to the result set
+        (c) from/to window filtering excludes out-of-window papers
+        (d) SmartRetriever academic routing includes the new adapter
+      Then RUN: python scripts/pytest_evidence.py --stage 4 --phase red
+      Submit: gralph do s4-red --report no_read/evidence/stage4_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage4_red.json" }
+    lua: scripts/s4_red.lua
+    next: [s4-green]
+
+  - name: s4-green
+    lua_timeout: 900s
+    guidance: |
+      [tier-a loop] CWD = harness/. Spec: spec/tier-a-prompt.md (Stage 4). HARD RULES: RED test
+      files byte-unchanged; never delete/skip/weaken tests; no hand-edits under harness/.
+
+      Implement Stage 4: Firecrawl research adapter (REST calls to Firecrawl's research paper
+      search + related-papers citers endpoint, FIRECRAWL_API_KEY) and switch SmartRetriever
+      "academic" routing to it (arxiv/semantic_scholar may remain as fallback entries).
+      Live-evidence contract: after a real academic retrieval, emit
+      print(f"TIERA_EVIDENCE stage=4 papers_count={p} papers_in_window={w} from_citers_count={c}", flush=True)
+      (window = the from/to recency filter actually applied).
+      Preflight: python scripts/verify_green.py --stage 4 (gate re-runs; full tier_a suite green).
+      Submit: gralph do s4-green --report no_read/evidence/stage4_green.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage4_green.json" }
+    lua: scripts/s4_green.lua
+    next: [s4-smoke]
+
+  - name: s4-smoke
+    guidance: |
+      [tier-a loop] CWD = harness/. Live smoke for Stage 4.
+      RUN: python scripts/smoke_stage4.py
+      (recreate + health, quick_search("sparse attention long context transformer efficiency
+      survey 2025..2026 recent papers") — an academic-categorized query; harvest TIERA_EVIDENCE
+      stage=4; writes stage4_smoke.json.)
+      Gate thresholds: papers_count>=3 AND papers_in_window>=1 AND from_citers_count>=1.
+      If unmet, fix the implementation, keep verify_green --stage 4 ok=1, re-run smoke.
+      When met, COMMIT in D:/dev_ext/gpt-researcher with message: [tier-a][stage4] ...
+      Submit: gralph do s4-smoke --report no_read/evidence/stage4_smoke.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage4_smoke.json" }
+    lua: scripts/s4_smoke.lua
+    next: [s5-red]
+
+  # ════════ STAGE 5 — scope/clarification 옵션화 ════════
+  - name: s5-red
+    guidance: |
+      [tier-a loop] Repo D:/dev_ext/gpt-researcher + D:/dev_ext/gptr-mcp (both on
+      feature/tier-a-upgrade). CWD = harness/. Spec: spec/tier-a-prompt.md (Stage 5).
+      HARD RULES: no hand-edits under harness/; never delete/skip/weaken tests (stages 1-4 intact).
+
+      Write FAILING (RED) pytest tests in ../tests/tier_a/stage5/ — do NOT implement yet.
+      Target: deep_research.py run()'s "Automatically proceeding" auto-answer, gated by a new
+      scope: bool parameter (default False, threaded through from the MCP deep_research tool).
+      Cover (mock LLM, deterministic):
+        (a) scope=False -> auto-proceed exactly as today (no brief object, no behavior change)
+        (b) scope=True -> a 1-round brief is generated (original query -> clarification
+            questions -> scope statement) and research proceeds with it; the brief object is
+            non-empty
+      Then RUN: python scripts/pytest_evidence.py --stage 5 --phase red
+      Submit: gralph do s5-red --report no_read/evidence/stage5_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage5_red.json" }
+    lua: scripts/s5_red.lua
+    next: [s5-green]
+
+  - name: s5-green
+    lua_timeout: 900s
+    guidance: |
+      [tier-a loop] CWD = harness/. Spec: spec/tier-a-prompt.md (Stage 5). HARD RULES: RED test
+      files byte-unchanged; never delete/skip/weaken tests; no hand-edits under harness/.
+
+      Implement Stage 5 in BOTH repos:
+      - gpt_researcher/skills/deep_research.py: scope param; scope=True generates a 1-round
+        brief before research; scope=False is byte-for-byte the current behavior.
+      - D:/dev_ext/gptr-mcp/server.py: deep_research MCP tool gains scope: bool = False and
+        passes it through. (server.py is mounted into the container as a single file — the tool
+        change must live IN server.py, not a new file.)
+      Live-evidence contract: when scope=True and the brief is built, emit
+      print(f"TIERA_EVIDENCE stage=5 brief_present=1 brief_len={len(brief_text)}", flush=True).
+      Preflight: python scripts/verify_green.py --stage 5 (gate re-runs; full tier_a suite green).
+      Submit: gralph do s5-green --report no_read/evidence/stage5_green.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage5_green.json" }
+    lua: scripts/s5_green.lua
+    next: [s5-smoke]
+
+  - name: s5-smoke
+    guidance: |
+      [tier-a loop] CWD = harness/. Live smoke for Stage 5 (two live calls).
+      RUN: python scripts/smoke_stage5.py
+      (recreate + health; deep_research(query, scope=True) then deep_research(query, scope=False)
+      with query "impact of EU AI Act enforcement on open-source model providers"; harvests
+      TIERA_EVIDENCE stage=5 for the ON call and asserts the OFF call completed with NO stage=5
+      brief line; writes stage5_smoke.json.)
+      Gate thresholds: scope_on_brief_present=true AND brief_len>=1 AND scope_off_ok=true.
+      If unmet, fix the implementation, keep verify_green --stage 5 ok=1, re-run smoke.
+      When met, COMMIT BOTH repos (gpt-researcher AND gptr-mcp) with message: [tier-a][stage5] ...
+      Submit: gralph do s5-smoke --report no_read/evidence/stage5_smoke.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage5_smoke.json" }
+    lua: scripts/s5_smoke.lua
+    next: [s6-red]
+
+  # ════════ STAGE 6 — deep_tree_research 신규 트리 도구 ════════
+  - name: s6-red
+    guidance: |
+      [tier-a loop] Repo D:/dev_ext/gpt-researcher + D:/dev_ext/gptr-mcp (both on
+      feature/tier-a-upgrade). CWD = harness/. Spec: spec/tier-a-prompt.md (Stage 6) AND the
+      full design doc spec/tree-research-tool-design-2026.md — read it first.
+      HARD RULES: no hand-edits under harness/; never delete/skip/weaken tests (stages 1-5 intact).
+
+      Write FAILING (RED) pytest tests in ../tests/tier_a/stage6/ — do NOT implement yet.
+      Target: gpt_researcher/skills/tree_research.py TreeResearchSkill (MindSearch-style
+      persisted tree + best-first frontier + Self-Ask expansion + dedup + post-order synthesis;
+      node research is a MOCKED GPTResearcher in every test).
+      Cover, deterministically:
+        (a) best-first frontier pops nodes in priority (novelty*gap) descending order
+        (b) a child with novelty < 0.30 is marked PRUNED and never expanded
+        (c) a candidate question with cosine similarity >= 0.92 against an existing question
+            embedding is dropped (dedup), using injected/mocked embeddings
+        (d) post-order synthesis rolls up leaf -> root, and the citation map is the URL union
+            with stable ids
+        (e) on budget exhaustion remaining nodes are reported PENDING and a synthesis is STILL
+            produced
+      Then RUN: python scripts/pytest_evidence.py --stage 6 --phase red
+      Submit: gralph do s6-red --report no_read/evidence/stage6_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage6_red.json" }
+    lua: scripts/s6_red.lua
+    next: [s6-green]
+
+  - name: s6-green
+    lua_timeout: 900s
+    guidance: |
+      [tier-a loop] CWD = harness/. Spec: spec/tier-a-prompt.md (Stage 6) + design doc
+      spec/tree-research-tool-design-2026.md. HARD RULES: RED test files byte-unchanged; never
+      delete/skip/weaken tests; no hand-edits under harness/.
+
+      Implement Stage 6 in BOTH repos:
+      - gpt_researcher/skills/tree_research.py: TreeResearchSkill per the design doc. Params:
+        max_depth, max_breadth, max_nodes, token_budget, credit_budget, novelty_threshold,
+        expansion_policy, stream. Node research reuses GPTResearcher. Shared visited-URL set +
+        question-embedding dedup. Persisted tree JSON + final report markdown written under
+        the outputs dir (container /app/outputs).
+      - D:/dev_ext/gptr-mcp/server.py: new @mcp.tool() deep_tree_research(...) exposing it
+        (must live IN server.py — single-file mount).
+      ARTIFACT CONTRACT (the smoke gate reads these from D:/dev_ext/gptr-mcp/outputs on the
+      host): tree.json = { "meta": { "query", "budget_respected": bool, "max_depth_reached": int,
+      "pruned_count": int, "node_count": int }, "nodes": [ { "id", "depth", "status", "question" } ],
+      "citations": { "<id>": "<url>" } } plus a report .md referencing citations as [id]. The
+      MCP tool result must include the tree.json and report host paths (follow the existing
+      GPTR_MCP_OUTPUT_DIR_HOST artifact pattern in server.py).
+      Preflight: python scripts/verify_green.py --stage 6 (gate re-runs; full tier_a suite green).
+      Submit: gralph do s6-green --report no_read/evidence/stage6_green.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage6_green.json" }
+    lua: scripts/s6_green.lua
+    next: [s6-smoke]
+
+  - name: s6-smoke
+    guidance: |
+      [tier-a loop] CWD = harness/. Live smoke for Stage 6.
+      RUN: python scripts/smoke_stage6.py
+      (recreate + health; deep_tree_research("solid-state battery supply chain: manufacturing
+      bottlenecks and key players", max_depth=2, max_nodes=8, credit_budget=low) over MCP —
+      long call; then reads tree.json + report from D:/dev_ext/gptr-mcp/outputs and writes
+      stage6_smoke.json.)
+      Gate thresholds: report_md_present=true AND tree_json_present=true AND
+      max_depth_reached>=2 AND node_count>=3 AND citations_resolve=true AND
+      budget_respected=true AND pruned_count reported.
+      If unmet, fix the implementation, keep verify_green --stage 6 ok=1, re-run smoke.
+      When met, COMMIT BOTH repos with message: [tier-a][stage6] ...
+      Submit: gralph do s6-smoke --report no_read/evidence/stage6_smoke.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to stage6_smoke.json" }
+    lua: scripts/s6_smoke.lua
+    next: [final-verify]
+
+  # ════════ FINAL — cross-stage integration verify (DONE on pass) ════════
+  - name: final-verify
+    fail_threshold: 2
+    lua_timeout: 900s
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+    guidance: |
+      [tier-a loop] CWD = harness/. Final integration check — mechanical.
+      RUN: python scripts/final_verify.py
+      It re-runs the FULL tests/tier_a suite, checks all 18 evidence files (6x red/green/smoke)
+      and all 6 [tier-a][stageN] commits (gptr-mcp for stages 5-6), and prints a summary line.
+      The gate re-runs the same script itself; if it reports a failure, fix the cause (never the
+      script or the evidence).
+      Submit: gralph do final-verify --report no_read/evidence/final.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to final.json" }
+    lua: scripts/final_verify.lua
+    # no next -> pass = DONE

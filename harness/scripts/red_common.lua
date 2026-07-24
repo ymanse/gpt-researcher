@@ -1,0 +1,32 @@
+-- red_common.lua — RED integrity gate, shared by s1..s6_red.lua wrappers.
+-- Proves the new tests exist, COLLECT, and FAIL (law 3): errors=0, collected>=1,
+-- passed=0, failed>=1, and test-file hashes recorded for the GREEN hash check.
+return function(stage)
+  local L = dofile(gralph.profile_dir .. "/scripts/lib.lua")
+  local rel = "no_read/evidence/stage" .. stage .. "_red.json"
+  local blob = L.slurp(rel)
+  if not blob then
+    gralph.fail(rel .. " not found — write the RED tests in tests/tier_a/stage" .. stage ..
+      "/ then RUN: python scripts/pytest_evidence.py --stage " .. stage .. " --phase red")
+    return
+  end
+  if not L.must(blob, '"stage":' .. stage .. ',',
+      "evidence is for the wrong stage — regenerate with --stage " .. stage) then return end
+  if not L.must(blob, '"phase":"red"', "evidence must come from a --phase red run") then return end
+  if not L.must(blob, '"errors":0',
+      "collection/import errors must be 0 — a test that won't import is not a valid RED") then return end
+  local col = L.num(blob, '"collected":(%d+)')
+  if not col or col == 0 then
+    gralph.fail("stage " .. stage .. ": 0 tests collected — write real pytest tests in tests/tier_a/stage" .. stage .. "/")
+    return
+  end
+  if not L.must(blob, '"passed":0',
+      "a fresh RED test must NOT pass — do not implement before the RED gate") then return end
+  local failed = L.num(blob, '"failed":(%d+)')
+  if not failed or failed == 0 then
+    gralph.fail("stage " .. stage .. ": tests did not FAIL — RED means the suite fails because the implementation is missing")
+    return
+  end
+  if not L.must(blob, '"test_files":{"',
+      "evidence must record test-file sha256 hashes (pytest_evidence.py emits them) — the GREEN gate compares against these") then return end
+end

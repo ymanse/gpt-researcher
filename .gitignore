@@ -52,3 +52,8 @@ server_log.txt
 .cursorrules
 CURSOR_RULES.md
 /.history
+
+# tier-a harness runtime state (never commit)
+harness/no_read/
+harness/.gralph/
+.omc/
