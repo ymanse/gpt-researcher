@@ -1,0 +1,40 @@
+{
+  "id": "bun-rust-port",
+  "query": "How did Bun port 530,000 lines of Zig to Rust in 11 days using a Claude Code agent harness? Cover the harness design: git worktree sharding across parallel dynamic workflows, the PORTING.md rule file and LIFETIMES.tsv lifetime analysis artifact, separating implementer agents from adversarial reviewer agents with isolated context, turning 16,000 compile errors into a work queue, and the validation layers (test suite, security review, fuzzing) beyond test coverage.",
+  "category": "recent-event",
+  "measure_pair": true,
+  "required_primary_domains": ["bun.com", "github.com"],
+  "facts": [
+    {"pattern": "(?i)\\b53[05],?\\d{3}\\b", "desc": "Verified: 'Excluding comments, Bun is 535,496 lines of Zig.' (530k is the rounded query figure). https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)\\b11[- ]days?\\b", "desc": "Verified: 'about 50 dynamic workflows in Claude Code run continuously over the course of 11 days' (May 3 -> merged May 14, 2026). https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)\\b(4|four)\\s+(git[- ])?worktrees?\\b|worktree\\s+shard", "desc": "Verified: 'I split it into just 4 workflow shards each with their own worktree (4 worktrees total), each running 16 claudes'. https://bun.com/blog/bun-in-rust"},
+    {"pattern": "PORTING\\.md", "desc": "Verified: 'Claude serialized this discussion into a PORTING.md document' — the porting rule file every ported file had to match. https://bun.com/blog/bun-in-rust"},
+    {"pattern": "LIFETIMES\\.tsv", "desc": "Verified: ports had to match 'the PORTING.md and LIFETIMES.tsv' lifetime-analysis table. https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)adversarial\\s+review", "desc": "Verified: '1 implementer, 2 or more adversarial reviewers per implementer... The implementer doesn't review. The reviewer doesn't implement.' https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)\\b16,?000\\s+(compil\\w+\\s+)?errors\\b", "desc": "Verified: 'Fixing the cyclical dependencies revealed about 16,000 compiler errors', written by cargo check to a file and divvied up as a work queue. https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)fuzz(ing|er|illi)", "desc": "Verified: '24/7 coverage-guided fuzzing of every parser in Bun' plus Fuzzilli for runtime APIs. https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)security\\s+review", "desc": "Verified: 'we've completed 11 rounds of security review from Claude Code Security and addressed the findings'. https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)\\b64\\s+(claude|agent)s?\\b|\\b16\\s+claudes\\b", "desc": "Verified: 64 Claudes = 16 per worktree x 4 worktrees ('each running 16 claudes'; 'not a crazy number for 64 claudes at once'). https://bun.com/blog/bun-in-rust"}
+  ],
+  "traps": [
+    {"pattern": "(?i)from\\s+(C\\+\\+|Go|JavaScript|TypeScript)\\s+to\\s+Rust", "desc": "Wrong language pair: the port is Zig->Rust (Jarred's earlier esbuild history was Go->Zig, never Go->Rust). https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)\\b53,?000\\s+lines", "desc": "Order-of-magnitude-low line count; the real figure is 535,496 lines of Zig. https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)\\b5\\.3\\s+million\\s+lines", "desc": "Order-of-magnitude-high line count; the real figure is 535,496 lines of Zig. https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)\\b11\\s+(weeks|months)\\b", "desc": "Wrong duration unit: the port took 11 days, not weeks or months. https://bun.com/blog/bun-in-rust"},
+    {"pattern": "(?i)\\bmanually\\s+(ported|translated|rewrote|rewritten)\\b", "desc": "The port was agent-driven ('at peak Claude wrote about 1,300 lines of code per minute'), not manual. Past-tense assertion form avoids matching negations like 'instead of manually porting'."},
+    {"pattern": "(?i)\\ba\\s+single\\s+Claude\\s+(agent|instance)\\b", "desc": "It was ~50 dynamic workflows / 64 parallel Claudes, not a single agent. https://bun.com/blog/bun-in-rust"}
+  ],
+  "contested": [
+    {"topic": "ported line-count figure", "values": ["(?i)\\b53[05],?\\d{3}\\b", "(?i)\\b(960,?000|1,?009,?257)\\b"], "desc": "Primary source counts 535,496 lines of Zig excluding comments (https://bun.com/blog/bun-in-rust); press coverage reports ~960,000-1,009,257 total migrated lines (aiweekly.co, LinkedIn commentary). A balanced report cites both scopes."},
+    {"topic": "review quality debate", "values": ["(?i)unreviewed\\s+slop", "(?i)(two|2)(\\s+separate)?\\s+adversarial\\s+reviewers"], "desc": "Zig's creator publicly called the rewrite 'unreviewed slop' (https://www.theregister.com/devops/2026/07/14/zig-creator-calls-buns-claude-rust-rewrite-unreviewed-slop/5270743), while Bun states every line was reviewed by two separate adversarial reviewers before committing (https://bun.com/blog/bun-in-rust)."}
+  ],
+  "coverage_areas": [
+    {"id": "worktree-sharding", "pattern": "(?i)worktrees?"},
+    {"id": "porting-rules", "pattern": "(?i)PORTING\\.md|porting\\s+guide"},
+    {"id": "lifetime-analysis", "pattern": "(?i)LIFETIMES\\.tsv|lifetimes?"},
+    {"id": "review-separation", "pattern": "(?i)adversarial\\s+review|implementer"},
+    {"id": "error-work-queue", "pattern": "(?i)work\\s*queue|\\b16,?000\\b"},
+    {"id": "validation-layers", "pattern": "(?i)fuzz|security\\s+review|test\\s+suite"},
+    {"id": "unsafe-refactor", "pattern": "(?i)unsafe\\s+(blocks?|audit|usage|code)|13,?365"}
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "meta": {
+    "query": "How did Bun port 530,000 lines of Zig to Rust in 11 days using a Claude Code agent harness? Cover the harness design: git worktree sharding across parallel dynamic workflows, the PORTING.md rule file and LIFETIMES.tsv lifetime analysis artifact, separating implementer agents from adversarial reviewer agents with isolated context, turning 16,000 compile errors into a work queue, and the validation layers (test suite, security review, fuzzing) beyond test coverage.",
+    "budget_respected": true,
+    "max_depth_reached": 1,
+    "pruned_count": 1,
+    "node_count": 4
+  },
+  "nodes": [
+    {"id": "n0", "depth": 0, "status": "ANSWERED", "question": "How did Bun port its Zig codebase to Rust in 11 days?", "answer": "Excluding comments, Bun is 535,496 lines of Zig, ported over 11 days using about 50 dynamic workflows in Claude Code with 6,502 commits; press coverage counted 960,000 to 1,009,257 total migrated lines including generated Rust."},
+    {"id": "n1", "depth": 1, "status": "ANSWERED", "question": "How was the work sharded?", "answer": "The port was split into 4 worktrees each running 16 claudes for 64 claudes total; at peak Claude wrote about 1,300 lines of code per minute.", "sources": ["https://bun.com/blog/bun-in-rust"]},
+    {"id": "n2", "depth": 1, "status": "ANSWERED", "question": "How were compile errors handled and validated?", "answer": "Fixing the cyclical dependencies revealed about 16,000 compiler errors, which cargo check wrote to a file grouped by crate and the workflow divvied up as a work queue; the merge landed on May 14, 2026 after 11 rounds of security review and 24/7 coverage-guided fuzzing.", "sources": ["https://bun.com/blog/bun-in-rust"]},
+    {"id": "n3", "depth": 1, "status": "ANSWERED", "question": "How were implementers and reviewers separated?", "answer": "Every line was reviewed by two separate adversarial reviewers with isolated context before committing; the implementer doesn't review and the reviewer doesn't implement, following the PORTING.md rule file and the LIFETIMES.tsv lifetime table across all 1,448 .zig files, after a trial run on 3 files first."}
+  ],
+  "citations": {
+    "1": "https://bun.com/blog/bun-in-rust",
+    "2": "https://bun.com/blog/bun-in-rust",
+    "3": "https://github.com/oven-sh/bun"
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "citations": {
+    "1": "https://www.postgresql.org/docs/current/sql-refreshmaterializedview.html",
+    "2": "https://stackoverflow.com/questions/29437650/how-can-i-ensure-that-a-materialized-view-is-always-up-to-date",
+    "3": "https://timilearning.com/posts/ddia/part-two/chapter-5/",
+    "4": "https://microservices.io/patterns/data/transactional-outbox.html",
+    "5": "https://authzed.com/zanzibar",
+    "6": "https://www.usenix.org/system/files/atc19-pang.pdf",
+    "7": "https://github.com/sraoss/pg_ivm",
+    "8": "https://bool.dev/blog/detail/how-to-store-hierarchical-data-in-db",
+    "9": "https://learn.microsoft.com/en-us/sql/relational-databases/hierarchical-data-sql-server?view=sql-server-ver17",
+    "10": "https://www.figma.com/blog/realtime-editing-of-ordered-sequences/",
+    "11": "https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html",
+    "12": "https://devguide.owasp.org/en/02-foundations/03-security-principles/",
+    "13": "https://www.reddit.com/r/SQL/comments/1puo2x6/materialized_path_or_closure_table_for/",
+    "14": "https://www.epsio.io/blog/postgres-refresh-materialized-view-a-comprehensive-guide",
+    "15": "https://dba.stackexchange.com/questions/255869/multiple-concurrent-refresh-materialized-view-how-to-manage"
+  },
+  "sources": [
+    {
+      "url": "https://www.postgresql.org/docs/current/sql-refreshmaterializedview.html",
+      "title": "PostgreSQL Documentation: REFRESH MATERIALIZED VIEW",
+      "snippet": "REFRESH MATERIALIZED VIEW completely replaces the contents of a materialized view. ... If WITH NO DATA is specified no new data is generated and the materialized view is left in an unscannable state. ... Refresh the materialized view without locking out concurrent selects on the materialized view. ... Even with this option only one REFRESH at a time may run against any one materialized view."
+    },
+    {
+      "url": "https://stackoverflow.com/questions/29437650/how-can-i-ensure-that-a-materialized-view-is-always-up-to-date",
+      "title": "How can I ensure that a materialized view is always up to date? (Stack Overflow)",
+      "snippet": "Even with CONCURRENTLY, one REFRESH still blocks another one, so any INSERT/UPDATE/DELETE on the involved tables will be serialized. ... This option is really good, specially with CONCURRENTLY option, but only if you can accept the data not being 100% up to date all the time."
+    },
+    {
+      "url": "https://timilearning.com/posts/ddia/part-two/chapter-5/",
+      "title": "Chapter 5 - Replication (notes on Kleppmann, Designing Data-Intensive Applications)",
+      "snippet": "If a client writes a value to a leader and tries to read that same value, the read request might go to an asynchronous follower that has not received the write yet as a result of replication lag. ... Another option is to keep track of the time of the update, and only read from followers whose last updated time is at least that. The timestamp could be a logical one, like a sequence of writes. ... Monotonic reads is a consistency level that guarantees that a user will not read older data after having previously read newer data."
+    },
+    {
+      "url": "https://microservices.io/patterns/data/transactional-outbox.html",
+      "title": "Pattern: Transactional outbox (microservices.io, Chris Richardson)",
+      "snippet": "The solution is for the service that sends the message to first store the message in the database as part of the transaction that updates the business entities. A separate process then sends the messages to the message broker. ... Messages are guaranteed to be sent if and only if the database transaction commits. ... The Message relay might publish a message more than once. ... As a result, a message consumer must be idempotent."
+    },
+    {
+      "url": "https://authzed.com/zanzibar",
+      "title": "Zanzibar: Google's Consistent, Global Authorization System (AuthZed annotated paper)",
+      "snippet": "Hence Zanzibar must provide two key consistency properties: external consistency and snapshot reads with bounded staleness. ... A Zanzibar client requests an opaque consistency token called a zookie for each content version, via a content-change ACL check when the content modification is about to be saved. ... The client sends this zookie in subsequent ACL check requests to ensure that the check snapshot is at least as fresh as the timestamp for the content version. ... the 'new enemy' problem, which can arise when we fail to respect the ordering between ACL updates or when we apply old ACLs to new content."
+    },
+    {
+      "url": "https://www.usenix.org/system/files/atc19-pang.pdf",
+      "title": "Zanzibar: Google's Consistent, Global Authorization System (USENIX ATC 2019, Pang et al.)",
+      "snippet": "Zookies in ACL read and check requests specify stateless bounds for snapshot reads, thus providing one of Zanzibar's core consistency properties. ... Its authorization decisions respect causal ordering of user actions and thus provide external consistency amid changes to access control list and object contents."
+    },
+    {
+      "url": "https://github.com/sraoss/pg_ivm",
+      "title": "sraoss/pg_ivm: Incremental View Maintenance (IVM) implementation as a PostgreSQL extension",
+      "snippet": "In immediate maintenance, views are updated in the same transaction that its base table is modified. In deferred maintenance, views are updated after the transaction is committed. ... Note that unpopulated IMMV is still scannable although the result is empty. This behaviour may be changed in future to raise an error when an unpopulated IMMV is scanned. ... when a large part of a base table is modified or large data is inserted into a base table, IVM is not effective and the cost of maintenance can be larger than refresh from scratch. In such situation, we can use refresh_immv function with with_data = false to disable immediate maintenance before modifying a base table."
+    },
+    {
+      "url": "https://bool.dev/blog/detail/how-to-store-hierarchical-data-in-db",
+      "title": "Store Hierarchical Data: SQL vs NoSQL Approaches (bool.dev)",
+      "snippet": "Nested Sets Pros: Very fast queries for deep trees. No recursion needed. Nested Sets Cons: Complex inserts and updates. ... Closure Table Pros: Fast queries for deep hierarchies. Supports flexible parent-child lookups. Closure Table Cons: Requires an extra table. Inserts and deletions involve multiple updates. ... Materialized Path Pros: Simple to implement. Fast reads using string pattern matching. Cons: Updates require rewriting affected paths."
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/sql/relational-databases/hierarchical-data-sql-server?view=sql-server-ver17",
+      "title": "Hierarchical data (SQL Server) - Microsoft Learn",
+      "snippet": "By using the GetDescendant (Database Engine) method, it's always possible to generate a sibling to the right of any given node, to the left of any given node, or between any two siblings. ... Changing the location of a row in a hierarchyid usage affects n rows, where n is number of nodes in the subtree being moved. ... Indexes on hierarchyid data types are in depth-first order, and nodes close to each other in a depth-first traversal are stored near each other."
+    },
+    {
+      "url": "https://www.figma.com/blog/realtime-editing-of-ordered-sequences/",
+      "title": "Realtime editing of ordered sequences (Figma Engineering, Evan Wallace)",
+      "snippet": "Every object has a real number as an index and the order of the children for an element of the tree is determined by sorting all children by their index. To insert between two objects, just set the index for the new object to the average index of the two objects on either side. We use arbitrary-precision fractions instead of 64-bit doubles so that we can't run out of precision after lots of edits. ... Drawbacks: Index length can grow over time."
+    },
+    {
+      "url": "https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html",
+      "title": "Authorization Cheat Sheet - OWASP Cheat Sheet Series",
+      "snippet": "Even when no access control rules are explicitly matched, the application cannot remain neutral when an entity is requesting access to a particular resource. The application must always make a decision, whether implicitly or explicitly, to either deny or permit the requested access. ... For security purposes an application should be configured to deny access by default. ... Verify the handling of exception and authorization failures. Ensure that such failures, no matter how unlikely, do not put the software into an unstable state that could lead to authorization bypass."
+    },
+    {
+      "url": "https://devguide.owasp.org/en/02-foundations/03-security-principles/",
+      "title": "Principles of security - OWASP Developer Guide",
+      "snippet": "For example unless an entity is given explicit access to an object, it should be denied access to that object by default. This is often described as 'Fail Safe' defaults."
+    },
+    {
+      "url": "https://www.reddit.com/r/SQL/comments/1puo2x6/materialized_path_or_closure_table_for/",
+      "title": "Materialized Path or Closure Table for hierarchical data (r/SQL)",
+      "snippet": "However, the closure table comes with real tradeoffs: Storage can blow up to O(n²) in the worst case."
+    },
+    {
+      "url": "https://www.epsio.io/blog/postgres-refresh-materialized-view-a-comprehensive-guide",
+      "title": "Postgres REFRESH MATERIALIZED VIEW: A Comprehensive Guide (Epsio)",
+      "snippet": "Stale Data: Even with automated refreshes, materialized views can become stale between refresh intervals, leading to outdated results."
+    },
+    {
+      "url": "https://dba.stackexchange.com/questions/255869/multiple-concurrent-refresh-materialized-view-how-to-manage",
+      "title": "Multiple concurrent REFRESH MATERIALIZED VIEW: how to manage? (DBA StackExchange)",
+      "snippet": "Unfortunately in such cases, only the latest query is of any relevance; all the previous queries consume processing time in vain to refresh stale data."
+    }
+  ]
+}

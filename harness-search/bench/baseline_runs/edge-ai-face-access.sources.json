@@ -1,0 +1,114 @@
+{
+  "citations": {
+    "1": "https://www.iso.org/standard/53227.html",
+    "2": "https://www.iso.org/standard/67381.html",
+    "3": "https://pages.nist.gov/frvt/html/frvt_pad.html",
+    "4": "https://www.ibeta.com/iso-30107-3-presentation-attack-detection-confirmation-letters/",
+    "5": "https://didit.me/blog/iso-30107-3-biometric-liveness-detection/",
+    "6": "https://www.supremainc.com/en/hardware/ai-powered-biometric-terminal-biostation-3-max.asp",
+    "7": "https://www.sdmmag.com/articles/105432-supremas-biostation-3-max-is-a-flagship-ai-biometric-terminal-for-identity-first-security",
+    "8": "https://www.idemia.com/facial-recognition-access-control",
+    "9": "https://hailo.ai/products/ai-accelerators/hailo-8-ai-accelerator/",
+    "10": "https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/nano-super-developer-kit/",
+    "11": "https://developer.nvidia.com/blog/nvidia-jetson-orin-nano-developer-kit-gets-a-super-boost/",
+    "12": "https://coral.ai/docs/edgetpu/faq/",
+    "13": "https://www.supremainc.com/en/hardware/new-door-access-experience-biostation3.asp",
+    "14": "https://www.marketsandmarkets.com/Market-Reports/facial-recognition-market-995.html",
+    "15": "https://www.grandviewresearch.com/industry-analysis/facial-recognition-market",
+    "16": "https://www.fortunebusinessinsights.com/industry-reports/facial-recognition-market-101061",
+    "17": "https://www.precedenceresearch.com/facial-recognition-market",
+    "18": "https://market.us/report/on-edge-face-matching-market/"
+  },
+  "sources": [
+    {
+      "url": "https://www.iso.org/standard/53227.html",
+      "title": "ISO/IEC 30107-1:2016 - Biometric presentation attack detection",
+      "snippet": "The purpose of ISO/IEC 30107-1 is to provide a foundation for PAD through defining terms and establishing a framework through which presentation attack events can be specified."
+    },
+    {
+      "url": "https://www.iso.org/standard/67381.html",
+      "title": "ISO/IEC 30107-3:2017 - Information technology — Biometric presentation attack detection — Part 3: Testing and reporting",
+      "snippet": "ISO/IEC 30107-3:2017 establishes: - principles and methods for performance assessment of presentation attack detection mechanisms; - reporting of testing results from evaluations of presentation attack detection mechanisms; - a classification of known attack types (in an informative annex). Outside the scope are: - standardization of specific PAD mechanisms; - detailed information about countermeasures (i.e. anti-spoofing techniques), algorithms, or sensors. [Status:] Withdrawn ... New version available: ISO/IEC 30107-3:2023"
+    },
+    {
+      "url": "https://pages.nist.gov/frvt/html/frvt_pad.html",
+      "title": "Face Analysis Technology Evaluation (FATE) PAD - NIST",
+      "snippet": "We have released NISTIR 8491 - Face Analysis Technology Evaluation (FATE) Part 10: Performance of Passive, Software-based Presentation Attack Detection (PAD) Algorithms. As described in this press release, the report quantifies the accuracy of 82 passive face PAD algorithms (software only, no hardware solutions) operating on conventional 2D imagery of various presentation attack instruments. ... A presentation attack (PA), as defined by the ISO/IEC 30107 standard on biometric presentation attack detection, is \"the presentation of an artefact or of human characteristics to a biometric capture subsystem in a fashion intended to interfere with system policy\". ... The goals of impersonation include trying to gain positive access privilege as someone else, for example, trying to unlock someone's cell phone or gain access to a facility. ... Some examples of known presentation attack instruments include ... \"replay\" attacks where the attacker is holding a photo or video of someone's face to the camera. ... This track is currently closed."
+    },
+    {
+      "url": "https://www.ibeta.com/iso-30107-3-presentation-attack-detection-confirmation-letters/",
+      "title": "ISO 30107-3 Presentation Attack Detection Test Methodology And Confirmation Letters - iBeta",
+      "snippet": "| Date of Letter | Vendor | PAD Level | Product tested | Version(s) tested | FNMR or BPCER limit | ... | 07/06/26 | Vega Fintech | Level 1 | Face Liveness Check | 2.0.16 (3) | 15% | ... | 06/05/26 | Legitimuz Tecnologia Ltda | Level 2 | Legitface | 1.0. | 15% |"
+    },
+    {
+      "url": "https://didit.me/blog/iso-30107-3-biometric-liveness-detection/",
+      "title": "ISO 30107-3: The Gold Standard for Biometric Liveness Detection - Didit",
+      "snippet": "Passive Liveness: This method relies on single-frame deep learning analysis to detect signs of liveness by examining images for artifacts and texture patterns that differentiate a real face from a spoof. It offers fast and convenient verification suitable for low-risk use cases. ... From printed photos to advanced deepfakes, presentation attacks (PAs) are evolving, making robust liveness detection an indispensable component of any secure identity verification process."
+    },
+    {
+      "url": "https://www.supremainc.com/en/hardware/ai-powered-biometric-terminal-biostation-3-max.asp",
+      "title": "BioStation 3 Max | Trust, engineered into every door | Suprema",
+      "snippet": "Infrared-based Live Face Detection and Live Finger Detection help block photos, screens, simple 3D masks, and fake fingerprints made from materials like rubber, paper, film, clay, or silicone. ... strong multi-factor options such as face + fingerprint or face + card, backed by robust spoof detection and hardened device security. ... Template on Mobile keeps biometric templates on the user's phone for on-device matching. ... MFA that combines face, card, PIN... to match security levels for high-risk zones."
+    },
+    {
+      "url": "https://www.sdmmag.com/articles/105432-supremas-biostation-3-max-is-a-flagship-ai-biometric-terminal-for-identity-first-security",
+      "title": "Suprema's BioStation 3 Max Is a Flagship AI Biometric Terminal for Identity-First Security - SDM Magazine",
+      "snippet": "Dual 2MP visual and IR cameras deliver liveness detection and anti-spoofing that hold up against printed photos, replay videos and 3D masks."
+    },
+    {
+      "url": "https://www.idemia.com/facial-recognition-access-control",
+      "title": "Facial recognition access control - IDEMIA",
+      "snippet": "Providing a premium access control experience with the VisionPass range. These facial recognition devices incorporate IDEMIA's latest spoofing detection mechanisms and are capable of coping with face changes (change of hairstyle, glasses, helmet, etc.). ... In 2020, IDEMIA launched VisionPass, a robust and reliable device that thwarts all kinds of spoofing attempts."
+    },
+    {
+      "url": "https://hailo.ai/products/ai-accelerators/hailo-8-ai-accelerator/",
+      "title": "AI Accelerator Hailo-8 For Edge Devices | Fully Integrated Memory - Hailo",
+      "snippet": "The Hailo-8 edge AI processor, featuring up to 26 tera-operations per second (TOPS), significantly outperforms all other edge processors. ... Hailo-8 is the only AI accelerator in the market today which takes a fundamentally different approach by integrating all required memory directly on the processor die. ... Unprecedented AI compute power of 26 Tera-Operations Per Second (TOPS). Best-in-class power efficiency with typical power consumption of 2.5W. ... Industrial: -40°C to 85°C. Automotive: -40°C to 105°C. ... AI frameworks: TensorFlow, TensorFlow Lite, Keras, PyTorch & ONNX."
+    },
+    {
+      "url": "https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/nano-super-developer-kit/",
+      "title": "Jetson Orin Nano Super Developer Kit - NVIDIA",
+      "snippet": "AI Performance: 67 INT8 TOPS. GPU: NVIDIA Ampere architecture with 1024 CUDA cores and 32 tensor cores. CPU: 6-core Arm Cortex-A78AE v8.2 64-bit CPU. Memory: 8GB 128-bit LPDDR5, 102 GB/s. Power: 7W–25W."
+    },
+    {
+      "url": "https://developer.nvidia.com/blog/nvidia-jetson-orin-nano-developer-kit-gets-a-super-boost/",
+      "title": "NVIDIA Jetson Orin Nano Developer Kit Gets a \"Super\" Boost - NVIDIA Developer Blog",
+      "snippet": "67 Sparse TOPs, a significant increase from the previous 40 Sparse TOPs. 102 GB/s of memory bandwidth, a significant leap from the previous 65 GB/s memory bandwidth. ... New reduced price of $249, down from $499. ... AI PERF: 67 TOPS (Sparse), 33 TOPS (Dense), 17 FP16 TFLOPs."
+    },
+    {
+      "url": "https://coral.ai/docs/edgetpu/faq/",
+      "title": "Frequently asked questions | Coral (Edge TPU)",
+      "snippet": "An individual Edge TPU can perform 4 trillion (fixed-point) operations per second (4 TOPS), using only 2 watts of power—in other words, you get 2 TOPS per watt. ... it can execute state-of-the-art mobile vision models such as MobileNet V2 at almost 400 FPS, in a power efficient manner. ... What machine learning frameworks does the Edge TPU support? TensorFlow Lite only."
+    },
+    {
+      "url": "https://www.supremainc.com/en/hardware/new-door-access-experience-biostation3.asp",
+      "title": "BioStation 3 | The New Door Access Experience | Suprema",
+      "snippet": "BioStation 3's NPU-optimized AI algorithm offers the highest standards in facial authentication accuracy and speed. ... Accurately and rapidly recognize moving faces in high-traffic areas within 0.2 seconds. ... Matching speed: Within 0.2 seconds. Live Face Detection: Supported. Max. User: 100,000. Max. Credential (1:N): Face: 50,000. CPU: 1.5GHz Quad Core. Memory: 32GB Flash + 4GB RAM. Camera: IR: 2M pixels, Visual: 2M pixels. IP rating: IP65. IK rating: IK06. Device: 370g. With ISO/IEC 42001, Suprema supports responsible AI governance across AI-powered biometric technologies. ISO/IEC 27001 and 27701 help protect biometric data and user privacy."
+    },
+    {
+      "url": "https://www.marketsandmarkets.com/Market-Reports/facial-recognition-market-995.html",
+      "title": "Facial Recognition Market Report 2026-2031 - MarketsandMarkets",
+      "snippet": "The facial recognition market is projected to reach USD 20.68 billion by 2031 from USD 10.02 billion in 2026, at a CAGR of 15.6% from 2026 to 2031. ... The rise of deepfakes and synthetic identities has created a challenge to facial recognition systems. ... There has been an increased investment in liveness detection and anti-spoofing solutions. ... NEC, AWS, and FacePhi are leading players in the facial recognition market. ... NEC (Japan), Thales (France), IDEMIA (France). ... September 2024: NEC launched a new facial recognition system capable of authenticating individuals in motion, processing up to 100 people per minute in high-traffic environments such as airports."
+    },
+    {
+      "url": "https://www.grandviewresearch.com/industry-analysis/facial-recognition-market",
+      "title": "Facial Recognition Market Size & Share Report, 2026-2033 - Grand View Research",
+      "snippet": "The global facial recognition market size was valued at USD 7.4 billion in 2025 and is projected to grow from USD 8.5 billion in 2026 to USD 19.6 billion by 2033, growing at a CAGR of 12.8% from 2026 to 2033. ... By application: Access control segment accounted for the largest share of 36.0%, in 2025. ... 3D segment held the largest market share, approximately 38.0%, in 2025."
+    },
+    {
+      "url": "https://www.fortunebusinessinsights.com/industry-reports/facial-recognition-market-101061",
+      "title": "Facial Recognition Market Size, Share | Growth Report [2034] - Fortune Business Insights",
+      "snippet": "The global facial recognition market size was valued at USD 8.83 billion in 2025 and is projected to grow from USD 10.13 billion in 2026 to USD 30.52 billion by 2034, exhibiting a CAGR of 14.80% during the forecast period."
+    },
+    {
+      "url": "https://www.precedenceresearch.com/facial-recognition-market",
+      "title": "Facial Recognition Market Size to Attain USD 36.75 Bn by 2035 - Precedence Research",
+      "snippet": "The global facial recognition market size is accounted at USD 9.30 billion in 2025 and predicted to increase from USD 10.69 billion in 2026 to approximately USD 36.75 billion by 2035."
+    },
+    {
+      "url": "https://market.us/report/on-edge-face-matching-market/",
+      "title": "On-Edge Face Matching Market Size, Share | CAGR of 22.6% - Market.us",
+      "snippet": "The Global On-Edge Face Matching Market generated USD 2.3 billion in 2025 and is predicted to register growth from USD 2.9 billion in 2026 to about USD 18.0 billion by 2035, recording a CAGR of 22.6% throughout the forecast span."
+    }
+  ]
+}

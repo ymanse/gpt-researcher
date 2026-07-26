@@ -1,0 +1,40 @@
+{
+  "id": "edge-ai-face-access",
+  "query": "edge AI face recognition for access control: anti-spoofing techniques, on-device inference hardware, and commercial market landscape 2026",
+  "category": "market-landscape",
+  "measure_pair": false,
+  "required_primary_domains": ["nist.gov", "iso.org", "nvidia.com"],
+  "facts": [
+    {"pattern": "(?i)ISO[/\\s-]?IEC[\\s-]?30107[-\\s]?3", "desc": "ISO/IEC 30107-3:2023 (Edition 2) is the standard for biometric presentation attack detection Part 3: Testing and reporting. https://www.iso.org/standard/79520.html"},
+    {"pattern": "(?i)(APCER|BPCER|attack\\s+presentation\\s+classification\\s+error)", "desc": "APCER/BPCER are the standardized PAD error metrics reported under ISO/IEC 30107-3. https://www.iso.org/standard/79520.html"},
+    {"pattern": "(?i)\\b(FRTE|FRVT|Face\\s+Recognition\\s+Technology\\s+Evaluation)\\b", "desc": "NIST's FRVT was split/rebranded into FRTE (Face Recognition Technology Evaluation) and FATE; it is the reference accuracy benchmark for face recognition algorithms. https://www.nist.gov/programs-projects/face-technology-evaluations-frtefate"},
+    {"pattern": "(?i)(FATE\\s+PAD|NIST\\s?IR\\s?8491|82\\s+(passive\\s+)?(software[- ]based\\s+)?(face\\s+)?PAD\\s+algorithms)", "desc": "NIST's FATE PAD track published NISTIR 8491 (Sept 2023) evaluating 82 passive software-based face PAD algorithms on conventional 2D imagery. https://pages.nist.gov/frvt/html/frvt_pad.html"},
+    {"pattern": "(?i)(print(ed)?\\s+photo|photo\\s+attack|paper\\s+print|replay\\s+attack|video\\s+replay|3[\\s-]?D\\s+(silicone\\s+)?mask)", "desc": "Known presentation attack instruments include printed photos, screen/video replay, and 3D masks, per the ISO/IEC 30107 attack taxonomy used by NIST FATE PAD. https://pages.nist.gov/frvt/html/frvt_pad.html"},
+    {"pattern": "(?i)(Hailo[\\s-]?8\\b[^0-9]{0,60}26\\s*TOPS|26\\s*TOPS[^.]{0,60}Hailo[\\s-]?8)", "desc": "Hailo-8 edge AI accelerator delivers up to 26 TOPS at ~2.5 W typical power with integrated on-chip memory. https://hailo.ai/products/ai-accelerators/hailo-8-ai-accelerator/"},
+    {"pattern": "(?i)(Jetson\\s+(AGX\\s+)?Orin[^0-9]{0,80}275\\s*(TOPS|trillion\\s+operations)|Orin\\s+Nano[^0-9]{0,60}67\\s*TOPS)", "desc": "NVIDIA Jetson Orin family spans up to 275 TOPS (AGX Orin); Orin Nano up to 67 TOPS — per NVIDIA's official spec table. https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/"},
+    {"pattern": "(?i)access\\s+control[^.]{0,120}(largest|dominant|dominat\\w*|36(\\.0)?\\s?%|leading\\s+application)", "desc": "Access control is the largest application segment of the facial recognition market (~36% of 2025 revenue per Grand View Research). https://www.grandviewresearch.com/industry-analysis/facial-recognition-market"}
+  ],
+  "traps": [
+    {"pattern": "(?i)ISO[/\\s-]?IEC[\\s-]?30107[-\\s]?1\\b[^0-9]{0,60}(APCER|BPCER|testing\\s+and\\s+reporting|test(ing)?\\s+metrics)", "desc": "Wrong part number: Part 1 is the framework; PAD testing/reporting and APCER/BPCER are defined in Part 3 (ISO/IEC 30107-3:2023). https://www.iso.org/standard/79520.html"},
+    {"pattern": "(?i)((?<!not )(?<!no )NIST[ -]certif(ied|ies|ication)|(?<!not )NIST[ -]approv(ed|es|al))", "desc": "Marketing falsehood: NIST FRTE/FATE evaluates and benchmarks algorithms but does not certify or approve products. https://www.nist.gov/programs-projects/face-technology-evaluations-frtefate"},
+    {"pattern": "(?i)Hailo[\\s-]?8\\b[^0-9]{0,40}\\b\\d{3,}\\s*TOPS", "desc": "Wrong magnitude: Hailo-8 is 26 TOPS, not hundreds of TOPS (confusion with datacenter-class accelerators). https://hailo.ai/products/ai-accelerators/hailo-8-ai-accelerator/"},
+    {"pattern": "(?i)(Orin\\s+Nano|Jetson\\s+Nano)[^0-9]{0,40}\\b(157|200|248|275)\\s*TOPS", "desc": "Spec mix-up: Jetson Orin Nano tops out at 67 TOPS; 275 TOPS is AGX Orin, 157 TOPS is Orin NX. https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-orin/"},
+    {"pattern": "(?i)(?<!no )(liveness\\s+detection|anti[- ]spoof\\w+|presentation\\s+attack\\s+detection|\\bPAD\\b)[^.]{0,40}\\b(guarantees?|is|are|provides?|offers?)\\s+(100\\s?%|foolproof|complete\\s+(protection|security)|total\\s+(protection|security))", "desc": "False absolutism: no PAD/liveness mechanism is 100% spoof-proof — NIST IR 8491 found varied, imperfect performance across 82 passive PAD algorithms. https://pages.nist.gov/frvt/html/frvt_pad.html"}
+  ],
+  "contested": [
+    {"topic": "2026 facial recognition market size", "values": ["(?i)(USD|US\\$|\\$)\\s?8\\.5\\s?(billion|bn|B\\b)", "(?i)(USD|US\\$|\\$)\\s?(9\\.95|10(\\.0?2)?)\\s?(billion|bn|B\\b)"], "desc": "Grand View Research: USD 8.5B in 2026 (https://www.grandviewresearch.com/industry-analysis/facial-recognition-market) vs Mordor Intelligence USD 9.95B (https://www.mordorintelligence.com/industry-reports/facial-recognition-market) and MarketsandMarkets USD 10.02B in 2026 (https://www.marketsandmarkets.com/Market-Reports/facial-recognition-market-995.html)."},
+    {"topic": "active vs passive liveness", "values": ["(?i)passive\\s+(liveness|authentication|face\\s+capture)", "(?i)(active\\s+liveness|challenge[- ]?response|blink|head\\s+movement|turn\\s+(your\\s+)?head)"], "desc": "Active challenge-response liveness (blink/turn-head) vs passive no-gesture liveness; iProov argues passive is more usable and harder to reverse-engineer (https://www.iproov.com/blog/passive-authentication-for-online-identity), while active challenge-response remains widely deployed."},
+    {"topic": "hardware 3D/IR vs software-only PAD", "values": ["(?i)(3[\\s-]?D|structured[- ]light|time[- ]of[- ]flight|(near[- ])?infrared|\\bIR\\b|depth)[-\\s](camera|sens\\w+|imaging)", "(?i)(software[- ](based|only)|passive,?\\s+software)[^.]{0,40}(PAD|liveness|anti[- ]spoof\\w*)"], "desc": "Hardware depth/IR sensing is favored for high-security deployments (3D held ~38% technology share in 2025 per Grand View Research) vs passive software-based PAD on 2D imagery — the class NIST IR 8491 evaluated (https://pages.nist.gov/frvt/html/frvt_pad.html)."}
+  ],
+  "coverage_areas": [
+    {"id": "pad-standards", "pattern": "(?i)ISO[/\\s-]?IEC[\\s-]?30107"},
+    {"id": "nist-benchmarks", "pattern": "(?i)\\b(NIST|FRTE|FRVT|FATE)\\b"},
+    {"id": "attack-vectors", "pattern": "(?i)(print(ed)?\\s+photo|photo\\s+attack|replay|3[\\s-]?D\\s+mask|deepfake|injection\\s+attack)"},
+    {"id": "liveness-anti-spoofing", "pattern": "(?i)(liveness|anti[- ]spoof\\w*|presentation\\s+attack\\s+detection|\\bPAD\\b)"},
+    {"id": "edge-ai-hardware", "pattern": "(?i)(\\bNPU\\b|\\bTOPS\\b|AI\\s+accelerator|Hailo|Jetson|edge\\s+AI\\s+(chip|processor|module|hardware))"},
+    {"id": "on-device-inference", "pattern": "(?i)(on[- ]device|at\\s+the\\s+edge|edge\\s+(inference|processing|comput\\w+))"},
+    {"id": "market-size-forecast", "pattern": "(?i)(market\\s+(size|share|growth|forecast|value)|CAGR|\\bbillion\\b)"},
+    {"id": "access-control-vendors", "pattern": "(?i)(access\\s+control|NEC|IDEMIA|Thales|Suprema|ZKTeco|HID\\s+Global|Alcatraz)"},
+    {"id": "injection-attacks", "pattern": "(?i)(digital|camera|video|virtual)\\s+injection|injection\\s+attacks?"}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "meta": {
+    "query": "How did Bun port 530,000 lines of Zig to Rust in 11 days using a Claude Code agent harness?",
+    "budget_respected": true,
+    "max_depth_reached": 0,
+    "pruned_count": 0,
+    "node_count": 1
+  },
+  "nodes": [
+    {"id": "n0", "depth": 0, "status": "ANSWERED", "question": "How was Bun rewritten?", "answer": "Bun is 535,496 lines of Zig ported in 11 days by 64 claudes."}
+  ],
+  "citations": {
+    "1": "https://example.com/bun-rewrite"
+  }
+}

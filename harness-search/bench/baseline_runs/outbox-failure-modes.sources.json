@@ -1,0 +1,60 @@
+{
+  "citations": {
+    "1": "https://microservices.io/patterns/data/transactional-outbox.html",
+    "2": "https://www.decodable.co/blog/revisiting-the-outbox-pattern",
+    "3": "https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/",
+    "4": "https://www.npiontko.pro/2025/05/19/outbox-pattern",
+    "5": "https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html",
+    "6": "https://event-driven.io/en/ordering_in_postgres_outbox/",
+    "7": "https://medium.com/@nustianrwp/the-transactional-outbox-pattern-a-rigorous-examination-for-distributed-systems-engineers-9c189836f470",
+    "8": "https://www.softwarecraftsperson.com/posts/2025-10-08-transactional-outbox-pattern/",
+    "9": "https://www.confluent.io/blog/dual-write-problem/"
+  },
+  "sources": [
+    {
+      "url": "https://microservices.io/patterns/data/transactional-outbox.html",
+      "title": "Pattern: Transactional outbox (microservices.io, Chris Richardson)",
+      "snippet": "The Message relay might publish a message more than once. It might, for example, crash after publishing a message but before recording the fact that it has done so. When it restarts, it will then publish the message again. As a result, a message consumer must be idempotent, perhaps by tracking the IDs of the messages that it has already processed."
+    },
+    {
+      "url": "https://www.decodable.co/blog/revisiting-the-outbox-pattern",
+      "title": "Revisiting the Outbox Pattern (Gunnar Morling, Decodable)",
+      "snippet": "The biggest challenge of this approach though, as pointed out by Martin Kleppmann, are its poor ordering semantics. If there are multiple transactions running in parallel, and each one emits an outbox message, it can't be guaranteed that the order of messages in the outbox table—e.g., designated by timestamps or a sequence field—is the same as the order of commits. This can have severe implications. When not being very careful, it can cause the relay to miss outbox messages, providing consumers with an incomplete feed of events."
+    },
+    {
+      "url": "https://debezium.io/blog/2019/02/19/reliable-microservices-data-exchange-with-the-outbox-pattern/",
+      "title": "Reliable Microservices Data Exchange With the Outbox Pattern (Debezium blog)",
+      "snippet": "This is to prevent any duplicate processing of events caused by the \"at least once\" semantics of this data pipeline. For instance it could happen that the Debezium connector or the consuming service fail before acknowledging the retrieval of a specific event with the source database or the messaging broker, respectively."
+    },
+    {
+      "url": "https://www.npiontko.pro/2025/05/19/outbox-pattern",
+      "title": "Transactional Outbox Pattern: From Theory to Production (Nazarii Piontko)",
+      "snippet": "As service scales horizontally - say, to 10, 15, or even 30 replicas - each instance runs its own copy of the relay logic. This results in redundant and overlapping polling, where all instances query the outbox table at regular intervals (even a modest 25-50ms). What initially seemed like a harmless background task becomes a storm of database queries."
+    },
+    {
+      "url": "https://docs.aws.amazon.com/prescriptive-guidance/latest/cloud-design-patterns/transactional-outbox.html",
+      "title": "Transactional outbox pattern - AWS Prescriptive Guidance",
+      "snippet": "Duplicate messages: The events processing service might send out duplicate messages or events, so we recommend that you make the consuming service idempotent by tracking the processed messages. Order of notification: Send messages or events in the same order in which the service updates the database."
+    },
+    {
+      "url": "https://event-driven.io/en/ordering_in_postgres_outbox/",
+      "title": "How Postgres sequences issues can impact your messaging guarantees (Oskar Dudycz, event-driven.io)",
+      "snippet": "So right now, we have two issues: we may have messages out of order, we may have gaps in ordering. [...] If we optimistically assume that the gaps were caused by rollbacks, we may lose messages."
+    },
+    {
+      "url": "https://medium.com/@nustianrwp/the-transactional-outbox-pattern-a-rigorous-examination-for-distributed-systems-engineers-9c189836f470",
+      "title": "The Transactional Outbox Pattern: A Rigorous Examination for Distributed Systems Engineers (Mubashar, Medium)",
+      "snippet": "A common production pitfall is the Silent Failure of the Dispatcher. The Relay process (or the CDC connector) can fail silently due to broker connectivity issues, expired credentials, or internal exceptions, yet the application continues to commit events to the Outbox. Without dedicated lag monitoring, the system can appear healthy while thousands of events pile up, leading to a massive recovery effort when the issue is finally discovered."
+    },
+    {
+      "url": "https://www.softwarecraftsperson.com/posts/2025-10-08-transactional-outbox-pattern/",
+      "title": "Transactional Outbox Pattern: A Practical Guide to Trade-offs (Software Craftsperson)",
+      "snippet": "The core requirement is simple: the database write and event publication should represent one logical change. If one succeeds and the other fails, downstream systems may observe incomplete state. [...] At-least-once delivery: Duplicate events are expected in failure scenarios, so consumers must handle replay safely."
+    },
+    {
+      "url": "https://www.confluent.io/blog/dual-write-problem/",
+      "title": "Understanding the Dual-Write Problem and Its Solutions (Confluent)",
+      "snippet": "A classic example is updating an application's database while pushing an event into a messaging system like Apache Kafka. If the database update succeeds but the write to Kafka fails, the system ends up in an inconsistent state."
+    }
+  ]
+}

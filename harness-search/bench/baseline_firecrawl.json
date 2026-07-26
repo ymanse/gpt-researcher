@@ -1,0 +1,62 @@
+{
+  "aggregate": {
+    "S1_pct": 80,
+    "S2_pct": 85,
+    "S3_pct": 0,
+    "S4_pct": 83,
+    "S5_pct": 89,
+    "S6_pct": 52
+  },
+  "queries": {
+    "bun-rust-port": {
+      "S1_pct": 100,
+      "S2_pct": 100,
+      "S3_pct": 0,
+      "S4_pct": 50,
+      "S5_pct": 86,
+      "S6_pct": 39,
+      "report": "bench/baseline_runs/bun-rust-port.md",
+      "scores": "bench/baseline_runs/bun-rust-port.scores.json"
+    },
+    "denorm-derived-table": {
+      "S1_pct": 87,
+      "S2_pct": 75,
+      "S3_pct": 0,
+      "S4_pct": 100,
+      "S5_pct": 89,
+      "S6_pct": 67,
+      "report": "bench/baseline_runs/denorm-derived-table.md",
+      "scores": "bench/baseline_runs/denorm-derived-table.scores.json"
+    },
+    "edge-ai-face-access": {
+      "S1_pct": 67,
+      "S2_pct": 75,
+      "S3_pct": 0,
+      "S4_pct": 100,
+      "S5_pct": 89,
+      "S6_pct": 19,
+      "report": "bench/baseline_runs/edge-ai-face-access.md",
+      "scores": "bench/baseline_runs/edge-ai-face-access.scores.json"
+    },
+    "outbox-failure-modes": {
+      "S1_pct": 89,
+      "S2_pct": 100,
+      "S3_pct": 0,
+      "S4_pct": 100,
+      "S5_pct": 90,
+      "S6_pct": 67,
+      "report": "bench/baseline_runs/outbox-failure-modes.md",
+      "scores": "bench/baseline_runs/outbox-failure-modes.scores.json"
+    },
+    "solid-state-battery": {
+      "S1_pct": 57,
+      "S2_pct": 75,
+      "S3_pct": 0,
+      "S4_pct": 67,
+      "S5_pct": 89,
+      "S6_pct": 67,
+      "report": "bench/baseline_runs/solid-state-battery.md",
+      "scores": "bench/baseline_runs/solid-state-battery.scores.json"
+    }
+  }
+}

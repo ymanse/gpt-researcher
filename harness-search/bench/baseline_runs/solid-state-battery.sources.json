@@ -1,0 +1,90 @@
+{
+  "citations": {
+    "1": "https://global.toyota/en/newsroom/corporate/39865919.html",
+    "2": "https://www.reuters.com/business/energy/japans-idemitsu-build-lithium-sulphide-plant-help-support-toyotas-ev-plans-2025-02-27/",
+    "3": "https://www.isi.fraunhofer.de/en/blog/themen/batterie-update/feststoffbatterien-markt-potenziale-herausforderungen-materialien-komponenten-zellkonzepte.html",
+    "4": "https://www.kla.com/advance/innovation/resolving-production-challenges-that-hinder-advancement-in-solid-state-batteries",
+    "5": "https://www.quantumscape.com/resources/blog/the-problem-with-sulfides/",
+    "6": "https://www.quantumscape.com/quantumscape-achieves-major-milestone-cobra-separator-process-enters-baseline-production/",
+    "7": "https://www.solidpowerbattery.com/investor-relations/investor-news/news-details/2024/Solid-Power-Full-Year-2023-Results-Reflect-Strong-Execution/default.aspx",
+    "8": "https://www.sec.gov/Archives/edgar/data/1844862/000155837025001874/sldp-20241231x10k.htm",
+    "9": "https://www.stocktitan.net/sec-filings/SLDP/8-k-solid-power-inc-reports-material-event-7c8434058f29.html",
+    "10": "https://www.idtechex.com/en/research-article/solid-state-battery-commercialization-mass-production-taking-off/32942",
+    "11": "https://www.fortunebusinessinsights.com/ev-solid-state-battery-market-115751",
+    "12": "https://www.grandviewresearch.com/industry-analysis/solid-state-battery-market",
+    "13": "https://ecm-tum.de/pubs/articles/10.1038_s41560-020-00759-5.pdf",
+    "14": "https://www.futuremarketsinc.com/the-global-solid-state-batteries-market-2026-2036/"
+  },
+  "sources": [
+    {
+      "url": "https://global.toyota/en/newsroom/corporate/39865919.html",
+      "title": "Idemitsu and Toyota Announce Beginning of Cooperation toward Mass Production of All-Solid-State Batteries for BEVs (Toyota Global Newsroom, Oct 12, 2023)",
+      "snippet": "Toyota will promote development of both all-solid-state batteries which sulfide solid electrolytes are used and BEV development in which the batteries are incorporated, and then will ensure market launch of BEVs with all-solid-state batteries in 2027-28. Sulfide solid electrolytes are characterized by softness and adhesiveness to other materials, which is suitable for battery mass production. Idemitsu and Toyota are world leaders in patent registration numbers relating to all-solid-state batteries and sulfide solid electrolytes; both companies have established a task force consisting of dozens of members. Idemitsu has also been developing production technologies of lithium sulfide which is an intermediate material for solid electrolytes, using by-products which are generated in the course of petroleum refining. (Related content on page: 'Sumitomo Metal Mining and Toyota Collaborate on Mass Production of Cathode Materials for All-Solid-State Batteries', Oct. 08, 2025.)"
+    },
+    {
+      "url": "https://www.reuters.com/business/energy/japans-idemitsu-build-lithium-sulphide-plant-help-support-toyotas-ev-plans-2025-02-27/",
+      "title": "Japan's Idemitsu to build lithium sulphide plant to help support Toyota's EV plans (Reuters, Feb 27, 2025)",
+      "snippet": "Idemitsu plans to complete the new plant by June 2027, with an estimated cost of 21.3 billion yen ($143 million). The facility will have a production capacity of 1,000 metric tons of lithium sulphide annually — enough to supply solid electrolyte for 50,000–60,000 EVs, Idemitsu Executive Officer Tetsuji Mishina told reporters at the Chiba refinery. \"A major challenge for global adoption of solid-state batteries is lowering solid electrolyte costs,\" Mishina said."
+    },
+    {
+      "url": "https://www.isi.fraunhofer.de/en/blog/themen/batterie-update/feststoffbatterien-markt-potenziale-herausforderungen-materialien-komponenten-zellkonzepte.html",
+      "title": "Solid-state batteries: Potential and challenges on the way to the mass market (Fraunhofer ISI Battery Update, Dec 27, 2023)",
+      "snippet": "Polymer electrolytes are inexpensive and easy to process, but have low ionic conductivities at room temperature and only low stability against high-potential cathode active materials. Sulfide electrolytes offer similarly high ionic conductivities as liquid electrolytes, but generally show limited (electro)chemical stability towards cathode and anode active materials. Oxide electrolytes show high (electro)chemical stability towards cathode and anode active materials, but are complex to process and have only low ionic conductivities. Both cell concepts (with a lithium or silicon anode) are considered promising and are expected on the market between 2025 and 2030. Oxide SSB will therefore initially come onto the market as hybrid (liquid/solid) cell concepts. Overall, the trend is towards hybridization of cell concepts. However, this cell concept must be operated at elevated temperatures in order to ensure sufficient ionic conductivity of the polymer electrolyte."
+    },
+    {
+      "url": "https://www.kla.com/advance/innovation/resolving-production-challenges-that-hinder-advancement-in-solid-state-batteries",
+      "title": "Resolving Production Challenges that Hinder Advancement in Solid-State Batteries (KLA Advance, Aug 2025)",
+      "snippet": "The solid electrolyte can be only 20 microns thick, introducing dimensions and standards new to the battery industry. Defectivity is a key barrier to reaching the solid-state battery HVM phase. SSBs consist of tens to hundreds of layers built or stacked on top of each other, with no redundancy. Dendrites can be caused by a variety of factors, including physical defects, material impurities, pinholes, cracks or uneven topography. Sulfide-based solid electrolytes, despite offering high ionic conductivity at room temperature, face significant interface issues and lithium dendrite growth. Oxide-based solid electrolytes, while mechanically and chemically stable, are difficult to process due to their brittleness and high sintering temperatures."
+    },
+    {
+      "url": "https://www.quantumscape.com/resources/blog/the-problem-with-sulfides/",
+      "title": "The Problem with Sulfides (QuantumScape blog, Jul 2, 2021)",
+      "snippet": "Samsung tested its sulfide-based separator batteries under 20-40 atmospheres of pressure, Solid Power reported testing at 70-90 atmospheres, and a lab at Harvard recently published test results with a sulfide separator at more than 750 atmospheres... anything over 10 atmospheres is likely to be impractical in an EV battery pack. One of the things sulfides react with is water, and when they come into contact with water or humidity, they produce a gas known as hydrogen sulfide. Keeping water away from sulfide materials during manufacturing is a serious, complex, and expensive challenge — even a small amount of humidity in the air can lead to deadly levels of hydrogen sulfide buildup."
+    },
+    {
+      "url": "https://www.quantumscape.com/quantumscape-achieves-major-milestone-cobra-separator-process-enters-baseline-production/",
+      "title": "QuantumScape Achieves Major Milestone: Cobra Separator Process Enters Baseline Production (QuantumScape press release, Jun 24, 2025)",
+      "snippet": "Cobra forms the foundation of QS's high-throughput, continuous-flow separator production platform. Compared to the prior-generation Raptor process, Cobra offers a ~25x improvement in heat treatment speed and occupies a fraction of the physical space per film start – key advantages in the design of a scalable gigafactory production line. With Cobra in place as the new baseline, QS will continue to improve its production speed, efficiency and scalability, laying the groundwork for higher-volume B1 sample production."
+    },
+    {
+      "url": "https://www.solidpowerbattery.com/investor-relations/investor-news/news-details/2024/Solid-Power-Full-Year-2023-Results-Reflect-Strong-Execution/default.aspx",
+      "title": "Solid Power Full Year 2023 Results Reflect Strong Execution (Solid Power investor news, Feb 27, 2024)",
+      "snippet": "Achieved electrolyte production capability of 1.1 metric tons per month. On the cell side, our team successfully delivered A-1 Sample cells in October, formally entering the automotive qualification process after overcoming yield and supply chain challenges early in the year. Solid Power's business model – selling its electrolyte to cell manufacturers and licensing its cell designs and manufacturing processes – distinguishes the company from many of its competitors who plan to be commercial battery manufacturers."
+    },
+    {
+      "url": "https://www.sec.gov/Archives/edgar/data/1844862/000155837025001874/sldp-20241231x10k.htm",
+      "title": "Solid Power, Inc. Annual Report on Form 10-K for fiscal year ended December 31, 2024 (SEC EDGAR)",
+      "snippet": "Through this multi-year capital improvement project, we plan to significantly increase our annual production capacity, first to 75 metric tons in 2026 and then to 140 metric tons in 2028, in order to meet anticipated demand. After validation, SK On is required to purchase at least eight metric tons of electrolyte from Solid Power through 2030, which it will use in advancing its cell technologies."
+    },
+    {
+      "url": "https://www.stocktitan.net/sec-filings/SLDP/8-k-solid-power-inc-reports-material-event-7c8434058f29.html",
+      "title": "Solid Power posts June 2026 investor update | SLDP 8-K (StockTitan summary of SEC filing)",
+      "snippet": "The company currently targets 30 metric tons of annual pilot electrolyte capacity from two lines. It expects to reach 75 metric tons of annual capacity by year-end 2026 through installing a continuous manufacturing pilot line and validating higher-throughput wet-process production."
+    },
+    {
+      "url": "https://www.idtechex.com/en/research-article/solid-state-battery-commercialization-mass-production-taking-off/32942",
+      "title": "Solid-State Battery Commercialization: Mass Production Taking Off (IDTechEx research article, Apr 7, 2025)",
+      "snippet": "ProLogium Technology operates the world's first gigafactory for solid-state lithium ceramic batteries in Taoyuan, Taiwan. This facility began supplying automakers in 2024 and features innovative manufacturing technologies, such as continuous wet coating for solid electrolytes. The gigafactory has achieved a production efficiency 2.6 times greater than ProLogium's earlier facilities. Samsung SDI plans to achieve mass production of all-solid-state batteries by 2027. ION Storage Systems... expected to produce 1 MWh of battery cells, scaling up to 10 MWh by early 2025 and aiming for 500 MWh capacity by 2028. Solid Power operates a roll-to-roll production line in Colorado... Solid Power plans to scale up its operations and achieve full mass production by 2030. [Hyundai] Partial mass production is expected by 2027, with full-scale operations targeted for 2030. New material/component selection and change of manufacturing procedures indicate a reshuffle of the battery supply chain, such as lithium metal anode, silicon anode, and solid-state electrolyte. Blue Solutions has been manufacturing polymer SSBs for a long time, offering SSB products for EVs. South Korea's major battery manufacturers - SK Innovation, LG Chem, and Samsung SDI - are collaborating on next-generation battery research. The rapid pace of innovation suggests that many of these obstacles might be addressed within this decade."
+    },
+    {
+      "url": "https://www.fortunebusinessinsights.com/ev-solid-state-battery-market-115751",
+      "title": "EV Solid State Battery Market Size, Share | Forecast [2026-2034] (Fortune Business Insights)",
+      "snippet": "September 2024: Japan's METI validates Toyota's plan to begin solid-state battery production by 2026, with mass production projected around 2030. It cites potential 1,000 km range and 10-minute charging claims in early narratives, plus a gradual scale-up through 2027-2028. February 2025: BYD targeted solid-state batteries by 2027, framing it as a next step beyond current lithium-ion... with commercialization pacing dependent on scaling, validation, and cost reduction across supply chains. In February 2026, FAW achieved 500 Wh/kg energy density using a low-cost hybrid lithium-manganese solid-state battery pack, enabling 500 miles of range. In January 2026, Idemitsu Kosan announced plans to construct a pilot facility to manufacture sulfide-based solid electrolytes for Toyota's EV solid-state batteries."
+    },
+    {
+      "url": "https://www.grandviewresearch.com/industry-analysis/solid-state-battery-market",
+      "title": "Solid State Battery Market Size & Share Report, 2026-2033 (Grand View Research)",
+      "snippet": "In November 2025, QuantumScape announced the successful validation of its next-generation 24-layer prototype cell through third-party automotive testing, demonstrating consistent fast-charging capability from 10% to 80% in under 15 minutes. In October 2025, Solid Power expanded its sulfide-based electrolyte production line, increasing output capacity to support multiple automakers conducting B-sample cell testing for upcoming EV platforms. In September 2025, Toyota confirmed progress toward mass-production feasibility by completing in-vehicle testing of its solid-electrolyte battery pack designed for long-range performance models, achieving a projected driving range of more than 1,000 km per charge under controlled test conditions."
+    },
+    {
+      "url": "https://ecm-tum.de/pubs/articles/10.1038_s41560-020-00759-5.pdf",
+      "title": "Processing thin but robust electrolytes for solid-state batteries (Nature Energy review, mirrored PDF)",
+      "snippet": "The widespread adoption of high-energy-density solid-state batteries (SSBs) requires cost-effective processing and the integration of solid electrolytes of about the same thickness as the polymer-membrane separators found in conventional lithium-ion [batteries]. high sintering temperature (~1,000 °C). meeting the desired processing costs of <US$4 m−2 requires the establishment of inexpensive, large-scale [processing]... a transition from solid electrolytes processed as pellets, mainly serving as model systems, to cost-effective film manufacturing targeting a thickness of <20 µm."
+    },
+    {
+      "url": "https://www.futuremarketsinc.com/the-global-solid-state-batteries-market-2026-2036/",
+      "title": "The Global Solid-State Batteries Market 2026-2036 (Future Markets, Inc.)",
+      "snippet": "The global solid-state battery market is projected to grow at compound annual growth rates of 33–57% through 2036, driven by the convergence of electric vehicle demand, consumer electronics miniaturisation, aviation electrification, and the urgent need for safer, higher-density energy storage solutions. Major automakers including Toyota, Samsung SDI, CATL, BYD, and Volkswagen have committed billions to solid-state battery development, with mass production timelines converging on 2027–2028."
+    }
+  ]
+}

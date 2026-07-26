@@ -1,0 +1,36 @@
+{
+  "citations": {
+    "1": "https://bun.com/blog/bun-in-rust",
+    "2": "https://simonwillison.net/2026/Jul/8/rewriting-bun-in-rust/",
+    "3": "https://www.theregister.com/devops/2026/07/14/zig-creator-calls-buns-claude-rust-rewrite-unreviewed-slop/5270743",
+    "4": "https://blog.pragmaticengineer.com/the-pulse-what-can-we-learn-from-buns-rapid-rust-rewrite-with-ai/",
+    "5": "https://www.developersdigest.tech/blog/bun-rust-rewrite-agent-fleet-case-study"
+  },
+  "sources": [
+    {
+      "url": "https://bun.com/blog/bun-in-rust",
+      "title": "Rewriting Bun in Rust | Bun Blog (Jarred Sumner, July 8, 2026)",
+      "snippet": "Historically, rewrites are a terrible idea. Excluding comments, Bun is 535,496 lines of Zig. ... I rewrote Bun in Rust using about 50 dynamic workflows in Claude Code run continuously over the course of 11 days. ... At peak, we were running 4 of these workflows at once each in a separate worktree, each with 16 Claudes per workflow. About 64 Claudes at a time. ... 1 implementer, 2 or more adversarial reviewers per implementer. The reviewer's only job: find bugs & reasons why the code does not work. The implementer doesn't review. The reviewer doesn't implement. ... Claude serialized this discussion into a PORTING.md document ... serialize into a LIFETIMES.tsv for other claudes to look at. ... Fixing the cyclical dependencies revealed about 16,000 compiler errors. A massive number for 1 human, but not a crazy number for 64 claudes at once. ... Two days after the first CI run, the failing list was down from 972 test files to 23. ... 6,502 commits ... Peak hour: 695 commits ... the diff that landed was +1,009,272. ... 0 tests skipped or deleted ... Debian 13 x64 | 1,386,826 | 60,624 | 4,174 ... Pre-merge, this took 5.9 billion uncached input tokens, 690 million output tokens, and 72 billion cached input token reads — around $165,000 at API pricing. ... Since merging the Rust port, we've completed 11 rounds of security review from Claude Code Security and addressed the findings. We've also added 24/7 coverage-guided fuzzing of every parser in Bun ... So far, it's executed our parsers 100 billion times which has led to around 15 PRs. ... This rewrite introduced 19 known regressions, each of which has been fixed. ... about 4% of Bun's Rust code sits inside an unsafe block (~13,000 unsafe keywords across ~27,000 lines / ~780,000 lines) ... Bun v1.4.0 fixes 128 bugs that reproduce in v1.3.14. ... at peak Claude wrote about 1,300 lines of code per minute ... one Claude ran git stash before committing. Another ran git stash pop. And then git reset HEAD --hard. They were stepping on each other! ... I split it into just 4 workflow shards each with their own worktree (4 worktrees total), each running 16 claudes committing and pushing files. ... its context: only the diff. told to assume the code is wrong. ... Claude Code's dynamic workflows kept 64 Claudes running for 11 days (I would've had to write my own harness to pull this off otherwise)."
+    },
+    {
+      "url": "https://simonwillison.net/2026/Jul/8/rewriting-bun-in-rust/",
+      "title": "Rewriting Bun in Rust - Simon Willison's Weblog (July 8, 2026)",
+      "snippet": "This is a detailed description of an extremely sophisticated piece of agentic engineering, featuring dynamic workflows, trial runs, adversarial review and all sorts of other interesting tricks. ... A crucial enabling factor for the rewrite was that the Bun test suite was written in TypeScript, which meant it could act as a conformance suite. ... Claude Code v2.1.181 (released June 17th) and later use the Rust port of Bun. Startup got 10% faster on Linux but otherwise, barely anyone noticed. Boring is good. ... Pre-merge, this took 5.9 billion uncached input tokens, 690 million output tokens, and 72 billion cached input token reads — around $165,000 at API pricing."
+    },
+    {
+      "url": "https://www.theregister.com/devops/2026/07/14/zig-creator-calls-buns-claude-rust-rewrite-unreviewed-slop/5270743",
+      "title": "Zig creator calls Bun's Claude Rust rewrite 'unreviewed slop' - The Register (July 13, 2026)",
+      "snippet": "The port took just 11 days and about $165,000 at API pricing. ... Rewriting 500,000 lines of Zig into another language would be a gargantuan undertaking if done by hand. ... He spun up about 50 dynamic Claude Code workflows, reaching a peak of about 1,300 lines of code per minute and generating over a million lines of Rust code. ... The Rust-based Bun was then subjected to Bun's exhaustive test suite of more than one million assertions. According to Sumner, it passed 100 percent of those tests across all supported platforms without skipping or deleting any. ... \"There's absolutely no way an engineer with that salary would've been able to achieve the milestones Claude did in 11 days,\" an impressed HashiCorp co-founder Mitchell Hashimoto noted on X. ... \"It's not sufficient to catch bugs in Zig code but it is sufficient to catch bugs in [a] million lines of unreviewed slop?\""
+    },
+    {
+      "url": "https://blog.pragmaticengineer.com/the-pulse-what-can-we-learn-from-buns-rapid-rust-rewrite-with-ai/",
+      "title": "The Pulse: What can we learn from Bun's rapid Rust rewrite with AI? - The Pragmatic Engineer (July 16, 2026)",
+      "snippet": "This guide is a 600-line file with instructions like: Ground rules: No tokio, rayon, hyper, async-trait, futures. No std::fs, std::net, std::process. Bun owns its event loop and syscalls. ... No async fn. Everything is callbacks + state machines, same as the Zig. ... Step #7: fix ~1,600 compiler errors (~12 hours). ... \"Fixing the cyclical dependencies revealed about 16,000 compiler errors. A massive number for 1 human, but not a crazy number for 64 Claude's at once.\" ... The parallel agents went to work, and completed the rewrite of 535,496 lines of Zig code over the course of two days. ... The whole process took 11 days, from planning to the finish. ... The rewrite cost a whopping $165,000 with API pricing. ... You need an extremely robust test suite, so when the test suite passes, you know it works."
+    },
+    {
+      "url": "https://www.developersdigest.tech/blog/bun-rust-rewrite-agent-fleet-case-study",
+      "title": "How Bun Coordinated 64 Concurrent Claude Agents to Port 535K Lines of Zig to Rust - Developers Digest (July 12, 2026)",
+      "snippet": "The headline numbers are wild: 535,496 lines of Zig, 6,502 commits, 11 days, one engineer. ... 64 was the peak concurrency, not the team size. ... This is the single most reusable pattern in the whole post. Reviewers are not collaborators. They are not asked to be balanced. They are prompted to be hostile, and a separate fixer agent applies their feedback. In the compiler-error phase this became a strict assembly line: \"1 fixes 2 review 1 applies,\" with commits landing per crate. ... Each phase has a machine-checkable exit condition. That is the quiet genius of the design: the agents never needed to judge their own success, because the compiler, the smoke tests, and 1.38 million expect() assertions did it for them. ... a GitHub issue reported that the codebase failed basic Miri checks and allowed undefined behavior in safe Rust. ... The fleet amplified an expert; it did not replace one."
+    }
+  ]
+}

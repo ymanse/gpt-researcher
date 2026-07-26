@@ -1,0 +1,59 @@
+# Edge AI Face Recognition for Access Control: Anti-Spoofing, On-Device Hardware, and the 2026 Market Landscape
+
+## Executive Summary
+
+Face recognition has become the leading contactless credential for physical access control, and by 2026 the competitive battleground has shifted from raw matching accuracy to two adjacent fronts: resistance to presentation attacks (spoofing) and the ability to run the entire pipeline — detection, liveness, matching — on the device itself. Standards bodies (ISO/IEC, NIST) now anchor how anti-spoofing is tested and reported; a maturing class of edge AI accelerators delivers tens of TOPS at single-digit watts; and market analysts, while disagreeing on absolute size, converge on double-digit growth with access control as the largest application segment. This report synthesizes standards, techniques, hardware specifications, and market data from primary sources.
+
+## 1. Presentation Attack Detection: Standards and Evaluation
+
+The vocabulary and test methodology for anti-spoofing are set by the ISO/IEC 30107 family. ISO/IEC 30107-1 provides "a foundation for PAD through defining terms and establishing a framework" for presentation attack events [1]. The testing part, ISO/IEC 30107-3:2017, "establishes principles and methods for performance assessment of presentation attack detection mechanisms" along with "reporting of testing results" and "a classification of known attack types"; notably, the 2017 edition is now Withdrawn, with a "New version available: ISO/IEC 30107-3:2023" — so vendors claiming "ISO 30107-3 compliance" should be asked which edition and which lab performed the test [2]. The standard deliberately excludes "detailed information about countermeasures (i.e. anti-spoofing techniques), algorithms, or sensors" — it standardizes measurement, not mechanisms [2].
+
+NIST frames the threat itself: a presentation attack is "the presentation of an artefact or of human characteristics to a biometric capture subsystem in a fashion intended to interfere with system policy," launched either for impersonation ("trying to gain positive access privilege as someone else, for example... gain access to a facility") or evasion [3]. NIST's FATE PAD track (formerly under FRVT) published NISTIR 8491 in September 2023, which "quantifies the accuracy of 82 passive face PAD algorithms (software only, no hardware solutions) operating on conventional 2D imagery of various presentation attack instruments" [3]. Known attack instruments include "'replay' attacks where the attacker is holding a photo or video of someone's face to the camera" [3]. The FATE PAD track is "currently closed" to new submissions as of this writing [3].
+
+In the commercial world, conformance is usually demonstrated through iBeta, a NIST-accredited lab that tests to ISO 30107-3 at two levels. iBeta's public confirmation-letter registry shows a steady stream of 2026 certifications — e.g., a "Level 1" letter for Vega Fintech's "Face Liveness Check" (07/06/26) and a "Level 2" letter for Legitimuz (06/05/26) — each with an "FNMR or BPCER limit" of 15% [4]. Level 1 covers low-cost paper/screen attacks; Level 2 adds sophisticated 3D masks. The operative metrics throughout are APCER (attack presentations wrongly accepted) and BPCER (bona fide presentations wrongly rejected), the trade-off every access-control deployment must tune.
+
+## 2. Liveness Detection Techniques
+
+Anti-spoofing approaches split along a software/hardware axis:
+
+- **Passive (software) liveness** "relies on single-frame deep learning analysis to detect signs of liveness by examining images for artifacts and texture patterns that differentiate a real face from a spoof," offering "fast and convenient verification suitable for low-risk use cases" [5]. This is the class NIST evaluated in NISTIR 8491 [3]. It is frictionless but historically weaker against high-quality 3D masks and emerging deepfake-assisted attacks — "from printed photos to advanced deepfakes, presentation attacks (PAs) are evolving" [5].
+- **Active liveness** asks the user to blink, turn, or smile; it raises attack cost but adds friction, which is why access-control terminals (where throughput matters) favor sensor-based passive methods instead.
+- **Multispectral / NIR imaging.** Dedicated terminals pair a visible-light camera with an infrared camera. Suprema's flagship BioStation 3 Max uses "Infrared-based Live Face Detection" to "help block photos, screens, simple 3D masks" [6]; trade coverage of the same device notes that "Dual 2MP visual and IR cameras deliver liveness detection and anti-spoofing that hold up against printed photos, replay videos and 3D masks" [7]. Skin reflects NIR differently from paper, LCD panels, and most mask materials, making this the workhorse technique for door terminals.
+- **3D depth sensing** (structured light, time-of-flight, stereo) defeats flat media outright by measuring facial geometry; IDEMIA's VisionPass range, launched "in 2020," is marketed as "a robust and reliable device that thwarts all kinds of spoofing attempts" using its multi-camera approach [8], and its devices "incorporate IDEMIA's latest spoofing detection mechanisms" while coping with "change of hairstyle, glasses, helmet, etc." [8].
+
+In practice, 2026-era access terminals fuse several of these: an RGB+IR camera pair, a CNN-based PAD model running on the NPU, and policy-level mitigations (multi-factor: face + card + PIN "to match security levels for high-risk zones" [6]).
+
+## 3. On-Device Inference Hardware
+
+Running recognition at the door — rather than streaming video to a server — cuts latency, keeps biometric templates local (a GDPR advantage), and removes the network as a failure point. Three hardware tiers dominate:
+
+**Dedicated edge NPUs.** The Hailo-8 accelerator delivers "up to 26 tera-operations per second (TOPS)" with "best-in-class power efficiency with typical power consumption of 2.5W" [9]. Its architectural differentiator is memory: "Hailo-8 is the only AI accelerator in the market today which takes a fundamentally different approach by integrating all required memory directly on the processor die," eliminating external DRAM [9]. It ships in industrial (-40°C to 85°C) and automotive (-40°C to 105°C) grades and M.2/PCIe form factors with TensorFlow, TFLite, ONNX, Keras, and PyTorch support [9] — a profile well matched to outdoor door terminals.
+
+**Embedded GPU modules.** NVIDIA's Jetson Orin Nano Super Developer Kit provides "67 INT8 TOPS" (sparse; 33 TOPS dense) from an "NVIDIA Ampere architecture with 1024 CUDA cores and 32 tensor cores," 8GB LPDDR5 at 102 GB/s, and a configurable "7W–25W" power envelope [10]. The Super refresh lifted performance from the previous "40 Sparse TOPs" via higher clocks at a "new reduced price of $249, down from $499" [11] — significant because it puts transformer-class face models (and even on-device VLM analytics) within reach of multi-door controllers, not just single readers.
+
+**Ultra-low-power ASICs.** Google's Coral Edge TPU "can perform 4 trillion (fixed-point) operations per second (4 TOPS), using only 2 watts of power—in other words, you get 2 TOPS per watt," running MobileNet-class vision models "at almost 400 FPS" [12]. It is TensorFlow Lite-only and INT8-quantized [12] — sufficient for classic face-embedding models, but a constraint for newer architectures.
+
+**Terminal-integrated SoCs.** Commercial readers embed NPU-capable SoCs directly. Suprema's BioStation 3 runs an "NPU-optimized AI algorithm" on a "1.5GHz Quad Core" CPU with "32GB Flash + 4GB RAM," matching faces "within 0.2 seconds," storing up to 100,000 users (50,000 face credentials for 1:N), with IP65/IK06 environmental ratings and IR + visual 2MP cameras [13]. This illustrates the design point: the whole biometric pipeline — capture, PAD, template matching against tens of thousands of identities — now fits in a 370 g wall-mounted device [13].
+
+A recurring caveat from the accelerator vendors themselves: peak TOPS is a marketing number; memory bandwidth, quantization support, and sustained thermals determine real face-pipeline throughput (Hailo's own literature argues "TOPS are not enough" [9]).
+
+## 4. Commercial Market Landscape 2026
+
+Analyst estimates for the overall facial recognition market diverge substantially and should be read side by side:
+
+| Source | 2026 estimate | Endpoint | CAGR |
+|---|---|---|---|
+| MarketsandMarkets | USD 10.02 B | USD 20.68 B by 2031 | 15.6% (2026–2031) [14] |
+| Grand View Research | USD 8.5 B | USD 19.6 B by 2033 | 12.8% (2026–2033) [15] |
+| Fortune Business Insights | USD 10.13 B | USD 30.52 B by 2034 | 14.80% (2026–2034) [16] |
+| Precedence Research | USD 10.69 B | ~USD 36.75 B by 2035 | — [17] |
+
+MarketsandMarkets states "the facial recognition market is projected to reach USD 20.68 billion by 2031 from USD 10.02 billion in 2026, at a CAGR of 15.6%" [14]; Grand View sizes 2025 at "USD 7.4 billion" growing "from USD 8.5 billion in 2026 to USD 19.6 billion by 2033... at a CAGR of 12.8%" [15]; Fortune Business Insights sees growth "from USD 10.13 billion in 2026 to USD 30.52 billion by 2034, exhibiting a CAGR of 14.80%" [16]; Precedence puts 2025 at "USD 9.30 billion" rising to "USD 10.69 billion in 2026" [17]. The spread (roughly $8.5–10.7 B for 2026) reflects differing scope (hardware vs. software vs. services) — but all four agree on low-to-mid-teens growth.
+
+Two segment findings matter for access control specifically. Grand View reports the "access control segment accounted for the largest share of 36.0%, in 2025," and that the "3D segment held the largest market share, approximately 38.0%, in 2025" [15] — depth-capable, spoof-resistant capture is where the money already is. For the edge-specific slice, Market.us sizes the on-edge face matching market at "USD 2.3 billion in 2025," growing "from USD 2.9 billion in 2026 to about USD 18.0 billion by 2035, recording a CAGR of 22.6%" [18] — a materially faster growth rate than the overall market, consistent with the shift of inference from server to device.
+
+**Vendor landscape.** "NEC, AWS, and FacePhi are leading players in the facial recognition market" per MarketsandMarkets' 2026 assessment, alongside profiled leaders NEC (Japan), Thales (France), and IDEMIA (France) [14]. In dedicated access-control terminals, the visible leaders are Suprema (BioStation 3 / BioStation 3 Max, with ISO/IEC 42001, 27001 and 27701 certifications positioned as "responsible AI governance" differentiators [13]) and IDEMIA (VisionPass / VisionPass SP) [8]. Notable demand-side signals: NEC launched a walkthrough system "processing up to 100 people per minute in high-traffic environments such as airports" [14], and analysts flag that "the rise of deepfakes and synthetic identities has created a challenge," driving "increased investment in liveness detection and anti-spoofing solutions" [14].
+
+## 5. Outlook
+
+Three dynamics define 2026. First, PAD is becoming a certification checkbox: iBeta Level 1/2 letters and ISO 30107-3:2023 language now appear in access-control RFPs, and the deepfake threat is pushing investment beyond legacy print/replay defenses [14][5]. Second, the hardware floor keeps rising — 26 TOPS at 2.5 W (Hailo-8 [9]) or 67 TOPS at $249 (Orin Nano Super [10][11]) means multi-model pipelines (detection + PAD + matching + analytics) run comfortably at the door, and terminal vendors increasingly market the NPU itself [13]. Third, edge-resident matching is growing roughly twice as fast as the overall market (22.6% vs. 12.8–15.6% CAGR [18][15][14]), propelled by privacy regulation (on-device templates, Suprema's "Face Template on Mobile" keeping "biometric templates on the user's phone" [6]) as much as by latency. Buyers should weight ISO 30107-3:2023-tested PAD, IR/3D sensor fusion, and on-device template storage over headline TOPS or matching-speed claims.

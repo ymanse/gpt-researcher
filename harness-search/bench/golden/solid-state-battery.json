@@ -1,0 +1,40 @@
+{
+  "id": "solid-state-battery",
+  "query": "solid-state battery supply chain: manufacturing bottlenecks and key players",
+  "category": "contested-forecast",
+  "measure_pair": false,
+  "required_primary_domains": ["quantumscape.com", "global.toyota", "samsungsdi.com"],
+  "facts": [
+    {"pattern": "(?i)(sulfide|sulphide)[\\s\\S]{0,200}?(hydrogen\\s+sulfide|H2S|H₂S)", "desc": "Sulfide solid electrolytes react with moisture/air to generate toxic H2S, forcing dry-room or inert-atmosphere processing. https://publications.anl.gov/anlpubs/2024/10/192209.pdf ; https://pubs.acs.org/doi/10.1021/acsaem.3c02888"},
+    {"pattern": "(?i)(lithium[- ]metal[\\s\\S]{0,120}?dendrites?|dendrites?[\\s\\S]{0,120}?(lithium|short[- ]?circuit|separator|anode))", "desc": "Lithium-metal anodes require a separator resistant to dendrites — lithium formations that can short-circuit the cell. https://www.quantumscape.com/battery-technology/"},
+    {"pattern": "(?i)QSE[- ]?5", "desc": "QuantumScape's first planned commercial product QSE-5 (~5 Ah): B samples began shipping Oct 2024 with 844 Wh/L and 10-80% fast charge in 12.2 min. https://www.quantumscape.com/quantumscape-releases-next-generation-solid-state-battery-separator-equipment-cobra/"},
+    {"pattern": "(?i)(Toyota[\\s\\S]{0,200}?Idemitsu|Idemitsu[\\s\\S]{0,200}?Toyota)", "desc": "Toyota and Idemitsu Kosan agreed (Oct 12, 2023) to co-develop mass-production technology and a supply chain for sulfide solid electrolytes, targeting all-solid-state BEV commercialization in 2027-28. https://global.toyota/en/newsroom/corporate/39865919.html"},
+    {"pattern": "(?i)Samsung\\s*SDI[\\s\\S]{0,300}?(S[- ]?Line|pilot|Suwon|2027)", "desc": "Samsung SDI launched Korea's first all-solid-state 'S-Line' pilot line at Suwon (Mar 2022), supplied samples in 2023, targets 900 Wh/L with mass production in 2027. https://news.samsungsdi.com/global/articleView?seq=203"},
+    {"pattern": "(?i)(separator|electrolyte)[\\s\\S]{0,160}?(film|production|process|manufactur\\w+)[\\s\\S]{0,160}?(scale|bottleneck|gigawatt|GWh)|Cobra|Raptor", "desc": "Ceramic separator/electrolyte film production at scale is the key bottleneck: QuantumScape's Raptor->Cobra heat-treatment equipment (installed Dec 2024) is 'the core innovation' for gigawatt-hour scale manufacturing. https://www.quantumscape.com/quantumscape-releases-next-generation-solid-state-battery-separator-equipment-cobra/"},
+    {"pattern": "(?i)(PowerCo|Volkswagen)[\\s\\S]{0,160}?(QuantumScape|licens\\w+|40\\s?GWh)|40\\s?GWh[\\s\\S]{0,80}?(80\\s?GWh|expand\\w+)", "desc": "Volkswagen's PowerCo signed a non-exclusive license (Jul 11, 2024) to mass-produce QuantumScape's technology — up to 40 GWh/yr, expandable to 80 GWh. https://www.quantumscape.com/powerco-and-quantumscape-announce-landmark-agreement-to-industrialize-solid-state-batteries/"},
+    {"pattern": "(?i)Solid\\s+Power[\\s\\S]{0,240}?((sulfide|sulphide)|electrolyte\\s+(production|supply)|SK\\s?On|BMW)", "desc": "Solid Power centers on sulfide-based solid electrolyte production (second Denver-area facility: up to 30 t/yr, 25x throughput increase) and supplying/licensing partners incl. SK On and BMW. https://www.solidpowerbattery.com/about/history/default.aspx"}
+  ],
+  "traps": [
+    {"pattern": "(?i)solid[- ]state[\\s\\S]{0,100}?\\b(?:is|are)\\s+(?:already|now|currently)\\s+(?:in\\s+)?(?:widespread\\s+|full[- ]scale\\s+)?mass[- ]produc\\w+", "desc": "False: no automotive all-solid-state battery is in mass production; the industry is at pilot/B-sample stage (Toyota targets 2027-28, Samsung SDI 2027). Affirmative-form regex avoids matching 'not yet in mass production'."},
+    {"pattern": "(?i)(Toyota(?:'s)?[^.]{0,40}?\\b(?:partner(?:ed|ship|ing)?|joint\\s+venture|alliance)\\b[^.]{0,40}?QuantumScape|QuantumScape[^.]{0,40}?\\b(?:partner\\w*|joint\\s+venture)\\b[^.]{0,40}?Toyota)", "desc": "Wrong pairing: QuantumScape's automotive partner is Volkswagen/PowerCo, not Toyota; Toyota's electrolyte partner is Idemitsu."},
+    {"pattern": "(?i)(QuantumScape'?s?\\s+(?:proprietary\\s+)?(?:sulfide|sulphide)[- ](?:based\\s+)?(?:solid\\s+)?electrolyte|QuantumScape[^.]{0,40}?\\buses?\\s+(?:a\\s+)?(?:sulfide|sulphide))", "desc": "Wrong chemistry-company pairing: QuantumScape uses a proprietary oxide ceramic separator and explicitly contrasts itself with sulfide approaches. https://www.quantumscape.com/resources/blog/the-problem-with-sulfides/"},
+    {"pattern": "(?i)(sulfide|sulphide)[- ](?:based\\s+)?(?:solid\\s+)?electrolytes?\\s+(?:are|is)\\s+(?:air[- ]stable|stable\\s+in\\s+(?:ambient|humid|moist)\\s+air|safe\\s+to\\s+handle\\s+in\\s+(?:open|ambient)\\s+air)", "desc": "False: sulfide electrolytes hydrolyze in ambient air to toxic H2S and require dry-room handling. Negated phrasing ('are not air-stable') does not match."},
+    {"pattern": "(?i)(?:ten|10)\\s*(?:x|times)\\s*(?:higher|greater|more|the)?\\s*energy\\s+densit", "desc": "Wrong magnitude: realistic solid-state gains are ~40-50% (Samsung SDI 900 Wh/L = +40%; QSE-5 844 Wh/L), never 10x."}
+  ],
+  "contested": [
+    {"topic": "commercialization timeline", "values": ["(?i)\\b2027(\\s?[–-]\\s?(20)?28)?\\b", "(?i)\\b2030s?\\b"], "desc": "Toyota-Idemitsu target BEV launch 2027-28 and Samsung SDI targets 2027 mass production (https://global.toyota/en/newsroom/corporate/39865919.html ; https://news.samsungsdi.com/global/articleView?seq=203), while analysts (e.g. IDTechEx) place meaningful mass adoption around 2030+ (https://www.idtechex.com/en/research-article/solid-state-battery-commercialization-mass-production-taking-off/32942)."},
+    {"topic": "energy density figures", "values": ["(?i)8[0-9]{2}\\s*Wh\\s*/?\\s*L", "(?i)900\\s*Wh\\s*/?\\s*L"], "desc": "QuantumScape's QSE-5 B sample measures 844 Wh/L, while Samsung SDI claims 900 Wh/L for its ASB; a balanced report cites both. https://www.quantumscape.com/quantumscape-releases-next-generation-solid-state-battery-separator-equipment-cobra/ ; https://news.samsungsdi.com/global/articleView?seq=203"},
+    {"topic": "electrolyte chemistry route", "values": ["(?i)(sulfide|sulphide)[- ](based|electrolyte)", "(?i)(oxide[- ](based|ceramic|electrolyte)|ceramic\\s+separator)"], "desc": "Toyota-Idemitsu, Samsung SDI and Solid Power bet on sulfide electrolytes, while QuantumScape argues its oxide ceramic separator avoids sulfides' H2S hazard (https://www.quantumscape.com/resources/blog/the-problem-with-sulfides/)."}
+  ],
+  "coverage_areas": [
+    {"id": "sulfide-moisture-handling", "pattern": "(?i)(H2S|hydrogen\\s+sulfide|dry[- ]room|moisture[- ]sensitiv)"},
+    {"id": "lithium-metal-anode", "pattern": "(?i)(lithium[- ]metal\\s+(anode|batter)|dendrite)"},
+    {"id": "separator-film-scaleup", "pattern": "(?i)(separator[\\s\\S]{0,80}?(production|manufactur|film|scal)|Cobra|Raptor)"},
+    {"id": "player-quantumscape", "pattern": "(?i)(QuantumScape|QSE[- ]?5)"},
+    {"id": "player-toyota-idemitsu", "pattern": "(?i)(Toyota|Idemitsu)"},
+    {"id": "player-samsung-sdi", "pattern": "(?i)Samsung\\s*SDI"},
+    {"id": "player-solid-power", "pattern": "(?i)Solid\\s+Power"},
+    {"id": "commercialization-timeline", "pattern": "(?i)(20(2[6-9]|3[0-2]))[\\s\\S]{0,80}?(commercial|mass[- ]produc|launch|timeline)|(commercializ|mass[- ]produc)\\w*[\\s\\S]{0,80}?20(2[6-9]|3[0-2])"},
+    {"id": "lithium-foil-supply", "pattern": "(?i)anode[- ]free|lithium\\s+(metal\\s+)?foil"}
+  ]
+}
