@@ -88,8 +88,9 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-# matches "[1]" and comma-joined multi-id brackets like "[1, 3]" — LLMs emit both
-_CITE_ID_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+# matches "[1]", comma-joined "[1, 3]", and whitespace-padded "[ 1 ]" — LLM
+# rewrites emit all three; any variant this misses escapes the fail-closed strip
+_CITE_ID_RE = re.compile(r"\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]")
 
 
 def find_uncited_ids(report_md: str, citation_map: Dict[str, str]) -> List[str]:
