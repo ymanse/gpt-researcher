@@ -6,7 +6,7 @@ using the Tavily API.
 
 import json
 import os
-from typing import Literal, Optional, Sequence
+from typing import Literal, Sequence
 
 import requests
 
@@ -119,6 +119,10 @@ class TavilySearch:
             search_response = [
                 {"href": obj["url"], "body": obj["content"]} for obj in sources
             ]
+        except requests.HTTPError:
+            # HTTP failures (e.g. 432 rate limit) must surface so callers can
+            # route to a fallback retriever — swallowed, they read as "no results".
+            raise
         except Exception as e:
             print(f"Error: {e}. Failed fetching sources. Resulting in empty response.")
             search_response = []

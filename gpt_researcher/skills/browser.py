@@ -4,11 +4,15 @@ This module provides the BrowserManager class that handles web scraping
 and content extraction from URLs.
 """
 
+import logging
+
 from gpt_researcher.utils.workers import WorkerPool
 
 from ..actions.utils import stream_output
 from ..actions.web_scraping import scrape_urls
 from ..scraper.utils import get_image_hash
+
+logger = logging.getLogger(__name__)
 
 
 class BrowserManager:
@@ -44,6 +48,12 @@ class BrowserManager:
         Returns:
             list[dict]: list of scraped content results.
         """
+        if not urls:
+            logger.error(
+                "Scrape pass received 0 URLs — retrievers produced nothing to scrape"
+            )
+            return []
+
         if self.researcher.verbose:
             await stream_output(
                 "logs",
@@ -55,6 +65,10 @@ class BrowserManager:
         scraped_content, images = await scrape_urls(
             urls, self.researcher.cfg, self.worker_pool
         )
+        if not scraped_content:
+            logger.error(
+                f"Scrape pass yielded 0 pages from {len(urls)} URLs — every scrape failed"
+            )
         self.researcher.add_research_sources(scraped_content)
         new_images = self.select_top_images(images, k=4)  # Select top 4 images
         self.researcher.add_research_images(new_images)
@@ -77,7 +91,7 @@ class BrowserManager:
             await stream_output(
                 "logs",
                 "scraping_complete",
-                f"🌐 Scraping complete",
+                "🌐 Scraping complete",
                 self.researcher.websocket,
             )
 

@@ -7,9 +7,24 @@ various search retriever implementations.
 import importlib.util
 import logging
 import os
-import sys
+import re
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_wikipedia_lang(lang) -> str:
+    """Normalize a language or ddgs region code to a valid wikipedia language code.
+
+    ddgs regions come as "country-lang" ("us-en", "wt-wt"); wikipedia only needs
+    the lang segment. "wt" is ddgs's "worldwide" placeholder, not a language —
+    it builds https://wt.wikipedia.org, which does not resolve.
+    """
+    if not lang:
+        return "en"
+    lang = lang.lower().strip().split("-")[-1]
+    if lang == "wt" or not re.fullmatch(r"[a-z]{2,3}", lang):
+        return "en"
+    return lang
 
 async def stream_output(log_type, step, content, websocket=None, with_data=False, data=None):
     """

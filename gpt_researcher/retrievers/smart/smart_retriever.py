@@ -104,6 +104,11 @@ class SmartRetriever:
 
             results = self._execute_retrievers(retriever_configs)
             results = self._deduplicate_results(results)
+            if not results:
+                tried = {entry[0] for entry in retriever_configs}
+                results = self._deduplicate_results(
+                    self._fallback_search(tried, max_results)
+                )
             return results[:max_results]
         except Exception as e:
             logger.error(f"SmartRetriever failed: {e}")
@@ -125,7 +130,6 @@ class SmartRetriever:
             return "general_web"
 
         try:
-            import asyncio
             from gpt_researcher.utils.llm import create_chat_completion
 
             prompt = CLASSIFICATION_PROMPT.format(query=self.query)
@@ -180,6 +184,26 @@ class SmartRetriever:
                 logger.info(f"Skipping retriever '{name}': API key not configured")
 
         return available
+
+    # Tried in order when every routed retriever comes back empty (observed
+    # outage: tavily 432 across the whole route -> silent total loss).
+    _FALLBACK_ORDER = ("duckduckgo", "tavily", "bing")
+
+    def _fallback_search(self, tried, max_results):
+        """Route to a not-yet-tried retriever instead of returning nothing."""
+        for name in self._FALLBACK_ORDER:
+            if name in tried or not self._check_retriever_availability(name):
+                continue
+            logger.warning(
+                f"All routed retrievers returned 0 results; falling back to '{name}'"
+            )
+            results = self._run_single_retriever(name, max_results, {})
+            if results:
+                return results
+        logger.error(
+            f"Retriever fallback exhausted — no results for query: {self.query}"
+        )
+        return []
 
     def _check_retriever_availability(self, name):
         """Return True if the retriever's required API key is set (or not needed)."""
