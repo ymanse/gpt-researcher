@@ -32,6 +32,24 @@ return function(stage, next_node, checks)
   if not L.must(blob, '"health":200',
       "/health did not return 200 after recreate — check docker logs gptr-mcp-server") then return end
 
+  -- Freshness w.r.t. the CODE, recomputed in-gate: numbers must describe the
+  -- implementation currently on disk. Editing the implementation after measuring (or
+  -- re-scoring a cached tree the old code produced) can never reach the gate.
+  local fpout = L.popen("python scripts/code_fp.py", "code_fp.py")
+  if not fpout then return end
+  local fp = fpout:match("code_fp=(%x+)")
+  if not fp then
+    gralph.fail("code_fp.py printed no fingerprint — run `python scripts/code_fp.py` and fix what it reports")
+    return
+  end
+  if not blob:find('"code_fp":"' .. fp .. '"', 1, true) then
+    gralph.fail("s" .. stage .. " measure evidence was produced by DIFFERENT implementation bytes than " ..
+      "the ones on disk now (current code_fp=" .. fp .. ") — the implementation changed after the " ..
+      "measurement, so the numbers describe code that no longer exists. Re-run: python scripts/measure.py --stage " ..
+      stage .. " (it re-runs the live tree queries because the fingerprint moved)")
+    return
+  end
+
   if not checks(blob, L) then return end
   if not L.check_frozen() then return end
   if not L.check_commit(stage) then return end

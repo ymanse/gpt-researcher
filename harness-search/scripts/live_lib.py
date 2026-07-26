@@ -16,6 +16,7 @@ import time
 import urllib.request
 from datetime import timedelta
 
+import code_fp
 import hconf
 
 
@@ -116,18 +117,28 @@ def acquire_live_lock() -> None:
 
 
 def run_tree_cached(golden: dict, rnd: int, timeout_s: int = 5400) -> tuple[dict | None, str]:
-    """deep_tree_research for one golden query, cached per benchmark round.
+    """deep_tree_research for one golden query, cached per (round, golden, CODE VERSION).
 
-    Returns ({"tree": <path>, "report": <path>}, "") on success or (None, error). The
-    cache key is (round, golden id): a refit round MUST re-run live, earlier rounds never
-    re-run (resume after interruption is free).
+    Returns ({"tree": <path>, "report": <path>}, "") on success or (None, error).
+
+    The code fingerprint is part of the key, not just (round, id): an interrupted run
+    still resumes for free, but the moment the implementation changes the artifact is
+    re-run live. Without it, an agent that fixes the implementation re-scores the tree
+    the OLD code produced, the score never moves, and the gate becomes unsatisfiable —
+    the law-6 broken referee, measured on s2 round 0.
     """
     cdir = hconf.BENCH_RUNS / f"round{rnd}"
     cdir.mkdir(parents=True, exist_ok=True)
     tree_p = cdir / f"{golden['id']}.tree.json"
     rep_p = cdir / f"{golden['id']}.report.md"
-    if tree_p.exists() and rep_p.exists():
+    fp_p = cdir / f"{golden['id']}.codefp"
+    fp = code_fp.fingerprint()
+    if tree_p.exists() and rep_p.exists() and fp_p.exists() \
+            and fp_p.read_text(encoding="utf-8").strip() == fp:
         return {"tree": str(tree_p), "report": str(rep_p)}, ""
+    if tree_p.exists():
+        print(f"[measure] {golden['id']}: implementation changed since the cached run "
+              f"(code_fp {fp}) — re-running live", flush=True)
     try:
         res = mcp_call("deep_tree_research", {"query": golden["query"]}, timeout_s)
     except BaseException as e:  # noqa: BLE001 — evidence must record the real leaf error
@@ -139,6 +150,7 @@ def run_tree_cached(golden: dict, rnd: int, timeout_s: int = 5400) -> tuple[dict
     try:
         shutil.copyfile(tree_host, tree_p)
         shutil.copyfile(rep_host, rep_p)
+        fp_p.write_text(fp + "\n", encoding="utf-8")
     except OSError as e:
         return None, f"copy failed: {e}"
     return {"tree": str(tree_p), "report": str(rep_p)}, ""

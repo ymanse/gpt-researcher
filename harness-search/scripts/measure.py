@@ -27,6 +27,7 @@ import json
 import statistics
 import subprocess
 
+import code_fp
 import hconf
 import live_lib
 
@@ -76,7 +77,10 @@ def main() -> int:
     ok = live_lib.recreate()
     health = live_lib.wait_health() if ok else 0
     ev: dict = {"stage": n, "phase": "measure", "bench_round": rnd,
-                "recreated": bool(ok), "health": health, "queries_run": 0, "errors": []}
+                "recreated": bool(ok), "health": health, "queries_run": 0, "errors": [],
+                # the implementation these numbers describe; the gate recomputes it and
+                # rejects a mismatch, so evidence can never outlive the code it measured
+                "code_fp": code_fp.fingerprint()}
 
     if health == 200:
         if n == 1:
@@ -108,7 +112,12 @@ def main() -> int:
             if scores:
                 if n == 2:
                     ev["S1_min_pct"] = min(s.get("S1_pct", 0) for s in scores)
-                    ev["uncited_ids_total"] = sum(s.get("uncited_ids", 999) for s in scores)
+                    # uncited_ids is the list of unresolved [id]s (bench/score_report.py),
+                    # not a count -- sum its length, fail-closed to 999 if a score is missing it
+                    ev["uncited_ids_total"] = sum(
+                        len(s["uncited_ids"]) if isinstance(s.get("uncited_ids"), list) else 999
+                        for s in scores
+                    )
                 elif n == 3:
                     ev["traps_hit_total"] = sum(s.get("traps_hit", 999) for s in scores)
                 elif n == 4:

@@ -17,6 +17,16 @@ if ebr ~= br then
 end
 if not L.must(blob, '"recreated":true', "container must be force-recreated — rerun benchmark.py") then return end
 if not L.must(blob, '"health":200', "/health != 200 — check docker logs gptr-mcp-server") then return end
+-- the final contest must describe the implementation on disk right now (see measure_common)
+local fpout = L.popen("python scripts/code_fp.py", "code_fp.py")
+if not fpout then return end
+local fp = fpout:match("code_fp=(%x+)")
+if not fp then gralph.fail("code_fp.py printed no fingerprint"); return end
+if not blob:find('"code_fp":"' .. fp .. '"', 1, true) then
+  gralph.fail("benchmark evidence was produced by DIFFERENT implementation bytes than the ones on disk " ..
+    "now (current code_fp=" .. fp .. ") — re-run: python scripts/benchmark.py")
+  return
+end
 local qs = L.num(blob, '"queries_scored":(%d+)')
 local gc = L.num(blob, '"golden_count":(%d+)')
 if not qs or not gc or gc < 5 or qs < gc then

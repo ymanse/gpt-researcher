@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import statistics
 
+import code_fp
 import hconf
 import live_lib
 
@@ -35,7 +36,8 @@ def main() -> int:
     goldens = hconf.load_golden()
     ev: dict = {"phase": "benchmark", "bench_round": rnd, "recreated": bool(ok),
                 "health": health, "golden_count": len(goldens), "queries_scored": 0,
-                "errors": [], "all_pass": 0, "weakest_metric": "-"}
+                "errors": [], "all_pass": 0, "weakest_metric": "-",
+                "code_fp": code_fp.fingerprint()}
 
     scores: list[dict] = []
     if health == 200:

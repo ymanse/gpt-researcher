@@ -177,6 +177,11 @@ commands:
       evidence) — fix, keep `python scripts/verify_impl.py --stage 1` ok=1, re-run measure.
       When met, COMMIT everything on feature/search-quality with message starting
       [sq][s1] (tracked trees clean in BOTH repos; the gate verifies commit + frozen_ok).
+      FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
+      gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
+      after measuring, the gate rejects the evidence; just re-run the measure script
+      (cached tree runs re-run live automatically once the fingerprint moves, so a fix
+      is always scored against fresh artifacts, never the old run's).
       Submit: gralph do s1-measure --report no_read/evidence/s1_measure.json
       {{usage}}
     args:
@@ -265,6 +270,11 @@ commands:
       Gate thresholds: queries_run>=2 AND S1_min_pct>=80 AND uncited_ids_total=0.
       If unmet: fix the implementation (never harness scripts/evidence), keep
       verify_impl --stage 2 ok=1, re-run measure. Then COMMIT [sq][s2] (both repos clean).
+      FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
+      gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
+      after measuring, the gate rejects the evidence; just re-run the measure script
+      (cached tree runs re-run live automatically once the fingerprint moves, so a fix
+      is always scored against fresh artifacts, never the old run's).
       Submit: gralph do s2-measure --report no_read/evidence/s2_measure.json
       {{usage}}
     args:
@@ -353,6 +363,11 @@ commands:
       false-answer detectors; one hit means an empty-handed node still answered).
       If unmet: fix the implementation, keep verify_impl --stage 3 ok=1, re-run measure.
       Then COMMIT [sq][s3] (both repos clean).
+      FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
+      gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
+      after measuring, the gate rejects the evidence; just re-run the measure script
+      (cached tree runs re-run live automatically once the fingerprint moves, so a fix
+      is always scored against fresh artifacts, never the old run's).
       Submit: gralph do s3-measure --report no_read/evidence/s3_measure.json
       {{usage}}
     args:
@@ -443,6 +458,11 @@ commands:
       s5_improved=1.
       If unmet: fix the implementation, keep verify_impl --stage 4 ok=1, re-run measure.
       Then COMMIT [sq][s4] (both repos clean).
+      FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
+      gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
+      after measuring, the gate rejects the evidence; just re-run the measure script
+      (cached tree runs re-run live automatically once the fingerprint moves, so a fix
+      is always scored against fresh artifacts, never the old run's).
       Submit: gralph do s4-measure --report no_read/evidence/s4_measure.json
       {{usage}}
     args:
@@ -531,6 +551,11 @@ commands:
       unsupported_claims_total=0.
       If unmet: fix the implementation, keep verify_impl --stage 5 ok=1, re-run measure.
       Then COMMIT [sq][s5] (both repos clean).
+      FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
+      gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
+      after measuring, the gate rejects the evidence; just re-run the measure script
+      (cached tree runs re-run live automatically once the fingerprint moves, so a fix
+      is always scored against fresh artifacts, never the old run's).
       Submit: gralph do s5-measure --report no_read/evidence/s5_measure.json
       {{usage}}
     args:
@@ -560,6 +585,11 @@ commands:
       measure returns here directly.
       If some queries errored: fix the cause, re-run benchmark.py (cached queries skip).
       COMMIT any code changes [sq][s6] style before submitting if you had to fix code.
+      FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
+      gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
+      after measuring, the gate rejects the evidence; just re-run the measure script
+      (cached tree runs re-run live automatically once the fingerprint moves, so a fix
+      is always scored against fresh artifacts, never the old run's).
       Submit: gralph do s6-benchmark --report no_read/evidence/benchmark.json
       {{usage}}
     args:
