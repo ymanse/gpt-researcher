@@ -837,6 +837,12 @@ class ResearchConductor:
         # before dedup — an all-already-visited pass (routine when deep tree
         # research shares one visited_urls set across nodes) is not a failure.
         found_any = bool(new_search_urls) or bool(prefetched_content)
+        # A prefetched document was read as surely as a scraped one, so it belongs in
+        # visited_urls: report references (get_source_urls), cross-node dedup and the
+        # tree narrowing all read that set, and this branch used to bypass it entirely.
+        # Return value ignored on purpose — prefetched results need no scraping, and
+        # their content must still flow on a repeat pass.
+        await self._get_new_urls([p["url"] for p in prefetched_content])
         new_search_urls = await self._get_new_urls(new_search_urls)
         random.shuffle(new_search_urls)
 

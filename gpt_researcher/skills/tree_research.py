@@ -154,7 +154,6 @@ class TreeResearchSkill:
     async def research_node(self, node: ResearchNode) -> None:
         """Research one node with a dedicated GPTResearcher; mutates the node."""
         node.status = NodeStatus.RESEARCHING
-        before = set(self.visited_urls)
         researcher = GPTResearcher(
             query=node.question,
             report_type=ReportType.ResearchReport.value,
@@ -166,8 +165,6 @@ class TreeResearchSkill:
             visited_urls=self.visited_urls,
         )
         context = await researcher.conduct_research()
-        fresh = set(researcher.visited_urls) - before
-        node.sources.extend(sorted(fresh if fresh else set(researcher.visited_urls)))
         try:
             self.visited_urls.update(researcher.visited_urls)
         except (AttributeError, TypeError):
@@ -213,22 +210,28 @@ class TreeResearchSkill:
             node.learnings = [node.answer_digest] if node.answer_digest else []
 
         # defect 6a: node.sources means "read AND quoted", not "every retriever
-        # return". Keep only URLs whose scraped document supports some sentence
-        # or learning of the answer; fail-closed on missing/empty documents.
+        # return". The candidates are the documents this node researcher actually
+        # read (research_sources) — NOT visited_urls, which is both too wide (a
+        # retriever-returned URL nobody scraped) and too narrow (a retriever that
+        # prefetches full content, e.g. Firecrawl / PubMed Central, delivers a read
+        # document that no scrape ever registered). Keep only those supporting some
+        # sentence or learning of the answer; fail-closed on missing/empty documents.
         read_docs: Dict[str, str] = {}
         try:
             for doc in researcher.get_research_sources() or []:
                 url = str(doc.get("url") or "")
-                if url:
-                    read_docs[url] = str(doc.get("raw_content") or doc.get("content") or "")
+                text = str(doc.get("raw_content") or doc.get("content") or "")
+                # a later contentless duplicate must not blank a document that was read
+                if url and (text or url not in read_docs):
+                    read_docs[url] = text
         except (AttributeError, TypeError):
             read_docs = {}
         self._read_docs.update(read_docs)
         claims = [s for s in re.split(r"(?<=[.!?])\s+", node.answer_md) if s.strip()]
         claims += node.learnings
-        node.sources = [u for u in node.sources
-                        if read_docs.get(u)
-                        and any(text_supported(c, read_docs[u]) for c in claims)]
+        node.sources = sorted(u for u, doc_text in read_docs.items()
+                              if doc_text
+                              and any(text_supported(c, doc_text) for c in claims))
 
         node.tokens_spent = (len(context) + len(response)) // 4
         try:
