@@ -70,6 +70,7 @@ _RETRIEVER_API_KEYS = {
     "tavily": "TAVILY_API_KEY",
     "exa": "EXA_API_KEY",
     "serper": "SERPER_API_KEY",
+    "bing": "BING_API_KEY",
     "reddit": "FIRECRAWL_API_KEY",
     "firecrawl": "FIRECRAWL_API_KEY",
     "firecrawl_research": "FIRECRAWL_API_KEY",
@@ -187,7 +188,9 @@ class SmartRetriever:
 
     # Tried in order when every routed retriever comes back empty (observed
     # outage: tavily 432 across the whole route -> silent total loss).
-    _FALLBACK_ORDER = ("duckduckgo", "tavily", "bing")
+    # Keyless duckduckgo first, then keyed alternates — availability-checked,
+    # so only retrievers whose API key is actually configured get tried.
+    _FALLBACK_ORDER = ("duckduckgo", "tavily", "serper", "exa", "bing")
 
     def _fallback_search(self, tried, max_results):
         """Route to a not-yet-tried retriever instead of returning nothing."""
