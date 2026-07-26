@@ -371,13 +371,22 @@ class TreeResearchSkill:
         node's own. Scoring a node against its own registered embedding is cosine
         1.0, which would prune the entire tree.
 
-        ponytail: "own" is identified by value, because the registries carry bare
-        vectors; a genuine twin question never reaches scoring anyway (DEDUP_COSINE
-        drops it at generation). Key the registries by node id if that changes.
+        A FAILED node researched nothing (see _covered_ground), so its embedding
+        must not count as covered ground either — otherwise the hole it left
+        could still prune a later child that would have filled it, even though
+        compute_novelty is never called for the FAILED node itself.
+
+        ponytail: "own" and the failed-embedding exclusion are both identified by
+        value, because the registries carry bare vectors; a genuine twin question
+        never reaches scoring anyway (DEDUP_COSINE drops it at generation). Key
+        the registries by node id if that changes.
         """
+        failed = [list(n.question_embedding) for n in self.nodes.values()
+                  if n.status == NodeStatus.FAILED and n.question_embedding]
         for vec in itertools.chain(self._embeddings, self._covered_embeddings,
-                                   (n.question_embedding for n in self.nodes.values())):
-            if vec and list(vec) != own:
+                                   (n.question_embedding for n in self.nodes.values()
+                                    if n.status != NodeStatus.FAILED)):
+            if vec and list(vec) != own and list(vec) not in failed:
                 yield vec
 
     def compute_novelty(self, node: ResearchNode) -> float:

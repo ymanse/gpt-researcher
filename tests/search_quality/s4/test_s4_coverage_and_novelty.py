@@ -127,6 +127,45 @@ def test_compute_novelty_catches_reworded_duplicate_via_embedding():
     )
 
 
+def test_failed_sibling_embedding_does_not_leak_into_novelty_pool():
+    """A FAILED node's question_embedding is assigned at child-creation time,
+    before research ever runs, so it still sits on the node object (and in
+    skill._embeddings) even though compute_novelty is never called for the
+    FAILED node itself. If that embedding is still visible to OTHER nodes'
+    novelty scoring, a topically-similar sibling that starved on a retriever
+    failure can prune away a genuinely-researched node that would have filled
+    the hole it left."""
+    skill = tree_mod.TreeResearchSkill(_parent_stub("root question"))
+
+    root = tree_mod.ResearchNode(id="0", question="root question", parent_id=None, depth=0)
+    root.status = tree_mod.NodeStatus.EXPANDED
+    root.question_embedding = [1.0, 0.0, 0.0]
+    skill.nodes[root.id] = root
+    skill._embeddings.append(list(root.question_embedding))
+
+    failed = tree_mod.ResearchNode(id="0.0", question="starved question", parent_id="0", depth=1)
+    failed.status = tree_mod.NodeStatus.FAILED
+    failed.question_embedding = [0.0, 1.0, 0.0]
+    skill.nodes[failed.id] = failed
+    skill._embeddings.append(list(failed.question_embedding))
+
+    real = tree_mod.ResearchNode(id="0.1", question="REAL FINDING that must not be pruned away",
+                                  parent_id="0", depth=1)
+    real.status = tree_mod.NodeStatus.ANSWERED
+    # cosine(real, failed) == 0.80 (well past the 0.70 similarity novelty_threshold
+    # treats as redundant); cosine(real, root) == 0.0
+    real.question_embedding = [0.0, 0.8, 0.6]
+
+    novelty = skill.compute_novelty(real)
+
+    assert novelty >= 0.30, (
+        "a FAILED sibling's leaked embedding (cosine 0.8) would score this "
+        "genuinely new, already-researched question as a near-duplicate and "
+        f"prune it away, even though the FAILED node never covered anything. "
+        f"got {novelty}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # (c) end-to-end: a low-novelty child is marked PRUNED and never expanded
 # ---------------------------------------------------------------------------
