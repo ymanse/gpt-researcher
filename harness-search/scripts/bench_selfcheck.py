@@ -28,8 +28,10 @@ import subprocess
 
 import hconf
 
-REQUIRED_KEYS = ("id", "query", "required_primary_domains", "facts", "traps",
+REQUIRED_KEYS = ("id", "query", "category", "required_primary_domains", "facts", "traps",
                  "contested", "coverage_areas")
+CATEGORIES = ("recent-event", "technical-deep-dive", "market-landscape",
+              "contested-forecast", "academic", "encyclopedic-entity")
 # ponytail: substring scan, not AST — these tokens have no legitimate place in a
 # deterministic scorer, so a false positive just means "rename your variable".
 LLM_TOKENS = ("openai", "anthropic", "litellm", "langchain", "chat.completions",
@@ -58,6 +60,47 @@ def schema_ok(g: dict) -> str:
     return ""
 
 
+def _dated(g: dict) -> bool:
+    """Deterministic proxy for prior-knowledge-hostile: at least one fact anchored to a
+    2024-2029 date. A benchmark of timeless best-practice queries lets an empty-context
+    node answer correctly from prior knowledge, making the trap metric (S3) vacuous."""
+    return any(re.search(r"202[4-9]", f.get("pattern", "") + f.get("desc", ""))
+               for f in g.get("facts", []))
+
+
+def diversity(goldens: list[dict]) -> str:
+    """Return '' when the set is meaningfully diverse, else a compact reason token."""
+    for g in goldens:
+        gid = g.get("id", "?")
+        if g.get("category") not in CATEGORIES:
+            return f"category_invalid:{gid}"
+        if len(g["facts"]) < 5:
+            return f"facts_lt_5:{gid}"
+        if len(g["traps"]) < 3:
+            return f"traps_lt_3:{gid}"
+        if len(g["coverage_areas"]) < 4:
+            return f"areas_lt_4:{gid}"
+        if len(g["required_primary_domains"]) < 2:
+            return f"domains_lt_2:{gid}"
+        if len(g["contested"]) < 1:
+            return f"contested_lt_1:{gid}"
+    cats = {g["category"] for g in goldens}
+    if len(cats) < 4:
+        return f"categories_distinct_{len(cats)}_lt_4"
+    if sum(1 for g in goldens if _dated(g)) < 2:
+        return "dated_goldens_lt_2"
+    pair = [g for g in goldens if g.get("measure_pair") is True]
+    if len(pair) == 2:
+        if pair[0]["category"] == pair[1]["category"]:
+            return "measure_pair_same_category"
+        if not any(_dated(g) for g in pair):
+            return "measure_pair_has_no_dated_golden"
+    domains = {d.lower() for g in goldens for d in g["required_primary_domains"]}
+    if len(domains) < 6:
+        return f"domain_union_{len(domains)}_lt_6"
+    return ""
+
+
 def run_scorer(golden: str, report: str, tree: str | None, out: str) -> dict | None:
     cmd = [str(hconf.VENV_PY), str(hconf.BENCH / "score_report.py"),
            "--golden", golden, "--report", report, "--out", out,
@@ -77,7 +120,7 @@ def run_scorer(golden: str, report: str, tree: str | None, out: str) -> dict | N
 
 def main() -> int:
     vals = {"golden_count": 0, "golden_schema_ok": 0, "bun_first": 0, "measure_pairs": 0,
-            "llm_calls": 999, "fixtures_passed": 0, "baseline_queries": 0}
+            "diversity_ok": 0, "llm_calls": 999, "fixtures_passed": 0, "baseline_queries": 0}
     reason = "-"
 
     goldens = hconf.load_golden()
@@ -95,6 +138,13 @@ def main() -> int:
     pairs = [g["id"] for g in goldens if g.get("measure_pair") is True]
     if len(pairs) == 2 and "bun-rust-port" in pairs:
         vals["measure_pairs"] = 2
+
+    if vals["golden_schema_ok"] == 1 and goldens:
+        d = diversity(goldens)
+        if not d:
+            vals["diversity_ok"] = 1
+        elif reason == "-":
+            reason = f"diversity:{d}"
 
     # scorer LLM scan (all python under bench/, the scorer plus any helpers it imports)
     hits = 0
@@ -154,6 +204,7 @@ def main() -> int:
 
     ok_all = (vals["golden_count"] >= 5 and vals["golden_schema_ok"] == 1
               and vals["bun_first"] == 1 and vals["measure_pairs"] == 2
+              and vals["diversity_ok"] == 1
               and vals["llm_calls"] == 0 and vals["fixtures_passed"] >= 2
               and vals["baseline_queries"] >= 5
               and vals["baseline_queries"] == vals["golden_count"])

@@ -51,6 +51,7 @@
 {
   "id": "bun-rust-port",
   "query": "<deep_tree_research에 넣을 질문 전문>",
+  "category": "recent-event",
   "measure_pair": true,
   "required_primary_domains": ["bun.com", "github.com"],
   "facts": [{ "pattern": "<regex>", "desc": "왜 사실인지 + 출처" }],
@@ -59,6 +60,28 @@
   "coverage_areas": [{ "id": "harness-design", "pattern": "<regex>" }]
 }
 ```
+
+### 다양성 하한 (s0 게이트 `diversity_ok`가 기계 강제)
+
+벤치마크가 "유의미하게 다양한 케이스"를 포함해야 6개 지표가 전부 실제로 변별된다.
+시대 불변(best-practice류) 쿼리만으로 채우면 빈손 노드가 사전지식으로 정답을 맞혀
+**S3(traps)가 공허하게 통과**하고, 출처가 아무 블로그나 되는 쿼리는 **S4가 무의미**해진다.
+
+- **골든당 최소치**: `facts >= 5`, `traps >= 3`, `coverage_areas >= 4`,
+  `required_primary_domains >= 2`, `contested >= 1`, `category` 필수.
+- **category 분류** (택1): `recent-event`(최근 사건·엔지니어링 사례) /
+  `technical-deep-dive`(심층 기술) / `market-landscape`(시장·벤더 지형) /
+  `contested-forecast`(전망이 갈리는 산업 주제) / `academic`(논문 레인 유도) /
+  `encyclopedic-entity`(위키피디아 레인 유도 — s1의 언어코드 버그 경로를 live로 밟는다).
+- **셋 전체**: 서로 다른 category **4종 이상**; **dated 골든 2개 이상**(fact의
+  pattern/desc가 `202[4-9]`에 매칭 — 사전지식-적대성의 결정적 프록시);
+  `measure_pair` 2개는 **category가 서로 다르고** 그중 1개 이상 dated;
+  required_primary_domains 합집합 **6개 도메인 이상**(동일 도메인 클러스터 방지).
+- **권고**(게이트 아님): 5개 중 1개는 academic 또는 encyclopedic-entity로 두어
+  SmartRetriever의 비-general 레인을 최소 한 번 live로 태울 것. 기존 outputs/ 후보 중
+  "transactional outbox 실패 모드"와 "denormalized derived table 설계"는 둘 다
+  timeless technical-deep-dive라 **동시 채택 금지**(하나를 dated/encyclopedic 쿼리로
+  교체하거나 contested·coverage 부담을 지울 것).
 
 - `id: "bun-rust-port"` 골든셋은 **필수**이며, 이전 세션 확정 사실로 시딩한다. 근거 산출물:
   `D:/dev_ext/gptr-mcp/outputs/how-did-bun-port-530000-lines-of-zig-to-7c495f26.tree.json`

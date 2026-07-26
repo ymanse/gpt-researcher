@@ -28,6 +28,15 @@ if n("measure_pairs") ~= 2 then
     .. "— s2-s5 measures run only that pair")
   return
 end
+if n("diversity_ok") ~= 1 then
+  local dr = out:match("reason=diversity:([^ ]+)") or "see bench_selfcheck reason"
+  gralph.fail("golden-set diversity floor not met (" .. dr .. ") — per golden: facts>=5, traps>=3, "
+    .. "coverage_areas>=4, required_primary_domains>=2, contested>=1, category from the spec taxonomy; "
+    .. "across the set: >=4 distinct categories, >=2 dated goldens (a fact matching 202[4-9]), "
+    .. "measure_pair categories must differ with >=1 dated member, >=6 distinct primary domains. "
+    .. "Timeless best-practice queries make the trap metric vacuous — see spec/search-quality.md")
+  return
+end
 if n("llm_calls") ~= 0 then
   gralph.fail("llm_calls != 0 — the scorer bench/*.py contains an LLM SDK import/call; the "
     .. "scorer must be fully deterministic (law 2). Remove every model call.")

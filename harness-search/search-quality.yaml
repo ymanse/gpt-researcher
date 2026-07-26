@@ -42,7 +42,15 @@ commands:
          primary source and cite it in desc. Exactly 2 goldens get "measure_pair":true
          (one is bun-rust-port). Candidates for the other 4: the queries already run in
          D:/dev_ext/gptr-mcp/outputs/ (failure modes / denormalized DB / edge-AI face
-         recognition / solid-state battery).
+         recognition / solid-state battery) — but respect the DIVERSITY FLOOR (spec
+         "다양성 하한", gate field diversity_ok): per golden facts>=5, traps>=3,
+         coverage_areas>=4, required_primary_domains>=2, contested>=1, a category from
+         {recent-event, technical-deep-dive, market-landscape, contested-forecast,
+         academic, encyclopedic-entity}; across the set >=4 distinct categories, >=2
+         dated goldens (a fact matching 202[4-9]), measure_pair categories differ with
+         >=1 dated member, >=6 distinct primary domains. Do NOT take both timeless
+         deep-dive candidates (outbox + denormalized) — swap one for a dated/academic/
+         encyclopedic query so the trap metric cannot pass vacuously.
       2. bench/score_report.py — DETERMINISTIC scorer per the spec CLI contract. NO LLM
          calls (llm_calls must be 0; any LLM SDK import fails the gate). Only network:
          S1 citation re-fetch, cached under --fetch-cache for idempotent re-scoring.
@@ -57,8 +65,9 @@ commands:
          bench/baseline_firecrawl.json = {"queries":{<id>:{S1_pct..S6_pct,report,scores}},
          "aggregate":{S1_pct..S6_pct}}.
       Preflight until ok=1: python scripts/bench_selfcheck.py
-      (fields: golden_count>=5 golden_schema_ok=1 bun_first=1 measure_pairs=2 llm_calls=0
-      fixtures_passed=2 baseline_queries=golden_count). Then FREEZE:
+      (fields: golden_count>=5 golden_schema_ok=1 bun_first=1 measure_pairs=2
+      diversity_ok=1 llm_calls=0 fixtures_passed=2 baseline_queries=golden_count).
+      Then FREEZE:
       python scripts/freeze_bench.py  (writes bench/manifest.sha256 — after this commit,
       bench/golden/* and bench/baseline_firecrawl.json are READ-ONLY for the whole build;
       frozen_ok is re-checked by every later gate).

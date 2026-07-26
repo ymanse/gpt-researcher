@@ -16,7 +16,7 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
 
 | 게이트 | 증명 | 결정적 근거 |
 |---|---|---|
-| **s0-bench** | 채점 인프라가 진짜다: golden_count>=5 + 스키마/정규식 컴파일(golden_schema_ok), bun-rust-port 시딩(bun_first), measure_pairs=2, **llm_calls=0**(채점기에 LLM SDK 토큰 0 — law 2), **fixtures_passed=2**(good이 bad를 S1,S2,S4,S5,S6 전부에서 엄격히 이기고 S3는 엄격히 낮음 — law 5, []가 파싱실패가 아님의 증명), baseline_queries=golden_count(전 골든에 S1_pct..S6_pct + report/scores 출처), freeze(manifest) + `[sq][s0]` 커밋 | in-gate `bench_selfcheck.py` + `check_frozen.py` + `check_commit.py` |
+| **s0-bench** | 채점 인프라가 진짜다: golden_count>=5 + 스키마/정규식 컴파일(golden_schema_ok), bun-rust-port 시딩(bun_first), measure_pairs=2, **diversity_ok=1**(다양성 하한 — 골든당 facts>=5·traps>=3·areas>=4·domains>=2·contested>=1·category, 셋 전체 category 4종+·dated 골든 2+·measure_pair category 상이+dated 1+·도메인 합집합 6+; timeless 쿼리만으로는 S3가 공허 통과하므로), **llm_calls=0**(채점기에 LLM SDK 토큰 0 — law 2), **fixtures_passed=2**(good이 bad를 S1,S2,S4,S5,S6 전부에서 엄격히 이기고 S3는 엄격히 낮음 — law 5, []가 파싱실패가 아님의 증명), baseline_queries=golden_count(전 골든에 S1_pct..S6_pct + report/scores 출처), freeze(manifest) + `[sq][s0]` 커밋 | in-gate `bench_selfcheck.py` + `check_frozen.py` + `check_commit.py` |
 | **sN-red** | RED 무결성(law 3): errors=0, collected>=1, passed=0, failed>=1, test_files sha256 + base_sha 기록, bench frozen_ok | `pytest_evidence.py`가 pytest junit에서 생성; in-gate `check_frozen.py` |
 | **sN-impl** | GREEN 안티탬퍼: RED 파일 sha256 재계산 일치(hash_match), collected 비감소, 스테이지+누적 전체 suite green(failed/errors/skipped=0), ruff_errors=0(E9,F — 변경 파일 한정), frozen_ok, review_addressed_ok(직전 review의 blocking id 전부가 impl_ack의 addressed_findings에 존재) | **in-gate `verify_impl.py` 재실행** — 위조 evidence는 생존 불가 |
 | **sN-review** | 분리 레인 적대 리뷰: 입력은 `review_diff.py`의 diff + 스펙 완료조건뿐. head_sha가 현재 HEAD와 일치(stale 리뷰 재활용 차단, in-gate 재계산), findings 배열 + blocking_count 숫자. blocking_count>0 → `sN-impl`로 라우트(store `rev:sN` 카운트, **3라운드 초과 시 hard fail**), 0 → `sN-measure` | 판정 자체는 LLM(의도된 law 2 예외, 아래 잔존 리스크) — 신선도·형식·라운드 캡은 결정적 |
@@ -85,6 +85,9 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
 - s6-benchmark: PASS→harness-audit / PASS→s1-impl(weakest=S2, store bench_round=1·
   bench_refit="s1") / FAIL(queries_scored=4 hollow zero) / FAIL(stale bench_round) ✓
 - harness-audit: FAIL(try_reports_missing) ✓
+- s0 diversity(추가 하드닝, 2026-07-26): FAIL(동일 category 5개 → categories_distinct_1_lt_4,
+  gralph try에서 처방 메시지 확인) / FAIL(facts 1개 → facts_lt_5:\<id\> — 골든 지목) /
+  PASS(category 5종·dated 2·pair 상이·도메인 10 셋에서 diversity_ok=1) ✓
 - **live에서 첫 증명되는 PASS 경로**: s0-bench(진짜 bench 없이는 정직한 PASS 불가),
   harness-audit(자기 자신의 try 매트릭스 필요), s2~s4의 red/impl/review 래퍼 PASS(증명된
   공통 모듈의 1줄 래퍼; harness-audit 스테이지가 전 노드 양방향 try 매트릭스를 재생성한다).
