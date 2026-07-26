@@ -95,20 +95,20 @@ def _cosine(a: List[float], b: List[float]) -> float:
 _ITEM = r"(?:\d+|\d{1,3}\s*-\s*\d{1,3})"
 _SEP = r"(?:\s*[,;]\s*|\s+)"
 _CITE_ID_RE = re.compile(rf"\[\s*({_ITEM}(?:{_SEP}{_ITEM})*)\s*\]")
+# range alternative FIRST so a spaced range ("1 - 3") stays one token — splitting
+# the group on _SEP instead shreds a range at its own internal whitespace
+_TOKEN_RE = re.compile(r"(\d{1,3})\s*-\s*(\d{1,3})|(\d+)")
 
 
 def _bracket_ids(group: str) -> List[str]:
-    """Ids cited by one bracket's inner text: "1", "1, 3", "1; 3", "1 2", "1-3"."""
+    """Ids cited by one bracket's inner text: "1", "1, 3", "1; 3", "1 2", "1 - 3"."""
     ids: List[str] = []
-    for part in re.split(_SEP, group):
-        if not part:
-            continue
-        m = re.fullmatch(r"(\d{1,3})\s*-\s*(\d{1,3})", part)
-        if m:
+    for m in _TOKEN_RE.finditer(group):
+        if m.group(3) is not None:
+            ids.append(m.group(3))
+        else:
             lo, hi = sorted((int(m.group(1)), int(m.group(2))))
             ids.extend(str(i) for i in range(lo, hi + 1))
-        else:
-            ids.append(part)
     return ids
 
 
