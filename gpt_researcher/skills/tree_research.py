@@ -88,16 +88,17 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-_CITE_ID_RE = re.compile(r"\[(\d+)\]")
+# matches "[1]" and comma-joined multi-id brackets like "[1, 3]" — LLMs emit both
+_CITE_ID_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 
 
 def find_uncited_ids(report_md: str, citation_map: Dict[str, str]) -> List[str]:
     """[id] markers in report_md with no citations-map entry, first-appearance order."""
     out: List[str] = []
     for m in _CITE_ID_RE.finditer(report_md or ""):
-        cid = m.group(1)
-        if cid not in citation_map and cid not in out:
-            out.append(cid)
+        for cid in re.split(r"\s*,\s*", m.group(1)):
+            if cid not in citation_map and cid not in out:
+                out.append(cid)
     return out
 
 
@@ -425,16 +426,24 @@ class TreeResearchSkill:
         uncited_ids = find_uncited_ids(report_md, citation_map)
         if uncited_ids:
             logger.error(f"uncited [id] markers stripped from report: {uncited_ids}")
-            report_md = re.sub(
-                r"\[(?:" + "|".join(re.escape(c) for c in uncited_ids) + r")\]",
-                "", report_md)
+            bad = set(uncited_ids)
 
-        # CitationAgent over the tree node claims: each learning is checked
-        # against its node's read-and-quoted document (no re-scrape needed).
+            def _keep_cited(m: "re.Match[str]") -> str:
+                kept = [c for c in re.split(r"\s*,\s*", m.group(1)) if c not in bad]
+                return f"[{', '.join(kept)}]" if kept else ""
+
+            report_md = _CITE_ID_RE.sub(_keep_cited, report_md)
+
+        # CitationAgent over the tree node claims: each learning is attributed
+        # to the surviving node source that actually supports it (not blindly
+        # sources[0]) and checked against that read document (no re-scrape).
         claim_urls: Dict[str, str] = {}
         for n in self.nodes.values():
-            url = n.sources[0] if n.sources else ""
             for learning in n.learnings:
+                url = next(
+                    (u for u in n.sources
+                     if text_supported(learning, self._read_docs.get(u, ""))),
+                    n.sources[0] if n.sources else "")
                 claim_urls.setdefault(learning, url)
         citation_verification = await asyncio.to_thread(
             CitationAgent().verify, claim_urls, self._read_docs)

@@ -29,7 +29,9 @@ def text_supported(quote: str, source: str) -> bool:
     # A word also counts if its crude stem (drop last 2 chars) appears,
     # so "providers"/"provider", "regulations"/"regulation" still match.
     words = {w for w in re.findall(r"[a-z0-9]{4,}", q)}
-    if not words:
+    if len(words) < 4:
+        # a 1-3-word claim clears 0.7 on coincidental vocabulary against almost
+        # any prose — short claims must match verbatim, never by overlap
         return False
     hits = sum(1 for w in words if w in s or (len(w) > 5 and w[:-2] in s))
     return hits / len(words) >= 0.7
