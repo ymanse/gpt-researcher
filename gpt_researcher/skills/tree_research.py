@@ -205,14 +205,20 @@ class TreeResearchSkill:
         except (AttributeError, TypeError):
             read_docs = {}
 
-        # defect 3, hardest case: the node read nothing. However many characters of
-        # context text came back (boilerplate, error text, an LLM-written preamble),
-        # there is no evidence for an answer to stand on, so the answer LLM could
-        # only write prior knowledge — exactly the fabricated text that lands in the
-        # report as a trap hit. Don't ask it at all; there is then no answer to
-        # salvage downstream.
-        if not read_docs:
-            logger.error(f"tree node {node.id} read 0 documents — failing closed")
+        # defect 3, hardest case: the node has nothing for the answer to stand on —
+        # it read no document, or the research context came back empty. Either way
+        # the answer prompt degenerates to "Question: X / Context: <nothing>" and the
+        # LLM can only write prior knowledge — exactly the fabricated text that lands
+        # in the report as a trap hit, and that then pairs itself with a read URL
+        # (text_supported matches the fabricated sentence against the trap document)
+        # so it even looks sourced. Don't ask it at all; there is then no answer to
+        # salvage downstream. The below-floor-but-non-empty band still runs the LLM —
+        # it has real context, and the s2 contract is pinned on what that pass
+        # produces — and fails closed on standing further down.
+        if not read_docs or not context.strip():
+            logger.error(f"tree node {node.id} has no evidence "
+                         f"({len(read_docs)} documents read, {len(context.strip())} "
+                         f"context chars) — failing closed before the answer LLM")
             node.tokens_spent = len(context) // 4
             node.status = NodeStatus.FAILED
             return
@@ -604,6 +610,14 @@ class TreeResearchSkill:
         # to the surviving node source that actually supports it; when none
         # does, the claim records no url ("") so it fails closed as unverified
         # instead of blaming an arbitrary source.
+        # R3 (minor, deliberately NOT closed): the roll-up / citation-map / tree.json
+        # guards all skip FAILED nodes, and extending the same guard here was tried —
+        # it fails frozen test s2 test_citation_agent_flags_unverified_tree_node_claims,
+        # which researches a node on 17 chars of context (below MIN_CONTEXT_CHARS, so
+        # FAILED) and then asserts total_claims >= 2. That test pins the claim map as
+        # a status-blind view of every node's learnings — an unverified-claim detector,
+        # not a report input — so filtering it is a contract change, not a cleanup.
+        # No metric is affected: score_report.py reads report.md + tree.json only.
         claim_urls: Dict[str, str] = {}
         for n in self.nodes.values():
             for learning in n.learnings:
