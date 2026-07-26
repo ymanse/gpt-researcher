@@ -231,7 +231,12 @@ class ResearchConductor:
         new_search_urls = await self._get_new_urls(urls)
         self.logger.info(f"New URLs to process: {new_search_urls}")
 
-        scraped_content = await self.researcher.scraper_manager.browse_urls(new_search_urls)
+        # browse_urls([]) is the true-zero error signal; an all-already-visited
+        # source_urls pass is dedup, not a scrape failure.
+        if new_search_urls or not urls:
+            scraped_content = await self.researcher.scraper_manager.browse_urls(new_search_urls)
+        else:
+            scraped_content = []
         self.logger.info(f"Scraped content from {len(scraped_content)} URLs")
 
         if self.researcher.vector_store:
@@ -817,11 +822,14 @@ class ResearchConductor:
             except Exception as e:
                 self.logger.error(f"Error searching with {retriever_class.__name__}: {e}")
 
-        # Get unique URLs
+        # Get unique URLs. Remember whether the retrievers found anything at all
+        # before dedup — an all-already-visited pass (routine when deep tree
+        # research shares one visited_urls set across nodes) is not a failure.
+        found_any = bool(new_search_urls) or bool(prefetched_content)
         new_search_urls = await self._get_new_urls(new_search_urls)
         random.shuffle(new_search_urls)
 
-        return new_search_urls, prefetched_content
+        return new_search_urls, prefetched_content, found_any
 
     async def _scrape_data_by_urls(self, sub_query, query_domains: list | None = None):
         """
@@ -838,7 +846,7 @@ class ResearchConductor:
         if query_domains is None:
             query_domains = []
 
-        new_search_urls, prefetched_content = await self._search_relevant_source_urls(sub_query, query_domains)
+        new_search_urls, prefetched_content, found_any = await self._search_relevant_source_urls(sub_query, query_domains)
 
         # Log the research process if verbose mode is on
         if self.researcher.verbose:
@@ -850,10 +858,11 @@ class ResearchConductor:
             )
 
         # Scrape URLs that need fetching (skip those already provided by retrievers).
-        # An empty URL list is only an error signal when the retrievers came back
-        # empty-handed too — a pass where every result was prefetched (e.g. arxiv /
-        # semantic_scholar abstracts) is a success, not a zero-scrape failure.
-        if new_search_urls or not prefetched_content:
+        # An empty URL list is only an error signal when the retrievers truly came
+        # back empty-handed: a pass where every result was prefetched (e.g. arxiv /
+        # semantic_scholar abstracts) or already visited (dedup) is a success, not
+        # a zero-scrape failure — browse_urls([]) is reserved for the true zero.
+        if new_search_urls or not found_any:
             scraped_content = await self.researcher.scraper_manager.browse_urls(new_search_urls)
         else:
             scraped_content = []

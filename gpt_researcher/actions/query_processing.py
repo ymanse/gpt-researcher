@@ -33,7 +33,14 @@ async def get_search_results(query: str, retriever: Any, query_domains: List[str
     else:
         search_retriever = retriever(query, query_domains=query_domains)
     
-    return search_retriever.search()
+    try:
+        return search_retriever.search()
+    except Exception as e:
+        # A failing retriever (e.g. tavily 432, now re-raised instead of being
+        # swallowed) must be loud but not fatal here: plan_research falls back
+        # to LLM-only sub-query generation when no search context is available.
+        logger.error(f"Search with {retriever.__name__} failed: {e}")
+        return []
 
 async def generate_sub_queries(
     query: str,
