@@ -1,0 +1,3 @@
+# bench/* are sha256-frozen by bench/manifest.sha256 (check_frozen.py); any eol
+# rewrite on checkout would break the freeze. Keep bytes exactly as committed.
+bench/** -text
