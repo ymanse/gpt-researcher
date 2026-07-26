@@ -136,6 +136,48 @@ def find_uncited_ids(report_md: str, citation_map: Dict[str, str]) -> List[str]:
     return out
 
 
+# --- s5 (defect 6b): the roll-up consistency rule.
+# Reproduced from the frozen S6 scorer (harness-search/bench/score_report.py, frozen
+# since s0) rather than imported: gpt_researcher must not depend on the harness, and
+# the live gate (contradictions_total == 0, unsupported_claims_total == 0) is that
+# scorer's verdict — so the pass that cleans the report has to apply the same rule,
+# token for token. Keep these in sync with score_report.py if it is ever re-frozen.
+_SIGNUM = re.compile(
+    r"\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\s*%|\b\d{4,}\b|\b\d+\.\d+\b")
+_STOP = {"that", "with", "this", "from", "have", "been", "were", "their", "which",
+         "about", "into", "over", "only", "more", "than", "when", "after", "before",
+         "while", "where", "also", "each", "other", "them", "they", "these", "those",
+         "such", "some", "most", "many", "very", "will", "would", "could", "should",
+         "there", "then", "what", "your", "does", "using", "used", "between"}
+_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+# the scorer blanks these before it splits sentences, so a marker or URL never
+# contributes a "number" or a context token
+_SCRUB_RES = (re.compile(r"\[\d{1,3}\]"), re.compile(r"\(https?://\S+\)"),
+              re.compile(r"https?://\S+"))
+# splits on the scorer's sentence boundary, but KEEPS the separators: joining the
+# pieces back reproduces the input byte for byte, so a report with nothing to drop
+# comes back untouched (markdown structure and [id] positions are what the S1
+# grounding scorer reads — a pass that re-joins what it kept rewrites the artifact)
+_SENT_SPLIT_RE = re.compile(r"((?<=[.!?])\s+|\n+)")
+
+
+def _num_key(s: str) -> str:
+    return s.replace(",", "").replace("%", "").strip()
+
+
+def _ctx_tokens(text: str) -> set:
+    norm = re.sub(r"[^0-9a-z]+", " ", text.lower()).strip()
+    return {t for t in norm.split()
+            if len(t) >= 4 and not t.isdigit() and t not in _STOP}
+
+
+def _claim_profile(text: str) -> tuple:
+    """(significant numbers, context tokens) — the scorer's view of one text."""
+    for rx in _SCRUB_RES:
+        text = rx.sub(" ", text)
+    return {_num_key(m.group(0)) for m in _SIGNUM.finditer(text)}, _ctx_tokens(text)
+
+
 def _slug(text: str, max_len: int = 40) -> str:
     s = re.sub(r"[^\w\s-]", "", text or "").strip().lower()
     s = re.sub(r"[\s_-]+", "-", s)
@@ -444,6 +486,53 @@ class TreeResearchSkill:
             return f"[{', '.join(kept)}]" if kept else ""
         return _CITE_ID_RE.sub(_check, body)
 
+    def verify_rollup(self, body: str) -> tuple:
+        """Check the assembled roll-up against what the nodes actually found.
+
+        defect 6b: run() went body -> uncited-[id] strip -> ungrounded-marker strip
+        -> Citations list; all of that polices citation MARKERS, none of it asks
+        whether a sentence agrees with any node answer. A figure the merge invented,
+        or one that conflicts with a node's own, shipped as a finding.
+
+        Returns (kept_body, contradictions, unsupported). Detection alone is not
+        enough — the scorer counts what is left in the report, and the s5 live gate
+        is contradictions_total == 0 / unsupported_claims_total == 0 — so an
+        offending claim is dropped as well as reported.
+
+        The corpus is exactly what tree.json ships as nodes[].answer, so this pass
+        and the scorer read the same evidence. A FAILED node is left out: its answer
+        is prior knowledge written over missing evidence (defect 3 / s3), never
+        evidence for anything.
+        """
+        corpus = [_claim_profile(n.answer_md) for n in self.nodes.values()
+                  if n.status != NodeStatus.FAILED and n.answer_md]
+        body = body or ""
+        fenced = [m.span() for m in _FENCE_RE.finditer(body)]
+        parts = _SENT_SPLIT_RE.split(body)
+        contradictions: List[str] = []
+        unsupported: List[str] = []
+        out: List[str] = []
+        pos = 0
+        for i, part in enumerate(parts):
+            start, pos = pos, pos + len(part)
+            # odd indices are the separators; the scorer ignores fenced code
+            if i % 2 or not part.strip() or any(s < pos and start < e for s, e in fenced):
+                out.append(part)
+                continue
+            nums, ctx = _claim_profile(part)
+            if not nums:  # prose carrying no figure is not a claim the scorer weighs
+                out.append(part)
+                continue
+            need = min(2, len(ctx))
+            if any((nums & cn) and len(ctx & ct) >= need for cn, ct in corpus):
+                out.append(part)
+                continue
+            if any(cn and len(ctx & ct) >= 3 and not (nums & cn) for cn, ct in corpus):
+                contradictions.append(part.strip())
+            else:
+                unsupported.append(part.strip())
+        return "".join(out), contradictions, unsupported
+
     def _attribute_citations(self, text: str, source_ids: Dict[str, str]) -> str:
         """Attach each node source's global [id] only to the sentences it actually
         supports, instead of dumping every node source in one trailing block after
@@ -669,6 +758,15 @@ class TreeResearchSkill:
 
         body = self._prune_ungrounded_markers(body, citation_map)
 
+        # defect 6b: last, so the claim check sees the body as it will ship and the
+        # Citations list below is rendered from what SURVIVED it — a dropped claim
+        # must not leave its source behind in the citations block.
+        body, contradictions, unsupported = self.verify_rollup(body)
+        if contradictions or unsupported:
+            logger.error(f"roll-up consistency: dropped {len(contradictions)} claim(s) "
+                         f"contradicting a node answer and {len(unsupported)} no node "
+                         f"answer supports: {[*contradictions, *unsupported]}")
+
         # a source that survived node.sources narrowing but whose id never made it
         # into the synthesized body (e.g. an internal rollup dropped it while
         # merging sub-findings) must not be RENDERED in the Citations list either:
@@ -728,6 +826,8 @@ class TreeResearchSkill:
             "uncited_ids": uncited_ids,
             "citation_verification": citation_verification,
             "stats": {**meta, "researched": researched,
+                      "contradictions": len(contradictions),
+                      "unsupported_claims": len(unsupported),
                       "tokens_spent": self.tokens_spent,
                       "credits_spent": self.credits_spent,
                       "time_budget_exhausted": time_budget_exhausted,
@@ -767,8 +867,15 @@ class TreeResearchSkill:
         stem = f"{_slug(query)}-{uuid.uuid4().hex[:8]}"
         payload = {
             "meta": meta,
+            # s5: nodes[].answer ADDED (the existing four keys stay) — it is the
+            # corpus the scorer matches every report claim against, and without it
+            # that corpus is empty and S6 is 0 however good the research was. Blank
+            # for a FAILED node, exactly as _node_dict blanks its sources/digest:
+            # prior knowledge over missing evidence may not validate a claim.
             "nodes": [{"id": n.id, "depth": n.depth, "status": n.status.value,
-                       "question": n.question} for n in self.nodes.values()],
+                       "question": n.question,
+                       "answer": "" if n.status == NodeStatus.FAILED else n.answer_md}
+                      for n in self.nodes.values()],
             "citations": citation_map,
         }
         tree_path = out / f"{stem}.tree.json"
