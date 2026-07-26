@@ -19,22 +19,61 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+# a paraphrased claim must trace to ONE passage this many tokens wide (~2-4
+# sentences); claim words scattered wider than this across the document are
+# topical co-occurrence, not quotation
+_PASSAGE_TOKENS = 60
+
+
+def _passage_covers(words: set[str], source: str) -> bool:
+    """True if one _PASSAGE_TOKENS-token window of source matches >=0.7 of words.
+
+    A source token matches a claim word exactly or by crude stem (claim word
+    minus its last 2 chars), so "providers"/"provider", "regulations"/
+    "regulation" still align.
+    """
+    stems = {w[:-2]: w for w in words if len(w) > 5}
+    hits: list[tuple[int, str]] = []  # (token position, claim word matched)
+    for i, tok in enumerate(re.findall(r"[a-z0-9]+", source)):
+        if tok in words:
+            hits.append((i, tok))
+            continue
+        # ponytail: linear stem scan per token; bucket stems by length if docs grow
+        for stem, w in stems.items():
+            if tok.startswith(stem):
+                hits.append((i, w))
+                break
+    counts: dict[str, int] = {}
+    lo = 0
+    for pos, w in hits:
+        counts[w] = counts.get(w, 0) + 1
+        while pos - hits[lo][0] >= _PASSAGE_TOKENS:
+            lw = hits[lo][1]
+            counts[lw] -= 1
+            if not counts[lw]:
+                del counts[lw]
+            lo += 1
+        if len(counts) / len(words) >= 0.7:
+            return True
+    return False
+
+
 def text_supported(quote: str, source: str) -> bool:
-    """True if source contains quote or shares >=0.7 of its significant words."""
+    """True if source contains quote verbatim, or one bounded passage of source
+    covers >=0.7 of the quote's significant words."""
     q, s = _normalize(quote), _normalize(source)
     if q and q in s:
         return True
-    # ponytail: learnings are paraphrased live, so exact containment is too
-    # strict there — fall back to significant-word overlap >= 0.7.
-    # A word also counts if its crude stem (drop last 2 chars) appears,
-    # so "providers"/"provider", "regulations"/"regulation" still match.
     words = {w for w in re.findall(r"[a-z0-9]{4,}", q)}
     if len(words) < 4:
         # a 1-3-word claim clears 0.7 on coincidental vocabulary against almost
         # any prose — short claims must match verbatim, never by overlap
         return False
-    hits = sum(1 for w in words if w in s or (len(w) > 5 and w[:-2] in s))
-    return hits / len(words) >= 0.7
+    # ponytail: learnings are paraphrased live, so exact containment is too
+    # strict — but whole-document word overlap mistakes a topically-similar
+    # unused source for a quoted one: genuine (para)quotation comes from a
+    # specific passage, so the overlap must concentrate in one window.
+    return _passage_covers(words, s)
 
 
 class CitationAgent:

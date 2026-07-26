@@ -88,16 +88,32 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-# matches "[1]", comma-joined "[1, 3]", and whitespace-padded "[ 1 ]" — LLM
-# rewrites emit all three; any variant this misses escapes the fail-closed strip
-_CITE_ID_RE = re.compile(r"\[\s*(\d+(?:\s*,\s*\d+)*)\s*\]")
+# matches "[1]", comma/semicolon-joined "[1, 3]" / "[1; 3]", whitespace-padded
+# "[ 1 ]", and hyphen ranges "[1-3]" (range endpoints capped at 3 digits so a
+# bracketed date like "[2024-07-26]" is not mistaken for citations) — LLM
+# rewrites emit all of these; any variant this misses escapes the fail-closed strip
+_ITEM = r"(?:\d+|\d{1,3}\s*-\s*\d{1,3})"
+_CITE_ID_RE = re.compile(rf"\[\s*({_ITEM}(?:\s*[,;]\s*{_ITEM})*)\s*\]")
+
+
+def _bracket_ids(group: str) -> List[str]:
+    """Individual ids cited by one bracket's inner text: "1", "1, 3", "1; 3", "1-3"."""
+    ids: List[str] = []
+    for part in re.split(r"\s*[,;]\s*", group):
+        m = re.fullmatch(r"(\d{1,3})\s*-\s*(\d{1,3})", part)
+        if m:
+            lo, hi = sorted((int(m.group(1)), int(m.group(2))))
+            ids.extend(str(i) for i in range(lo, hi + 1))
+        else:
+            ids.append(part)
+    return ids
 
 
 def find_uncited_ids(report_md: str, citation_map: Dict[str, str]) -> List[str]:
     """[id] markers in report_md with no citations-map entry, first-appearance order."""
     out: List[str] = []
     for m in _CITE_ID_RE.finditer(report_md or ""):
-        for cid in re.split(r"\s*,\s*", m.group(1)):
+        for cid in _bracket_ids(m.group(1)):
             if cid not in citation_map and cid not in out:
                 out.append(cid)
     return out
@@ -430,21 +446,22 @@ class TreeResearchSkill:
             bad = set(uncited_ids)
 
             def _keep_cited(m: "re.Match[str]") -> str:
-                kept = [c for c in re.split(r"\s*,\s*", m.group(1)) if c not in bad]
+                kept = [c for c in _bracket_ids(m.group(1)) if c not in bad]
                 return f"[{', '.join(kept)}]" if kept else ""
 
             report_md = _CITE_ID_RE.sub(_keep_cited, report_md)
 
         # CitationAgent over the tree node claims: each learning is attributed
-        # to the surviving node source that actually supports it (not blindly
-        # sources[0]) and checked against that read document (no re-scrape).
+        # to the surviving node source that actually supports it; when none
+        # does, the claim records no url ("") so it fails closed as unverified
+        # instead of blaming an arbitrary source.
         claim_urls: Dict[str, str] = {}
         for n in self.nodes.values():
             for learning in n.learnings:
                 url = next(
                     (u for u in n.sources
                      if text_supported(learning, self._read_docs.get(u, ""))),
-                    n.sources[0] if n.sources else "")
+                    "")
                 claim_urls.setdefault(learning, url)
         citation_verification = await asyncio.to_thread(
             CitationAgent().verify, claim_urls, self._read_docs)
