@@ -806,12 +806,16 @@ class ResearchConductor:
                 if not search_results:
                     continue
 
-                # Separate results that already have content from those needing scraping
+                # Separate results that already have content from those needing scraping.
+                # Only trust an explicit raw_content field: most retrievers (tavily,
+                # serper, duckduckgo, exa, arxiv, semantic_scholar, ...) put a short
+                # snippet/abstract in "body", which used to be misread as full content
+                # (falling back to `body`) and skipped scraping for every query.
                 for result in search_results:
                     url = result.get("href") or result.get("url")
-                    raw_content = result.get("raw_content") or result.get("body")
+                    raw_content = result.get("raw_content")
                     if url and raw_content and len(raw_content) > 100:
-                        # Retriever already fetched full content (e.g. PubMed Central)
+                        # Retriever already fetched full content (e.g. PubMed Central, Firecrawl)
                         prefetched_content.append({
                             "url": url,
                             "raw_content": raw_content,

@@ -76,6 +76,9 @@ class FirecrawlSearch:
                 "href": href,
                 "title": it.get("title") or "(untitled)",
                 "body": body,
+                # Firecrawl already scraped the full page — mark it so the research
+                # pipeline doesn't re-scrape (see researcher.py raw_content check).
+                "raw_content": body,
             })
 
         max_body_len = max((len(r["body"]) for r in results), default=0)
