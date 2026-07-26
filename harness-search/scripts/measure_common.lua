@@ -12,8 +12,14 @@ return function(stage, next_node, checks)
   if not blob then
     gralph.fail(rel .. " not found — RUN: python scripts/measure.py --stage " .. stage); return
   end
-  if not L.must(blob, '"stage":' .. stage .. ',',
-      "evidence is for the wrong stage — rerun measure.py --stage " .. stage) then return end
+  -- "stage" is the alphabetically-last key for some stage schemas (sort_keys=True in
+  -- hconf.write_json), so it serializes as `"stage":N}` (no trailing comma) instead of
+  -- `"stage":N,`. Accept either terminator — this only widens the match, the required
+  -- value is still the exact stage number.
+  if not (blob:find('"stage":' .. stage .. ',', 1, true) or blob:find('"stage":' .. stage .. '}', 1, true)) then
+    gralph.fail('gate FAIL: missing/!= "stage":' .. stage .. ' — evidence is for the wrong stage — rerun measure.py --stage ' .. stage)
+    return
+  end
   local br = tonumber(gralph.store.get("bench_round")) or 0
   local ebr = L.num(blob, '"bench_round":(%d+)')
   if ebr ~= br then
