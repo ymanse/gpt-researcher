@@ -154,9 +154,10 @@ class TreeResearchSkill:
         self.visited_urls = researcher.visited_urls  # shared across all node researchers
         self.nodes: Dict[str, ResearchNode] = {}
         self._embeddings: List[List[float]] = []  # accepted candidate-question embeddings
+        self._covered_embeddings: List[List[float]] = []  # scored-node question embeddings
         self._read_docs: Dict[str, str] = {}  # url -> text of documents actually scraped
-        self._seen_learnings: set = set()
         self._syntheses: Dict[str, str] = {}
+        self._root_query: str = str(getattr(researcher, "query", "") or "")
         self._max_breadth = 4
         self.tokens_spent = 0
         self.credits_spent = 0.0
@@ -298,22 +299,51 @@ class TreeResearchSkill:
             return
         node.status = NodeStatus.ANSWERED
 
+    def _covered_ground(self) -> List[str]:
+        """"Question -> what we found" for every node that actually researched.
+
+        A FAILED node is left out on both counts: it researched nothing, so
+        listing its question fences the expansion away from a hole the tree never
+        filled, and its "findings" are prior-knowledge text written over missing
+        evidence (defect 3) that the report is not allowed to chase.
+        """
+        lines = []
+        for n in self.nodes.values():
+            if n.status not in (NodeStatus.ANSWERED, NodeStatus.EXPANDED, NodeStatus.PRUNED):
+                continue
+            found = (n.answer_digest or " ".join(n.learnings)).strip()
+            lines.append(f"- Q: {n.question}\n  Found: {found[:400]}" if found
+                         else f"- Q: {n.question}")
+        return lines
+
     async def generate_child_questions(self, node: ResearchNode) -> List[str]:
-        """Self-Ask expansion: follow-up questions from the node's answer + gaps."""
-        existing = [n.question for n in self.nodes.values()][:30]
+        """Self-Ask expansion steered by the ground the tree has ALREADY covered.
+
+        defect 4: the old prompt showed the model a bare `[:30]` slice of question
+        STRINGS and asked for "gaps left by the answer" — a node-local derivation
+        blind to both what those nodes FOUND and to the root query that "uncovered"
+        is measured against, so a differently-worded child silently re-covered an
+        answered area. Coverage is not truncated either: a tree runs to max_nodes
+        (40) nodes, so a 30-item slice hid real coverage from the model that is
+        supposed to steer around it.
+        """
         response = await create_chat_completion(
             messages=[
                 {"role": "system",
                  "content": "You are an expert researcher generating disjoint follow-up research questions."},
                 {"role": "user",
                  "content": (
-                     f"Researched question: {node.question}\n"
+                     f"Root research query: {self._root_query or node.question}\n\n"
+                     f"Just researched: {node.question}\n"
                      f"Answer digest: {node.answer_digest}\n\n"
-                     f"Existing questions in this research tree (do NOT overlap them):\n"
-                     + "\n".join(f"- {q}" for q in existing)
-                     + f"\n\nGenerate up to {self._max_breadth} follow-up questions that fill gaps "
-                       "left by the answer. Each must be disjoint from the others and from the "
-                       "existing questions. Return 0 questions if the answer is complete. "
+                     "Ground this research tree has ALREADY covered — each question "
+                     "and what researching it found:\n"
+                     + "\n".join(self._covered_ground())
+                     + f"\n\nGenerate up to {self._max_breadth} follow-up questions that carry "
+                       "the root research query into ground the list above does NOT yet cover. "
+                       "Target what is missing, not variations of what was already found. Each "
+                       "must be disjoint from the others and from the covered questions. Return "
+                       "0 questions if the root query is fully covered. "
                        "Format each on its own line as 'Question: <question>'."
                  )},
             ],
@@ -335,15 +365,41 @@ class TreeResearchSkill:
                             **getattr(cfg, "embedding_kwargs", {}))
         return list(await memory.get_embeddings().aembed_query(text))
 
+    def _other_covered_embeddings(self, own: List[float]):
+        """Every question embedding the tree already holds — accepted candidates,
+        live nodes (the root's included) and previously scored nodes — minus the
+        node's own. Scoring a node against its own registered embedding is cosine
+        1.0, which would prune the entire tree.
+
+        ponytail: "own" is identified by value, because the registries carry bare
+        vectors; a genuine twin question never reaches scoring anyway (DEDUP_COSINE
+        drops it at generation). Key the registries by node id if that changes.
+        """
+        for vec in itertools.chain(self._embeddings, self._covered_embeddings,
+                                   (n.question_embedding for n in self.nodes.values())):
+            if vec and list(vec) != own:
+                yield vec
+
     def compute_novelty(self, node: ResearchNode) -> float:
-        """Fraction of the node's learnings not already seen elsewhere in the tree."""
-        items = node.learnings or ([node.answer_digest] if node.answer_digest else [])
-        if not items:
+        """1 - the highest cosine between this node's question and any question the
+        tree already covers.
+
+        defect 5: the old score was the fraction of the node's learning STRINGS not
+        already seen verbatim, so a child restating covered ground in different
+        words scored a perfect 1.0 — pruned_count was 0 in every measured tree
+        (bun-rust-port live run: node_count 13, pruned_count 0). Meaning, not
+        wording, decides now.
+        """
+        own = list(node.question_embedding or [])
+        if not own:
+            # ponytail: no embedding (the embedding call failed) -> fail OPEN. There
+            # is no evidence of duplication, and pruning on none deletes real
+            # research; the dedup step degrades the same way.
             return 1.0
-        keys = {" ".join(str(l).lower().split()) for l in items}
-        new = [k for k in keys if k not in self._seen_learnings]
-        self._seen_learnings.update(keys)
-        return len(new) / len(keys)
+        nearest = max((_cosine(own, vec) for vec in self._other_covered_embeddings(own)),
+                      default=0.0)
+        self._covered_embeddings.append(own)
+        return max(0.0, min(1.0, 1.0 - nearest))
 
     def _prune_ungrounded_markers(self, body: str, citation_map: Dict[str, str]) -> str:
         """Second fail-closed pass, after find_uncited_ids strips markers with NO
@@ -441,11 +497,19 @@ class TreeResearchSkill:
                   stream: bool = False, outputs_dir: Optional[str] = None,
                   time_budget_s: float = 600.0) -> Dict[str, Any]:
         query = query or self.researcher.query
+        self._root_query = str(query or "")
         self._max_breadth = max_breadth
         start = time.time()
 
         root = ResearchNode(id="0", question=query, parent_id=None, depth=0)
         root.priority = 1.0
+        # the root question is the one topic guaranteed to be covered; unembedded,
+        # a first-generation child that merely rephrases the original query scores
+        # fully novel and gets researched all over again (defect 5)
+        try:
+            root.question_embedding = await self.embed_question(query)
+        except Exception as e:
+            logger.warning(f"root embedding failed, novelty degraded: {e}")
         self.nodes[root.id] = root
 
         frontier = Frontier()
@@ -479,7 +543,8 @@ class TreeResearchSkill:
             if node.status == NodeStatus.FAILED:
                 # defect 3: nothing to expand from and nothing to roll up. Skipping
                 # compute_novelty matters too — registering a starved node's
-                # learnings would let fabricated text prune a later real node.
+                # question as covered ground would let the hole it left prune a
+                # later child that would have filled it.
                 continue
 
             node.novelty = self.compute_novelty(node)
