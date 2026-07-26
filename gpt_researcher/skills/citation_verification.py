@@ -19,6 +19,22 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def text_supported(quote: str, source: str) -> bool:
+    """True if source contains quote or shares >=0.7 of its significant words."""
+    q, s = _normalize(quote), _normalize(source)
+    if q and q in s:
+        return True
+    # ponytail: learnings are paraphrased live, so exact containment is too
+    # strict there — fall back to significant-word overlap >= 0.7.
+    # A word also counts if its crude stem (drop last 2 chars) appears,
+    # so "providers"/"provider", "regulations"/"regulation" still match.
+    words = {w for w in re.findall(r"[a-z0-9]{4,}", q)}
+    if not words:
+        return False
+    hits = sum(1 for w in words if w in s or (len(w) > 5 and w[:-2] in s))
+    return hits / len(words) >= 0.7
+
+
 class CitationAgent:
     """Verify {quote/learning: citation url} claims against live sources."""
 
@@ -56,22 +72,14 @@ class CitationAgent:
         return None
 
     def _matches(self, quote: str, source: str) -> bool:
-        q, s = _normalize(quote), _normalize(source)
-        if q and q in s:
-            return True
-        # ponytail: learnings are paraphrased live, so exact containment is too
-        # strict there — fall back to significant-word overlap >= 0.7.
-        # A word also counts if its crude stem (drop last 2 chars) appears,
-        # so "providers"/"provider", "regulations"/"regulation" still match.
-        words = {w for w in re.findall(r"[a-z0-9]{4,}", q)}
-        if not words:
-            return False
-        hits = sum(1 for w in words if w in s or (len(w) > 5 and w[:-2] in s))
-        return hits / len(words) >= 0.7
+        return text_supported(quote, source)
 
-    def verify(self, citations: dict[str, str]) -> dict:
+    def verify(self, citations: dict[str, str],
+               documents: dict[str, str] | None = None) -> dict:
+        """Verify {quote: url} claims; documents (url -> already-read text) seeds
+        the fetch cache so those URLs are checked locally instead of re-scraped."""
         claims = []
-        cache: dict[str, str | None] = {}
+        cache: dict[str, str | None] = dict(documents) if documents else {}
         for quote, url in citations.items():
             if url not in cache:
                 cache[url] = self._scrape(url) if url else None

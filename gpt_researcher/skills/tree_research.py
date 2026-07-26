@@ -9,6 +9,7 @@ gpt_researcher.skills.tree_research.GPTResearcher / .create_chat_completion).
 """
 from __future__ import annotations
 
+import asyncio
 import heapq
 import itertools
 import json
@@ -25,6 +26,7 @@ from typing import Any, Dict, List, Optional
 from .. import GPTResearcher
 from ..utils.llm import create_chat_completion
 from ..utils.enum import ReportType, ReportSource
+from .citation_verification import CitationAgent, text_supported
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +88,19 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
+_CITE_ID_RE = re.compile(r"\[(\d+)\]")
+
+
+def find_uncited_ids(report_md: str, citation_map: Dict[str, str]) -> List[str]:
+    """[id] markers in report_md with no citations-map entry, first-appearance order."""
+    out: List[str] = []
+    for m in _CITE_ID_RE.finditer(report_md or ""):
+        cid = m.group(1)
+        if cid not in citation_map and cid not in out:
+            out.append(cid)
+    return out
+
+
 def _slug(text: str, max_len: int = 40) -> str:
     s = re.sub(r"[^\w\s-]", "", text or "").strip().lower()
     s = re.sub(r"[\s_-]+", "-", s)
@@ -104,6 +119,7 @@ class TreeResearchSkill:
         self.visited_urls = researcher.visited_urls  # shared across all node researchers
         self.nodes: Dict[str, ResearchNode] = {}
         self._embeddings: List[List[float]] = []  # accepted candidate-question embeddings
+        self._read_docs: Dict[str, str] = {}  # url -> text of documents actually scraped
         self._seen_learnings: set = set()
         self._syntheses: Dict[str, str] = {}
         self._max_breadth = 4
@@ -174,6 +190,25 @@ class TreeResearchSkill:
                           for l in parts["LEARNINGS"].splitlines() if l.strip("-* ").strip()]
         if not node.learnings:
             node.learnings = [node.answer_digest] if node.answer_digest else []
+
+        # defect 6a: node.sources means "read AND quoted", not "every retriever
+        # return". Keep only URLs whose scraped document supports some sentence
+        # or learning of the answer; fail-closed on missing/empty documents.
+        read_docs: Dict[str, str] = {}
+        try:
+            for doc in researcher.get_research_sources() or []:
+                url = str(doc.get("url") or "")
+                if url:
+                    read_docs[url] = str(doc.get("raw_content") or doc.get("content") or "")
+        except (AttributeError, TypeError):
+            read_docs = {}
+        self._read_docs.update(read_docs)
+        claims = [s for s in re.split(r"(?<=[.!?])\s+", node.answer_md) if s.strip()]
+        claims += node.learnings
+        node.sources = [u for u in node.sources
+                        if read_docs.get(u)
+                        and any(text_supported(c, read_docs[u]) for c in claims)]
+
         node.tokens_spent = (len(context) + len(response)) // 4
         try:
             node.credits_spent = float(researcher.get_costs() or 0.0)
@@ -385,6 +420,25 @@ class TreeResearchSkill:
             lines += [f"- [{cid}] {url}" for cid, url in citation_map.items()]
         report_md = "\n".join(lines).strip() + "\n"
 
+        # defect 6a fail-closed: an [id] with no citations entry never reaches
+        # the caller — detect, then strip the unbacked markers from the report.
+        uncited_ids = find_uncited_ids(report_md, citation_map)
+        if uncited_ids:
+            logger.error(f"uncited [id] markers stripped from report: {uncited_ids}")
+            report_md = re.sub(
+                r"\[(?:" + "|".join(re.escape(c) for c in uncited_ids) + r")\]",
+                "", report_md)
+
+        # CitationAgent over the tree node claims: each learning is checked
+        # against its node's read-and-quoted document (no re-scrape needed).
+        claim_urls: Dict[str, str] = {}
+        for n in self.nodes.values():
+            url = n.sources[0] if n.sources else ""
+            for learning in n.learnings:
+                claim_urls.setdefault(learning, url)
+        citation_verification = await asyncio.to_thread(
+            CitationAgent().verify, claim_urls, self._read_docs)
+
         max_depth_reached = max((n.depth for n in self.nodes.values()), default=0)
         meta = {
             "query": query,
@@ -401,6 +455,8 @@ class TreeResearchSkill:
             "report_md": report_md,
             "tree": tree,
             "citation_map": citation_map,
+            "uncited_ids": uncited_ids,
+            "citation_verification": citation_verification,
             "stats": {**meta, "researched": researched,
                       "tokens_spent": self.tokens_spent,
                       "credits_spent": self.credits_spent,
