@@ -36,6 +36,10 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
 - baseline은 **s0에서 1회 실측 후 동결**: s0 에이전트가 골든 5쿼리를 firecrawl 멀티에이전트
   방식으로 실행해 같은 채점기로 채점 → `bench/baseline_firecrawl.json` freeze. 이후 수정은
   manifest 해시 + git log 이중으로 적발되며 즉시 빌드 실패.
+- **동결 대상은 골든셋 + baseline + `bench/score_report.py`(채점기 본체)** 세 가지다. 골든셋만
+  잠그면 창문만 잠그고 문은 열어둔 꼴 — baseline 수치 자체가 **그 바이트의 채점기로** 산출됐기
+  때문에, 채점기가 바뀌면 baseline 과의 비교가 성립하지 않는다. 채점기에 진짜 버그가 발견되면
+  빌드는 하드스톱하고 사람이 판단한다(수정하려면 baseline 재측정이 동반돼야 한다).
 - 골든셋 2~5는 s0 에이전트 자율 선정 (기존 `D:/dev_ext/gptr-mcp/outputs/` tree 실행 이력
   쿼리 우선). #1은 bun-rust-port 고정 시딩.
 - impl/review/measure는 **세션 분리 노드** (같은 세션 겸임 금지): 구현자는 리뷰하지 않고,

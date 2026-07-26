@@ -32,9 +32,10 @@ def main() -> int:
         print(f"frozen_ok=0 golden_count={len(golden)} "
               f"reason=golden_set_changed_extra:{','.join(extra) or '-'}_missing:{','.join(missing) or '-'}")
         return 0
-    if "bench/baseline_firecrawl.json" not in want:
-        print("frozen_ok=0 golden_count=0 reason=baseline_not_in_manifest")
-        return 0
+    for required in ("bench/baseline_firecrawl.json", "bench/score_report.py"):
+        if required not in want:
+            print(f"frozen_ok=0 golden_count=0 reason=not_in_manifest:{required}")
+            return 0
 
     for rel, h in sorted(want.items()):
         p = hconf.HARNESS / rel

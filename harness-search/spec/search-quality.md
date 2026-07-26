@@ -126,7 +126,8 @@ python bench/score_report.py --golden bench/golden/<id>.json \
   sources.json 기반으로 동일 규칙 적용(채점기가 --tree 없이도 동작해야 함).
 - 형식: `{"queries": {"<id>": {"S1_pct"..."S6_pct", "report": "...", "scores": "..."}},
   "aggregate": {"S1_pct"..."S6_pct"}}` (aggregate = 산술평균, 정수 반올림).
-- s0 게이트 통과 시점 이후 `bench/golden/*` 와 `bench/baseline_firecrawl.json` 은 **읽기 전용**.
+- s0 게이트 통과 시점 이후 `bench/golden/*`, `bench/baseline_firecrawl.json`,
+  `bench/score_report.py`(채점기 본체 — baseline 이 이 바이트로 산출됐다) 는 **읽기 전용**.
   `bench/manifest.sha256`(freeze_bench.py 산출)과의 해시 대조를 이후 모든 게이트가 수행하고,
   harness-audit 이 git log 로 빌드 중 수정 여부를 재확인한다. 수정 발견 = 즉시 FAIL.
 

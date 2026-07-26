@@ -10,8 +10,10 @@ Deterministically audits the HARNESS itself (not the build):
               probing each gate with known-good/known-bad evidence (backing up and
               restoring real evidence via the regenerators); this script only reads
               gralph's own tool-emitted reports.
-  git_ok      score-tamper detection — `git log --follow` shows NO commit after the s0
-              freeze commit that touches bench/golden/* or bench/baseline_firecrawl.json.
+  git_ok      score-tamper detection — `git log` shows NO commit after the s0 freeze
+              commit that touches bench/golden/*, bench/baseline_firecrawl.json, or
+              bench/score_report.py (the scorer is part of the instrument: every later
+              score AND the frozen baseline were produced by those exact bytes).
               (The freeze commit = the earliest commit containing [sq][s0].)
   frozen_ok   manifest hashes still match (check_frozen.py verdict).
   regen_ok    law 10 — re-running the regenerators twice yields byte-identical evidence:
@@ -93,7 +95,9 @@ def main() -> int:
     if first_s0:
         touches = hconf.git(hconf.REPO, "log", "--format=%H",
                             f"{first_s0[0]}..HEAD", "--",
-                            "harness-search/bench/golden", "harness-search/bench/baseline_firecrawl.json")
+                            "harness-search/bench/golden",
+                            "harness-search/bench/baseline_firecrawl.json",
+                            "harness-search/bench/score_report.py")
         if touches.strip():
             if reason == "-":
                 reason = f"golden_or_baseline_MODIFIED_after_freeze:{touches.splitlines()[0][:12]}"
