@@ -33,6 +33,18 @@ logger = logging.getLogger(__name__)
 # question-embedding cosine at/above which a candidate is a duplicate and dropped
 DEDUP_COSINE = 0.92
 
+# defect 3 fail-closed floor: a node whose research came back under this many
+# characters is context-starved, not researched. Observed starved nodes sat at
+# 1.3-8KB while a repaired node measures ~40KB (s1 live probe, 5 goldens:
+# 38355-42687), so this cuts the whole starved band and still leaves ~5x headroom
+# under a healthy node — a narrower leaf question gets less context than the root
+# query, and failing those would hollow out the report instead of cleaning it.
+# Below the floor the node has not researched its question, it has merely failed
+# quietly, and the answer LLM fills the gap from prior knowledge — the direct cause
+# of the trap (S3 false-positive) hits.
+# ponytail: one global floor; scale it by depth if deep leaves start failing.
+MIN_CONTEXT_CHARS = 8000
+
 
 class NodeStatus(Enum):
     PENDING = "pending"
@@ -176,6 +188,36 @@ class TreeResearchSkill:
             context = "\n\n".join(str(c) for c in context)
         context = str(context or "")[:60000]
 
+        # defect 6a: node.sources means "read AND quoted", not "every retriever
+        # return". The candidates are the documents this node researcher actually
+        # read (research_sources) — NOT visited_urls, which is both too wide (a
+        # retriever-returned URL nobody scraped) and too narrow (a retriever that
+        # prefetches full content, e.g. Firecrawl / PubMed Central, delivers a read
+        # document that no scrape ever registered).
+        read_docs: Dict[str, str] = {}
+        try:
+            for doc in researcher.get_research_sources() or []:
+                url = str(doc.get("url") or "")
+                text = str(doc.get("raw_content") or doc.get("content") or "")
+                # a later contentless duplicate must not blank a document that was read
+                if url and (text or url not in read_docs):
+                    read_docs[url] = text
+        except (AttributeError, TypeError):
+            read_docs = {}
+
+        # defect 3, hardest case: the node read nothing. However many characters of
+        # context text came back (boilerplate, error text, an LLM-written preamble),
+        # there is no evidence for an answer to stand on, so the answer LLM could
+        # only write prior knowledge — exactly the fabricated text that lands in the
+        # report as a trap hit. Don't ask it at all; there is then no answer to
+        # salvage downstream.
+        if not read_docs:
+            logger.error(f"tree node {node.id} read 0 documents — failing closed")
+            node.tokens_spent = len(context) // 4
+            node.status = NodeStatus.FAILED
+            return
+        self._read_docs.update(read_docs)
+
         # ponytail: one LLM call yields answer + digest + learnings; parse-tolerant
         response = await create_chat_completion(
             messages=[
@@ -220,24 +262,8 @@ class TreeResearchSkill:
         if not node.learnings:
             node.learnings = [node.answer_digest] if node.answer_digest else []
 
-        # defect 6a: node.sources means "read AND quoted", not "every retriever
-        # return". The candidates are the documents this node researcher actually
-        # read (research_sources) — NOT visited_urls, which is both too wide (a
-        # retriever-returned URL nobody scraped) and too narrow (a retriever that
-        # prefetches full content, e.g. Firecrawl / PubMed Central, delivers a read
-        # document that no scrape ever registered). Keep only those supporting some
-        # sentence or learning of the answer; fail-closed on missing/empty documents.
-        read_docs: Dict[str, str] = {}
-        try:
-            for doc in researcher.get_research_sources() or []:
-                url = str(doc.get("url") or "")
-                text = str(doc.get("raw_content") or doc.get("content") or "")
-                # a later contentless duplicate must not blank a document that was read
-                if url and (text or url not in read_docs):
-                    read_docs[url] = text
-        except (AttributeError, TypeError):
-            read_docs = {}
-        self._read_docs.update(read_docs)
+        # Keep only the read documents supporting some sentence or learning of the
+        # answer; fail-closed on missing/empty documents.
         claims = [s for s in re.split(r"(?<=[.!?])\s+", node.answer_md) if s.strip()]
         claims += node.learnings
         node.sources = sorted(u for u, doc_text in read_docs.items()
@@ -249,6 +275,17 @@ class TreeResearchSkill:
             node.credits_spent = float(researcher.get_costs() or 0.0)
         except (AttributeError, TypeError, ValueError):
             node.credits_spent = 0.0
+
+        # defect 2+3: the node DID read documents, so its answer and its narrowed
+        # source list are a real record and stay on the node (they are what the
+        # citation-verification diagnostic and tree.json are built from), but a node
+        # this context-starved is not evidence. FAILED is what keeps its text out of
+        # the roll-up (synthesize_node) and its URLs out of the citation map (run).
+        if len(context) < MIN_CONTEXT_CHARS:
+            logger.error(f"tree node {node.id} context {len(context)} chars "
+                         f"< MIN_CONTEXT_CHARS {MIN_CONTEXT_CHARS} — failing closed")
+            node.status = NodeStatus.FAILED
+            return
         node.status = NodeStatus.ANSWERED
 
     async def generate_child_questions(self, node: ResearchNode) -> List[str]:
@@ -367,6 +404,13 @@ class TreeResearchSkill:
         source_ids = source_ids or {}
         if node.status == NodeStatus.PENDING:
             return f"(unexplored frontier) {node.question}"
+        if node.status == NodeStatus.FAILED:
+            # defect 3: a failed node contributes NO text of its own — neither its
+            # answer (prior knowledge written over missing evidence) nor the
+            # node.question fallback below, which would smuggle the unresearched
+            # question into the report as if it were a finding. Children that did
+            # research still roll up through it: their findings were researched.
+            return "\n\n".join(child_summaries)
         # attribution needs text close to the source wording: answer_md is what
         # node.sources narrowing already checked for overlap (see research_node);
         # answer_digest is an LLM paraphrase that rarely clears text_supported's
@@ -421,6 +465,12 @@ class TreeResearchSkill:
             researched += 1
             self.tokens_spent += node.tokens_spent
             self.credits_spent += node.credits_spent
+
+            if node.status == NodeStatus.FAILED:
+                # defect 3: nothing to expand from and nothing to roll up. Skipping
+                # compute_novelty matters too — registering a starved node's
+                # learnings would let fabricated text prune a later real node.
+                continue
 
             node.novelty = self.compute_novelty(node)
             if node.novelty < novelty_threshold:
@@ -477,6 +527,11 @@ class TreeResearchSkill:
         citation_map: Dict[str, str] = {}
         url_to_id: Dict[str, str] = {}
         for n in self.nodes.values():
+            # defect 3: a failed node's URLs are not evidence either — otherwise its
+            # sources leak into the report through the Citations list even though the
+            # roll-up already dropped its text
+            if n.status == NodeStatus.FAILED:
+                continue
             for url in n.sources:
                 if url not in url_to_id:
                     cid = str(len(url_to_id) + 1)
@@ -504,7 +559,13 @@ class TreeResearchSkill:
         # the caller — detect, then strip the unbacked markers. Body only: the
         # Citations list is data, so a bracketed number inside a URL must never
         # be read as a citation marker (nor be rewritten by the strip).
-        uncited_ids = find_uncited_ids(body, citation_map)
+        # Scanned over the node answers as well as the assembled body: s3 drops whole
+        # nodes (FAILED) out of the roll-up, so a marker the answer LLM fabricated on
+        # a dropped node would stop being REPORTED exactly when the tree is failing —
+        # the signal goes quiet at the moment it matters. The strip below still only
+        # rewrites the body; an id that never reached it is a no-op there.
+        uncited_ids = find_uncited_ids(
+            "\n".join([body, *(n.answer_md for n in self.nodes.values())]), citation_map)
         if uncited_ids:
             logger.error(f"uncited [id] markers stripped from report: {uncited_ids}")
             bad = set(uncited_ids)
