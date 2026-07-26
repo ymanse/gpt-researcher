@@ -149,11 +149,11 @@ _STOP = {"that", "with", "this", "from", "have", "been", "were", "their", "which
          "while", "where", "also", "each", "other", "them", "they", "these", "those",
          "such", "some", "most", "many", "very", "will", "would", "could", "should",
          "there", "then", "what", "your", "does", "using", "used", "between"}
-_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
-# the scorer blanks these before it splits sentences, so a marker or URL never
-# contributes a "number" or a context token
-_SCRUB_RES = (re.compile(r"\[\d{1,3}\]"), re.compile(r"\(https?://\S+\)"),
-              re.compile(r"https?://\S+"))
+# claim_sentences() blanks these, IN THIS ORDER, before it splits sentences, so a
+# fence, marker or URL never contributes a "number" or a context token — and never
+# holds a sentence boundary either
+_SCRUB_RES = (re.compile(r"```.*?```", re.DOTALL), re.compile(r"\[\d{1,3}\]"),
+              re.compile(r"\(https?://\S+\)"), re.compile(r"https?://\S+"))
 # splits on the scorer's sentence boundary, but KEEPS the separators: joining the
 # pieces back reproduces the input byte for byte, so a report with nothing to drop
 # comes back untouched (markdown structure and [id] positions are what the S1
@@ -172,10 +172,26 @@ def _ctx_tokens(text: str) -> set:
 
 
 def _claim_profile(text: str) -> tuple:
-    """(significant numbers, context tokens) — the scorer's view of one text."""
-    for rx in _SCRUB_RES:
-        text = rx.sub(" ", text)
+    """(significant numbers, context tokens) — the scorer's view of one text.
+
+    No scrubbing here: score_s6 profiles the CORPUS raw (`prepared` is built
+    straight off tree.json's node["answer"]) and profiles claim sentences off the
+    already-scrubbed body. Scrubbing both sides made the pass stricter than the
+    gate — it deleted report text the scorer would have accepted, because a node
+    answer's figure sitting inside a URL still counts for the scorer.
+    """
     return {_num_key(m.group(0)) for m in _SIGNUM.finditer(text)}, _ctx_tokens(text)
+
+
+def _scrubbed(text: str) -> str:
+    """claim_sentences()' pre-scrub, made offset-preserving: each deleted span
+    becomes the SAME number of blanks, so an offset into the result is the same
+    offset in `text`. The scorer collapses each span to a single space, which is
+    equivalent for segmentation (both boundaries match whitespace RUNS) but loses
+    the mapping back to the raw body that dropping an exact slice needs."""
+    for rx in _SCRUB_RES:
+        text = rx.sub(lambda m: " " * len(m.group(0)), text)
+    return text
 
 
 def _slug(text: str, max_len: int = 40) -> str:
@@ -201,6 +217,7 @@ class TreeResearchSkill:
         self._syntheses: Dict[str, str] = {}
         self._root_query: str = str(getattr(researcher, "query", "") or "")
         self._max_breadth = 4
+        self._rollup_dropped_ratio = 0.0  # share of the body verify_rollup removed
         self.tokens_spent = 0
         self.credits_spent = 0.0
 
@@ -503,34 +520,68 @@ class TreeResearchSkill:
         and the scorer read the same evidence. A FAILED node is left out: its answer
         is prior knowledge written over missing evidence (defect 3 / s3), never
         evidence for anything.
+
+        Two known asymmetries are deliberately NOT closed here, because closing
+        either from this side alone makes things worse:
+          * the report's H1 is `# {query}`, so a query carrying a figure (two
+            goldens do) is scored as a claim and can be dropped, taking the title
+            with it. Exempting headings from the DROP does not exempt them from the
+            SCORER, so it trades a lost title for a gate leak — the fix is in how
+            the title is rendered, not in what this pass checks.
+          * a PRUNED node's answer validates claims here even though rollup() keeps
+            its text out of the report. tree.json blanks only FAILED, so the
+            scorer's corpus has PRUNED answers too; dropping them here only would
+            make this pass stricter than the gate and delete report text the scorer
+            accepts. Both sides move together or neither.
         """
         corpus = [_claim_profile(n.answer_md) for n in self.nodes.values()
                   if n.status != NodeStatus.FAILED and n.answer_md]
         body = body or ""
-        fenced = [m.span() for m in _FENCE_RE.finditer(body)]
-        parts = _SENT_SPLIT_RE.split(body)
+        # Segment the SCRUBBED text, not the raw body — the scorer scrubs first and
+        # splits that. Two ways the raw split diverges from what the gate measures:
+        # a scrub that empties the gap between a '.' and the next word CREATES a
+        # boundary ("...lines.[1]The team logged 88,888 warnings."), so the trailing
+        # sentence would never be claim-checked; and the over-long part it leaves
+        # behind carries the UNION of both sentences' numbers, letting one supported
+        # figure launder an unsupported one past the check. _scrubbed() is
+        # offset-preserving, so a span here is still the same span of `body`.
+        parts = _SENT_SPLIT_RE.split(_scrubbed(body))
         contradictions: List[str] = []
         unsupported: List[str] = []
         out: List[str] = []
         pos = 0
+        dropped = 0
+        drop_prev = False
         for i, part in enumerate(parts):
             start, pos = pos, pos + len(part)
-            # odd indices are the separators; the scorer ignores fenced code
-            if i % 2 or not part.strip() or any(s < pos and start < e for s, e in fenced):
-                out.append(part)
+            raw = body[start:pos]  # what ships; `part` is what the scorer reads
+            if i % 2:
+                # separators are whitespace in the SCRUBBED view, so a citation
+                # marker landing in one trailed the sentence before it. Dropping
+                # that sentence and keeping its marker ships an [id] next to text
+                # it never supported — what _prune_ungrounded_markers ran earlier
+                # to stop, and this pass runs after it.
+                out.append(_CITE_ID_RE.sub("", raw) if drop_prev else raw)
+                continue
+            drop_prev = False
+            if not part.strip():
+                out.append(raw)
                 continue
             nums, ctx = _claim_profile(part)
             if not nums:  # prose carrying no figure is not a claim the scorer weighs
-                out.append(part)
+                out.append(raw)
                 continue
             need = min(2, len(ctx))
             if any((nums & cn) and len(ctx & ct) >= need for cn, ct in corpus):
-                out.append(part)
+                out.append(raw)
                 continue
+            dropped += len(raw)
+            drop_prev = True
             if any(cn and len(ctx & ct) >= 3 and not (nums & cn) for cn, ct in corpus):
-                contradictions.append(part.strip())
+                contradictions.append(raw.strip())
             else:
-                unsupported.append(part.strip())
+                unsupported.append(raw.strip())
+        self._rollup_dropped_ratio = round(dropped / len(body), 4) if body else 0.0
         return "".join(out), contradictions, unsupported
 
     def _attribute_citations(self, text: str, source_ids: Dict[str, str]) -> str:
@@ -763,9 +814,14 @@ class TreeResearchSkill:
         # must not leave its source behind in the citations block.
         body, contradictions, unsupported = self.verify_rollup(body)
         if contradictions or unsupported:
+            # the ratio separates "one claim was cleaned" from "the report collapsed":
+            # when most nodes FAILED the corpus is tiny and every figure misses, and
+            # the counts alone read the same either way
             logger.error(f"roll-up consistency: dropped {len(contradictions)} claim(s) "
                          f"contradicting a node answer and {len(unsupported)} no node "
-                         f"answer supports: {[*contradictions, *unsupported]}")
+                         f"answer supports "
+                         f"({self._rollup_dropped_ratio:.1%} of the body): "
+                         f"{[*contradictions, *unsupported]}")
 
         # a source that survived node.sources narrowing but whose id never made it
         # into the synthesized body (e.g. an internal rollup dropped it while
@@ -828,6 +884,7 @@ class TreeResearchSkill:
             "stats": {**meta, "researched": researched,
                       "contradictions": len(contradictions),
                       "unsupported_claims": len(unsupported),
+                      "rollup_dropped_ratio": self._rollup_dropped_ratio,
                       "tokens_spent": self.tokens_spent,
                       "credits_spent": self.credits_spent,
                       "time_budget_exhausted": time_budget_exhausted,
