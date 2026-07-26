@@ -177,6 +177,12 @@ commands:
       evidence) — fix, keep `python scripts/verify_impl.py --stage 1` ok=1, re-run measure.
       When met, COMMIT everything on feature/search-quality with message starting
       [sq][s1] (tracked trees clean in BOTH repos; the gate verifies commit + frozen_ok).
+      RUN IT IN THE FOREGROUND AND WAIT FOR IT TO EXIT. Live tree research takes
+      30-90 minutes; the node timeout is sized for that. Your session ENDS the moment
+      you stop emitting — there is no "I'll report when it finishes". Backgrounding
+      the script orphans it: the loop then burns iteration after iteration against a
+      locked container while nobody collects the result (measured, 8 iterations lost).
+      Never use a background/detached run, never end your turn while it is running.
       FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
       gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
       after measuring, the gate rejects the evidence; just re-run the measure script
@@ -270,6 +276,12 @@ commands:
       Gate thresholds: queries_run>=2 AND S1_min_pct>=80 AND uncited_ids_total=0.
       If unmet: fix the implementation (never harness scripts/evidence), keep
       verify_impl --stage 2 ok=1, re-run measure. Then COMMIT [sq][s2] (both repos clean).
+      RUN IT IN THE FOREGROUND AND WAIT FOR IT TO EXIT. Live tree research takes
+      30-90 minutes; the node timeout is sized for that. Your session ENDS the moment
+      you stop emitting — there is no "I'll report when it finishes". Backgrounding
+      the script orphans it: the loop then burns iteration after iteration against a
+      locked container while nobody collects the result (measured, 8 iterations lost).
+      Never use a background/detached run, never end your turn while it is running.
       FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
       gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
       after measuring, the gate rejects the evidence; just re-run the measure script
@@ -363,6 +375,12 @@ commands:
       false-answer detectors; one hit means an empty-handed node still answered).
       If unmet: fix the implementation, keep verify_impl --stage 3 ok=1, re-run measure.
       Then COMMIT [sq][s3] (both repos clean).
+      RUN IT IN THE FOREGROUND AND WAIT FOR IT TO EXIT. Live tree research takes
+      30-90 minutes; the node timeout is sized for that. Your session ENDS the moment
+      you stop emitting — there is no "I'll report when it finishes". Backgrounding
+      the script orphans it: the loop then burns iteration after iteration against a
+      locked container while nobody collects the result (measured, 8 iterations lost).
+      Never use a background/detached run, never end your turn while it is running.
       FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
       gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
       after measuring, the gate rejects the evidence; just re-run the measure script
@@ -458,6 +476,12 @@ commands:
       s5_improved=1.
       If unmet: fix the implementation, keep verify_impl --stage 4 ok=1, re-run measure.
       Then COMMIT [sq][s4] (both repos clean).
+      RUN IT IN THE FOREGROUND AND WAIT FOR IT TO EXIT. Live tree research takes
+      30-90 minutes; the node timeout is sized for that. Your session ENDS the moment
+      you stop emitting — there is no "I'll report when it finishes". Backgrounding
+      the script orphans it: the loop then burns iteration after iteration against a
+      locked container while nobody collects the result (measured, 8 iterations lost).
+      Never use a background/detached run, never end your turn while it is running.
       FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
       gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
       after measuring, the gate rejects the evidence; just re-run the measure script
@@ -551,6 +575,12 @@ commands:
       unsupported_claims_total=0.
       If unmet: fix the implementation, keep verify_impl --stage 5 ok=1, re-run measure.
       Then COMMIT [sq][s5] (both repos clean).
+      RUN IT IN THE FOREGROUND AND WAIT FOR IT TO EXIT. Live tree research takes
+      30-90 minutes; the node timeout is sized for that. Your session ENDS the moment
+      you stop emitting — there is no "I'll report when it finishes". Backgrounding
+      the script orphans it: the loop then burns iteration after iteration against a
+      locked container while nobody collects the result (measured, 8 iterations lost).
+      Never use a background/detached run, never end your turn while it is running.
       FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
       gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
       after measuring, the gate rejects the evidence; just re-run the measure script
@@ -585,6 +615,12 @@ commands:
       measure returns here directly.
       If some queries errored: fix the cause, re-run benchmark.py (cached queries skip).
       COMMIT any code changes [sq][s6] style before submitting if you had to fix code.
+      RUN IT IN THE FOREGROUND AND WAIT FOR IT TO EXIT. Live tree research takes
+      30-90 minutes; the node timeout is sized for that. Your session ENDS the moment
+      you stop emitting — there is no "I'll report when it finishes". Backgrounding
+      the script orphans it: the loop then burns iteration after iteration against a
+      locked container while nobody collects the result (measured, 8 iterations lost).
+      Never use a background/detached run, never end your turn while it is running.
       FRESHNESS: the evidence records code_fp (content hash of gpt_researcher/**/*.py +
       gptr-mcp/server.py) and the gate RECOMPUTES it — if you touch the implementation
       after measuring, the gate rejects the evidence; just re-run the measure script

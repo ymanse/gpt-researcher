@@ -95,22 +95,38 @@ def _pid_alive(pid: int) -> bool:
     return str(pid) in (r.stdout or "")
 
 
-def acquire_live_lock() -> None:
+def acquire_live_lock(max_wait_s: int = 7200) -> None:
     """One live measure at a time: every run force-recreates the SHARED container, so a
     concurrent second run kills the first one's MCP session mid-call (measured on tier-a).
-    Stale locks self-clear."""
+
+    A busy lock WAITS rather than exiting. Bailing looked safer but wasn't: the loop
+    starts a fresh session every few minutes, and a session that dies on a busy lock
+    burns an iteration for nothing (measured: 7 iterations burned while a real 30-min
+    measure was in flight). Waiting is also cheap — once the holder finishes it has
+    written this round's cache, so the waiter's own run finishes from cache in seconds.
+    Stale locks (dead PID) self-clear."""
     import atexit
     import os
     lock = hconf.HARNESS / "no_read" / "live.lock"
-    if lock.exists():
+    deadline = time.time() + max_wait_s
+    waited = 0
+    while lock.exists():
         try:
             pid = int(lock.read_text().strip())
-        except ValueError:
+        except (ValueError, OSError):
             pid = 0
-        if pid and _pid_alive(pid):
-            print(f"LIVE LOCKED: another measure run (PID {pid}) is in progress — wait for "
-                  f"it and read the evidence it writes; do NOT start a second one.")
+        if not pid or not _pid_alive(pid):
+            break                                   # stale lock: holder is gone
+        if time.time() > deadline:
+            print(f"LIVE LOCK held by live PID {pid} for more than {max_wait_s}s — refusing "
+                  f"to start a second measure (it would recreate the shared container and "
+                  f"kill the running MCP call). Investigate that process, then retry.")
             raise SystemExit(2)
+        if waited % 300 == 0:
+            print(f"[measure] another live run (PID {pid}) is in progress — waiting for it; "
+                  f"its round cache will make this run cheap", flush=True)
+        time.sleep(15)
+        waited += 15
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(str(os.getpid()))
     atexit.register(lambda: lock.unlink(missing_ok=True))
