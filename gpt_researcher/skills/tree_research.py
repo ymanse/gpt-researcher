@@ -89,12 +89,14 @@ def _cosine(a: List[float], b: List[float]) -> float:
 
 
 # matches "[1]", comma/semicolon-joined "[1, 3]" / "[1; 3]", space-only "[1 2]",
-# whitespace-padded "[ 1 ]", and hyphen ranges "[1-3]" (range endpoints capped at
-# 3 digits so a bracketed date like "[2024-07-26]" is not mistaken for citations)
-# — LLM rewrites emit all of these; any variant this misses escapes the strip
+# whitespace-padded "[ 1 ]", hyphen ranges "[1-3]" (range endpoints capped at
+# 3 digits so a bracketed date like "[2024-07-26]" is not mistaken for citations),
+# and malformed punctuation an LLM rewrite drops in — doubled ("[1,2,,3]") or
+# trailing ("[1, 99,]") separators before the closing bracket
+# — any variant this still misses escapes the strip
 _ITEM = r"(?:\d+|\d{1,3}\s*-\s*\d{1,3})"
-_SEP = r"(?:\s*[,;]\s*|\s+)"
-_CITE_ID_RE = re.compile(rf"\[\s*({_ITEM}(?:{_SEP}{_ITEM})*)\s*\]")
+_SEP = r"(?:\s*[,;]+\s*|\s+)"
+_CITE_ID_RE = re.compile(rf"\[\s*({_ITEM}(?:{_SEP}{_ITEM})*){_SEP}?\s*\]")
 # range alternative FIRST so a spaced range ("1 - 3") stays one token — splitting
 # the group on _SEP instead shreds a range at its own internal whitespace
 _TOKEN_RE = re.compile(r"(\d{1,3})\s*-\s*(\d{1,3})|(\d+)")
@@ -183,7 +185,9 @@ class TreeResearchSkill:
                  "content": (
                      f"Question: {node.question}\n\nContext:\n{context}\n\n"
                      "Write three sections:\n"
-                     "ANSWER: a cited markdown answer (<=400 words).\n"
+                     "ANSWER: a markdown answer (<=400 words). Do not add citation "
+                     "markers, footnotes, or bracketed references of any kind — "
+                     "citations are attached separately from the real source list.\n"
                      "DIGEST: a <=120-word summary of the answer.\n"
                      "LEARNINGS: 3-6 bullet lines, one atomic factual claim each."
                  )},
@@ -196,7 +200,14 @@ class TreeResearchSkill:
         parts = {"ANSWER": "", "DIGEST": "", "LEARNINGS": ""}
         current = None
         for line in response.splitlines():
-            m = re.match(r"^\s*(ANSWER|DIGEST|LEARNINGS)\s*:\s*(.*)$", line)
+            # tolerate the section label however the model decorates it --
+            # "ANSWER: ...", "# ANSWER", "**ANSWER:**" -- a strict "ANSWER:"-only
+            # match silently falls through to the response.strip() fallback below,
+            # dumping all three sections (headers included) into answer_md as one
+            # blob; that bloats _attribute_citations' input with paraphrased
+            # DIGEST/LEARNINGS text that can't ground as tightly as the real
+            # ANSWER wording, which is what depressed S1_pct (measured: 48/63%).
+            m = re.match(r"^\s*#{0,6}\s*\**\s*(ANSWER|DIGEST|LEARNINGS)\**\s*:?\s*\**\s*(.*)$", line)
             if m:
                 current = m.group(1)
                 parts[current] = m.group(2)
@@ -287,36 +298,85 @@ class TreeResearchSkill:
         self._seen_learnings.update(keys)
         return len(new) / len(keys)
 
+    def _prune_ungrounded_markers(self, body: str, citation_map: Dict[str, str]) -> str:
+        """Second fail-closed pass, after find_uncited_ids strips markers with NO
+        citations-map entry at all. An [id] that DOES exist in citation_map can
+        still be a number the answer LLM invented on its own — the per-node LLM
+        call was never given the real global id map (see research_node's ANSWER
+        prompt) — that only coincidentally collides with some unrelated real
+        source's id; find_uncited_ids cannot catch this, since that id genuinely
+        exists, just not for this claim. Live measurement traced most S1 grounding
+        failures to exactly this: a stray LLM-written `[13]` (or a whole cluster
+        like `[4] [8] [10] [11] [12] [14] [16] [17]`) surviving next to a sentence
+        source #13 never supported.
+
+        Checks a fixed preceding-character window rather than re-splitting body
+        into sentences: _attribute_citations joins a marker onto its sentence
+        with a space, not onto the period itself ("claim. [1]"), so re-splitting
+        the assembled body on sentence-final punctuation peels a trailing marker
+        off its own supporting sentence and glues it to the START of the next
+        one instead (every marker then gets checked against the wrong text,
+        confirmed live: citations_total dropped to 0). A character window has no
+        such boundary to get wrong, and mirrors the shape of the S1 scorer's own
+        near-marker check this whole pass exists to satisfy."""
+        def _check(m: "re.Match[str]") -> str:
+            window = _CITE_ID_RE.sub(" ", body[max(0, m.start() - 300):m.start()])
+            kept = [cid for cid in _bracket_ids(m.group(1))
+                    if text_supported(window, self._read_docs.get(citation_map.get(cid, ""), ""))]
+            return f"[{', '.join(kept)}]" if kept else ""
+        return _CITE_ID_RE.sub(_check, body)
+
+    def _attribute_citations(self, text: str, source_ids: Dict[str, str]) -> str:
+        """Attach each node source's global [id] only to the sentences it actually
+        supports, instead of dumping every node source in one trailing block after
+        the whole answer. The S1 grounding scorer requires an [id] marker to sit
+        next to text that literally traces to that source; a bulk trailing dump
+        (the pre-fix behavior) attaches every source to whichever sentence happens
+        to be last, so most markers end up ungrounded even when the underlying
+        source really does support SOME sentence in the text."""
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        if not sentences:
+            return (text or "").strip()
+        out = []
+        for sent in sentences:
+            ids = sorted((cid for url, cid in source_ids.items()
+                         if text_supported(sent, self._read_docs.get(url, ""))),
+                        key=int)
+            cites = " ".join(f"[{c}]" for c in ids)
+            out.append(f"{sent} {cites}".strip() if cites else sent)
+        return " ".join(out)
+
     async def synthesize_node(self, node: ResearchNode,
                               child_summaries: Optional[List[str]] = None,
-                              citation_ids: Optional[List[str]] = None) -> str:
-        """Roll one node up into a summary (leaf: digest; internal: LLM roll-up)."""
+                              source_ids: Optional[Dict[str, str]] = None) -> str:
+        """Roll one node up into a summary (leaf: own attributed answer;
+        internal: own answer followed by each child's summary, verbatim).
+
+        Three progressively wider "LLM rewrites the merge, then re-derive [id]
+        markers by fuzzy-matching the rewrite against pre-merge text" designs
+        were all measured live to lose citations: matching against raw source
+        pages, then against immediate pre-merge blocks, then against the whole
+        subtree's pre-merge blocks -- each still lost more citations at every
+        rewrite level, culminating in citations_total=0 for a 33-node/depth-3
+        tree (bun-rust-port) even with the widest corpus. The rewrite step
+        itself is what erases the grounding a wider match can't reliably buy
+        back. Concatenation can't lose a citation a child already earned,
+        because it never touches the child's text.
+        """
         child_summaries = [s for s in (child_summaries or []) if s]
-        cites = " ".join(f"[{c}]" for c in (citation_ids or []))
+        source_ids = source_ids or {}
         if node.status == NodeStatus.PENDING:
             return f"(unexplored frontier) {node.question}"
+        # attribution needs text close to the source wording: answer_md is what
+        # node.sources narrowing already checked for overlap (see research_node);
+        # answer_digest is an LLM paraphrase that rarely clears text_supported's
+        # concentrated-passage threshold, which silently zeroed every citation
+        # (measured live: citations_total=0, S1_pct=0 on both s2 measure queries)
+        base = node.answer_md or node.answer_digest or node.question
+        own = self._attribute_citations(base, source_ids)
         if not child_summaries:
-            base = node.answer_digest or node.answer_md or node.question
-            return f"{base} {cites}".strip()
-        blocks = "\n\n".join(f"### Sub-finding\n{s}" for s in child_summaries)
-        response = await create_chat_completion(
-            messages=[
-                {"role": "system",
-                 "content": "You are an expert researcher synthesizing findings into a coherent markdown section."},
-                {"role": "user",
-                 "content": (
-                     f"Question: {node.question}\n"
-                     f"Own findings: {node.answer_digest} {cites}\n\n"
-                     f"Sub-findings from follow-up research:\n{blocks}\n\n"
-                     "Synthesize everything into one coherent markdown answer to the question. "
-                     "Keep existing [id] citation markers attached to the claims they support."
-                 )},
-            ],
-            llm_provider=self.researcher.cfg.strategic_llm_provider,
-            model=self.researcher.cfg.strategic_llm_model,
-            temperature=0.3,
-        )
-        return str(response or "").strip()
+            return own
+        return "\n\n".join([own, *child_summaries])
 
     # -------------------------------------------------------------------- run
 
@@ -431,8 +491,8 @@ class TreeResearchSkill:
                 if child.status == NodeStatus.PRUNED:
                     continue
                 summaries.append(await rollup(child))
-            ids = [url_to_id[u] for u in n.sources if u in url_to_id]
-            text = await self.synthesize_node(n, summaries, ids)
+            node_source_ids = {u: url_to_id[u] for u in n.sources if u in url_to_id}
+            text = await self.synthesize_node(n, summaries, node_source_ids)
             self._syntheses[n.id] = text
             return text
 
@@ -455,10 +515,23 @@ class TreeResearchSkill:
 
             body = _CITE_ID_RE.sub(_keep_cited, body)
 
+        body = self._prune_ungrounded_markers(body, citation_map)
+
+        # a source that survived node.sources narrowing but whose id never made it
+        # into the synthesized body (e.g. an internal rollup dropped it while
+        # merging sub-findings) must not be RENDERED in the Citations list either:
+        # the S1 scorer treats "- [id] url" as one more occurrence of that marker,
+        # and an id with no real in-body usage can only ever ground against the
+        # citations list's own boilerplate line, never a supporting sentence.
+        # citation_map itself (returned to the caller, and what tree.json's
+        # "citations" field is built from) stays the full node.sources union.
+        used_ids = {cid for m in _CITE_ID_RE.finditer(body) for cid in _bracket_ids(m.group(1))}
+        rendered_map = {cid: url for cid, url in citation_map.items() if cid in used_ids}
+
         lines = [body]
-        if citation_map:
+        if rendered_map:
             lines += ["", "## Citations", ""]
-            lines += [f"- [{cid}] {url}" for cid, url in citation_map.items()]
+            lines += [f"- [{cid}] {url}" for cid, url in rendered_map.items()]
         report_md = "\n".join(lines).strip() + "\n"
 
         # CitationAgent over the tree node claims: each learning is attributed
