@@ -276,11 +276,15 @@ class TreeResearchSkill:
         except (AttributeError, TypeError, ValueError):
             node.credits_spent = 0.0
 
-        # defect 2+3: the node DID read documents, so its answer and its narrowed
-        # source list are a real record and stay on the node (they are what the
-        # citation-verification diagnostic and tree.json are built from), but a node
-        # this context-starved is not evidence. FAILED is what keeps its text out of
-        # the roll-up (synthesize_node) and its URLs out of the citation map (run).
+        # defect 2+3: the node read documents, so unlike the empty-handed case above
+        # the answer LLM has to run before the verdict — the s2 contract is pinned on
+        # what this pass produces from a read document (narrowed node.sources, the
+        # parsed answer/digest/learnings, the fabricated-[id] detection run() reports),
+        # and none of it exists until the answer does. What context starvation changes
+        # is the node's STANDING, not its bookkeeping: FAILED is what keeps its text
+        # out of the roll-up (synthesize_node), its URLs out of the citation map (run)
+        # and both out of tree.json (_node_dict), so no starved claim reaches the
+        # report even though the answer text still sits on the node.
         if len(context) < MIN_CONTEXT_CHARS:
             logger.error(f"tree node {node.id} context {len(context)} chars "
                          f"< MIN_CONTEXT_CHARS {MIN_CONTEXT_CHARS} — failing closed")
@@ -559,11 +563,12 @@ class TreeResearchSkill:
         # the caller — detect, then strip the unbacked markers. Body only: the
         # Citations list is data, so a bracketed number inside a URL must never
         # be read as a citation marker (nor be rewritten by the strip).
-        # Scanned over the node answers as well as the assembled body: s3 drops whole
-        # nodes (FAILED) out of the roll-up, so a marker the answer LLM fabricated on
-        # a dropped node would stop being REPORTED exactly when the tree is failing —
-        # the signal goes quiet at the moment it matters. The strip below still only
-        # rewrites the body; an id that never reached it is a no-op there.
+        # Scanned over the node answers as well as the assembled body: s3 drops a
+        # starved node's text out of the roll-up, so a marker the answer LLM
+        # fabricated on a dropped node would stop being REPORTED exactly when the
+        # tree is failing — the signal goes quiet at the moment it matters most.
+        # The strip below still rewrites only the body; an id that never reached it
+        # is a no-op there.
         uncited_ids = find_uncited_ids(
             "\n".join([body, *(n.answer_md for n in self.nodes.values())]), citation_map)
         if uncited_ids:
@@ -641,6 +646,12 @@ class TreeResearchSkill:
 
     @staticmethod
     def _node_dict(n: ResearchNode) -> Dict[str, Any]:
+        # defect 3: a starved node's answer and URLs stay on the node object (the s2
+        # contract above is written against them) but they are not evidence, and
+        # tree.json IS read as evidence — the scorer counts nodes[].sources domains
+        # for S4 and matches report claims against node answers for S6. Emitting them
+        # would let a node the roll-up already dropped support the report anyway.
+        failed = n.status == NodeStatus.FAILED
         return {
             "id": n.id,
             "question": n.question,
@@ -648,10 +659,10 @@ class TreeResearchSkill:
             "children": list(n.children),
             "parent_id": n.parent_id,
             "depth": n.depth,
-            "sources": list(n.sources),
+            "sources": [] if failed else list(n.sources),
             "novelty": n.novelty,
             "priority": n.priority,
-            "answer_digest": n.answer_digest,
+            "answer_digest": "" if failed else n.answer_digest,
         }
 
     def _persist(self, outputs_dir: str, query: str, meta: Dict[str, Any],
