@@ -77,6 +77,11 @@ def review_addressed(stage: int) -> int:
         ack = json.loads(ack_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return 0
+    # Bind the ack to THIS review. Finding ids repeat across rounds (R1, R2, ... every
+    # time), so an ack left over from the previous round would satisfy a brand-new
+    # blocking finding by id collision alone — measured on the s2 round-3 stall.
+    if ack.get("review_head_sha") != rev.get("head_sha"):
+        return 0
     addressed = set(ack.get("addressed_findings", []))
     return 1 if all(b in addressed for b in blocking) else 0
 

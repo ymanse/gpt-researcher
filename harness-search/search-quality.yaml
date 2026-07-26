@@ -120,7 +120,9 @@ commands:
       ONLY — do not review your own work (the next node does that adversarially).
       If no_read/evidence/s1_review.json exists with blocking findings: fix EVERY blocking
       finding first, then write no_read/evidence/s1_impl_ack.json =
-      {"addressed_findings":[<every blocking id>]} (the gate cross-checks ids).
+      {"addressed_findings":[<every blocking id>], "review_head_sha":"<the head_sha field
+      COPIED FROM s1_review.json>"} — the gate cross-checks the ids AND that head_sha, so a
+      leftover ack from an earlier round cannot satisfy a new finding by id collision.
       Preflight: python scripts/verify_impl.py --stage 1  (must print ok=1: hash_match,
       stage+full suite green, ruff_errors=0 on changed files, frozen_ok=1,
       review_addressed_ok=1). The gate re-runs this itself — you cannot submit around it.
@@ -217,7 +219,9 @@ commands:
       node.sources to actually-read-and-cited documents, make uncited [id]s impossible
       (fail-closed). IMPLEMENT ONLY — no self-review.
       If no_read/evidence/s2_review.json has blocking findings: fix EVERY one, then write
-      no_read/evidence/s2_impl_ack.json = {"addressed_findings":[<ids>]}.
+      no_read/evidence/s2_impl_ack.json = {"addressed_findings":[<ids>],
+      "review_head_sha":"<head_sha COPIED FROM s2_review.json>"} — the gate checks
+      both, so a leftover ack from an earlier round cannot satisfy a new finding.
       Preflight: python scripts/verify_impl.py --stage 2 (ok=1; the gate re-runs it).
       Submit: gralph do s2-impl --report no_read/evidence/s2_impl.json
       {{usage}}
@@ -303,7 +307,9 @@ commands:
       FAILED (not ANSWERED, no prior-knowledge answers), FAILED nodes stay out of
       rollup/synthesis. IMPLEMENT ONLY.
       If no_read/evidence/s3_review.json has blocking findings: fix EVERY one, then write
-      no_read/evidence/s3_impl_ack.json = {"addressed_findings":[<ids>]}.
+      no_read/evidence/s3_impl_ack.json = {"addressed_findings":[<ids>],
+      "review_head_sha":"<head_sha COPIED FROM s3_review.json>"} — the gate checks
+      both, so a leftover ack from an earlier round cannot satisfy a new finding.
       Preflight: python scripts/verify_impl.py --stage 3 (ok=1; gate re-runs it).
       Submit: gralph do s3-impl --report no_read/evidence/s3_impl.json
       {{usage}}
@@ -390,7 +396,9 @@ commands:
       compute_novelty (reuse the existing embedding stack), working pruning. IMPLEMENT
       ONLY.
       If no_read/evidence/s4_review.json has blocking findings: fix EVERY one, then write
-      no_read/evidence/s4_impl_ack.json = {"addressed_findings":[<ids>]}.
+      no_read/evidence/s4_impl_ack.json = {"addressed_findings":[<ids>],
+      "review_head_sha":"<head_sha COPIED FROM s4_review.json>"} — the gate checks
+      both, so a leftover ack from an earlier round cannot satisfy a new finding.
       Preflight: python scripts/verify_impl.py --stage 4 (ok=1; gate re-runs it).
       Submit: gralph do s4-impl --report no_read/evidence/s4_impl.json
       {{usage}}
@@ -478,7 +486,9 @@ commands:
       detection against node answers; drop or re-ground offending claims), tree.json
       nodes[].answer field. IMPLEMENT ONLY.
       If no_read/evidence/s5_review.json has blocking findings: fix EVERY one, then write
-      no_read/evidence/s5_impl_ack.json = {"addressed_findings":[<ids>]}.
+      no_read/evidence/s5_impl_ack.json = {"addressed_findings":[<ids>],
+      "review_head_sha":"<head_sha COPIED FROM s5_review.json>"} — the gate checks
+      both, so a leftover ack from an earlier round cannot satisfy a new finding.
       Preflight: python scripts/verify_impl.py --stage 5 (ok=1; gate re-runs it).
       Submit: gralph do s5-impl --report no_read/evidence/s5_impl.json
       {{usage}}

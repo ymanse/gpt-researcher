@@ -18,7 +18,7 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
 |---|---|---|
 | **s0-bench** | 채점 인프라가 진짜다: golden_count>=5 + 스키마/정규식 컴파일(golden_schema_ok), bun-rust-port 시딩(bun_first), measure_pairs=2, **diversity_ok=1**(다양성 하한 — 골든당 facts>=5·traps>=3·areas>=4·domains>=2·contested>=1·category, 셋 전체 category 4종+·dated 골든 2+·measure_pair category 상이+dated 1+·도메인 합집합 6+; timeless 쿼리만으로는 S3가 공허 통과하므로), **llm_calls=0**(채점기에 LLM SDK 토큰 0 — law 2), **fixtures_passed=2**(good이 bad를 S1,S2,S4,S5,S6 전부에서 엄격히 이기고 S3는 엄격히 낮음 — law 5, []가 파싱실패가 아님의 증명), baseline_queries=golden_count(전 골든에 S1_pct..S6_pct + report/scores 출처), freeze(manifest) + `[sq][s0]` 커밋 | in-gate `bench_selfcheck.py` + `check_frozen.py` + `check_commit.py` |
 | **sN-red** | RED 무결성(law 3): errors=0, collected>=1, passed=0, failed>=1, test_files sha256 + base_sha 기록, bench frozen_ok | `pytest_evidence.py`가 pytest junit에서 생성; in-gate `check_frozen.py` |
-| **sN-impl** | GREEN 안티탬퍼: RED 파일 sha256 재계산 일치(hash_match), collected 비감소, 스테이지+누적 전체 suite green(failed/errors/skipped=0), ruff_errors=0(E9,F — 변경 파일 한정), frozen_ok, review_addressed_ok(직전 review의 blocking id 전부가 impl_ack의 addressed_findings에 존재) | **in-gate `verify_impl.py` 재실행** — 위조 evidence는 생존 불가 |
+| **sN-impl** | GREEN 안티탬퍼: RED 파일 sha256 재계산 일치(hash_match), collected 비감소, 스테이지+누적 전체 suite green(failed/errors/skipped=0), ruff_errors=0(E9,F — 변경 파일 한정), frozen_ok, review_addressed_ok(직전 review의 blocking id 전부가 impl_ack의 addressed_findings에 존재 **AND** impl_ack의 review_head_sha가 그 review.json의 head_sha와 일치 — id는 라운드마다 재사용되므로 이 바인딩 없이는 이전 라운드 ack가 새 findings를 무효 충족) | **in-gate `verify_impl.py` 재실행** — 위조 evidence는 생존 불가 |
 | **sN-review** | 분리 레인 적대 리뷰: 입력은 `review_diff.py`의 diff + 스펙 완료조건뿐. head_sha가 현재 HEAD와 일치(stale 리뷰 재활용 차단, in-gate 재계산), findings 배열 + blocking_count 숫자. blocking_count>0 → `sN-impl`로 라우트(store `rev:sN` 카운트, **3라운드 초과 시 hard fail**), 0 → `sN-measure` | 판정 자체는 LLM(의도된 law 2 예외, 아래 잔존 리스크) — 신선도·형식·라운드 캡은 결정적 |
 | **sN-measure** | 실컨테이너 측정: recreated:true + health:200(bind-mount 반영), bench_round가 store와 일치(stale evidence 차단), 스테이지 임계값(아래), frozen_ok, `[sq][sN]` 커밋 + 양 repo 클린. refit 라운드면 s6-benchmark로 직행 라우트(bench_refit 클리어) | `measure.py`만이 evidence를 쓴다; 라운드 캐시로 멱등 |
 | **s6-benchmark** | 최종 대결: queries_scored==golden_count>=5(미만은 hollow zero — law 4), S1,S2,S4,S5,S6 aggregate가 baseline **초과** AND S3 **이하** → all_pass=1 → audit. 미달 → weakest_metric(부족분 최대)의 담당 스테이지 impl로 라우트(S1→s2,S2→s1,S3→s3,S4→s4,S5→s4,S6→s5), bench_round 증가, **3라운드 캡** | `benchmark.py` + frozen 채점기 + frozen baseline |
@@ -95,14 +95,39 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
 ## 잔존 리스크 (게이트가 과대 주장하지 않도록 명시)
 
 - review 판정은 LLM이다(사용자 지정 설계). 결정적으로 잡는 것은 신선도(head_sha)·형식·라운드
-  캡뿐이고, impl_ack의 addressed_findings는 **에이전트 자기보고**다 — 실질 재판정은 다음
-  review 라운드가 한다.
+  캡뿐이고, impl_ack의 addressed_findings는 **에이전트 자기보고**다(review_head_sha 바인딩으로
+  "이번 review에 대한 ack"임은 강제되지만, 내용의 진위는 아니다) — 실질 재판정은 다음 review
+  라운드가 한다.
+- **3라운드 캡은 인간 개입 지점이지 자동 해소되지 않는다.** 캡 도달 후에도 루프는 그 노드를
+  계속 재시도하며 세션을 태운다(s2에서 실측: 캡 이후 2세션 추가 소모 후 수동 정지). 캡이
+  걸리면 즉시 정지 → 지적 검증 → 아래 "개입 기록" 형식으로 판단을 남기고 `rev:sN` 리셋.
+  캡 도달 상태에서 리뷰어가 압박을 받아 blocking을 minor로 강등하면 게이트가 조용히
+  통과하므로, 캡 도달은 사람이 봐야 한다.
 - S1 채점의 URL 재fetch는 네트워크 의존이다. fetch-cache로 재채점은 멱등이지만, 캐시 미스
   상태의 첫 fetch는 원문 변경/소실에 노출된다(캐시가 남는 한 audit의 regen_ok는 성립).
 - 골든셋 facts/traps의 품질은 s0 에이전트의 검증 성실성에 달렸다. 게이트가 강제하는 것은
   스키마·픽스처 판별력·출처 존재이지, 사실의 참/거짓 자체가 아니다.
 - container_probe_s1은 GPTResearcher 내부 속성(visited_urls/context)을 introspect한다 —
   업스트림 리네임 시 probe가 0을 보고하며 fail-closed로 떨어진다(조용히 통과하지 않음).
+
+## 개입 기록 (human-in-the-loop)
+
+캡·하드페일로 루프가 멈추면 판단 근거를 여기 남긴다. 게이트가 사람에게 넘긴 결정이므로,
+"왜 라운드를 더 줬는가"가 기록되지 않으면 다음 사람은 같은 검증을 반복한다.
+
+**2026-07-26 s2-review 3라운드 캡 도달 — 라운드 리셋(rev:s2 → 0), cursor를 s2-impl로 되감음**
+- 리뷰어 판정: blocking R1 (`researcher.py:822` + `tree_research.py:215-228`).
+- 사람 검증 결과 **진성 결함 확정**: prefetch 분기가 `add_research_sources([{"url": url}])`로
+  본문 없이 소스를 넣는다. 그런데 tree의 s2 narrowing은 `read_docs[url]`이 truthy일 때만
+  `node.sources`를 유지하므로, retriever가 이미 본문을 반환한 소스(=firecrawl:81,
+  pubmed_central, custom — 이 fork의 **주력 경로**)는 인용 여부와 무관하게 전량 드롭된다.
+  s2가 고치려던 결함 6a(bun 실측 13노드/4인용)를 그대로 재현하는 구조. s2 단위테스트는 가짜
+  `get_research_sources()`가 raw_content를 직접 넣어줘서 이 경로를 아예 타지 않는다.
+- 판단: 3라운드가 **매번 서로 다른 진짜 버그**를 찾아낸 수렴 과정이지 핑퐁이 아니므로 라운드
+  재부여가 타당. 코드 수정은 사람이 하지 않고 impl 노드에 맡긴다(리뷰 레인 분리 유지).
+- 같은 사이클에서 발견된 게이트 구멍 2건 즉시 수정: (1) ack의 finding id 재사용 충돌 →
+  `review_head_sha` 바인딩 추가, (2) `"stage":N` 토큰이 sort_keys 직렬화에서 `}` 종결일 때
+  매칭 실패 → 종결자 양쪽 허용(순수 확장).
 
 ## 운영 메모
 

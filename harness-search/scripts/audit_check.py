@@ -49,7 +49,7 @@ SYNC_TOKENS = [
     "S4_min_pct", "pruned_count_total", "s5_improved",
     "contradictions_total", "unsupported_claims_total",
     "queries_scored", "all_pass", "weakest_metric", "bench_round",
-    "blocking_count", "addressed_findings", "frozen_ok",
+    "blocking_count", "addressed_findings", "review_head_sha", "frozen_ok",
 ]
 
 
