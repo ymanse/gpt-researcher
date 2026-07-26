@@ -57,3 +57,7 @@ CURSOR_RULES.md
 harness/no_read/
 harness/.gralph/
 .omc/
+
+# search-quality harness runtime state (never commit)
+harness-search/no_read/
+harness-search/.gralph/

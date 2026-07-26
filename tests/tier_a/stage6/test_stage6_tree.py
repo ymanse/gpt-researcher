@@ -45,6 +45,7 @@ Contract pinned here (GREEN must satisfy exactly this):
 """
 import asyncio
 import inspect
+from types import SimpleNamespace
 from unittest import mock
 
 from gpt_researcher.config import Config
@@ -103,13 +104,19 @@ class _FakeResearcher:
         return 0.0
 
 
-def _run_tree(children, novelty, sources, **run_kwargs):
-    """Run the skill with every seam replaced; return (result, skill, rec)."""
+def _run_tree(children, novelty, sources, seconds_per_node=0.0, **run_kwargs):
+    """Run the skill with every seam replaced; return (result, skill, rec).
+
+    seconds_per_node drives a fake clock (module-local `time` is swapped, so the
+    real one is untouched) — 0.0 freezes it, which is what every non-time test wants.
+    """
     tr = _tr()
     skill = tr.TreeResearchSkill(_FakeResearcher(Config()))
     rec = {"expanded": [], "synth": []}
+    clock = {"t": 1000.0}
 
     async def research(node):
+        clock["t"] += seconds_per_node
         node.answer_md = f"## Answer\n\n{node.question}"
         node.answer_digest = f"digest: {node.question}"
         node.learnings = [f"learning: {node.question}"]
@@ -136,7 +143,8 @@ def _run_tree(children, novelty, sources, **run_kwargs):
     skill.compute_novelty = novelty_of
     skill.synthesize_node = synth
 
-    result = asyncio.run(skill.run(query=ROOT_Q, **run_kwargs))
+    with mock.patch.object(tr, "time", SimpleNamespace(time=lambda: clock["t"])):
+        result = asyncio.run(skill.run(query=ROOT_Q, **run_kwargs))
     return result, skill, rec
 
 
@@ -316,6 +324,39 @@ class TestBudgetExhaustion:
         assert result["report_md"].strip(), (
             "a synthesis must still be produced on budget exhaustion"
         )
+
+
+# ---------------------------------------------------------------------------
+# (f) wall-clock budget: expansion stops in time for the roll-up to still run
+# ---------------------------------------------------------------------------
+
+_F_CHILDREN = {ROOT_Q: [C0_Q, C1_Q], C0_Q: [C00_Q]}
+
+
+class TestTimeBudget:
+    def test_wall_clock_budget_cuts_expansion_and_still_synthesizes(self):
+        # 400 fake seconds per node vs a 900s budget: root, C0, C1 get researched,
+        # then 1200 >= 900 stops the loop with C00 still on the frontier
+        result, _, _ = _run_tree(_F_CHILDREN, {}, _D_SOURCES, seconds_per_node=400.0,
+                                 max_depth=3, max_nodes=40, time_budget_s=900.0)
+        stats = result["stats"]
+        assert stats["researched"] == 3, "the 4th node must not start past the budget"
+        assert stats["time_budget_exhausted"] is True
+        assert stats["pending_count"] == 1, "the un-popped node stays on the frontier"
+        assert _by_question(result, C00_Q)["status"] == "pending"
+        assert result["report_md"].strip(), (
+            "a synthesis must still be produced when the clock runs out"
+        )
+        assert f"[synthesis:{ROOT_Q}]" in result["report_md"]
+
+    def test_ample_budget_researches_whole_tree(self):
+        result, _, _ = _run_tree(_F_CHILDREN, {}, _D_SOURCES, seconds_per_node=400.0,
+                                 max_depth=3, max_nodes=40, time_budget_s=10_000.0)
+        stats = result["stats"]
+        assert stats["researched"] == 4
+        assert stats["time_budget_exhausted"] is False
+        assert stats["pending_count"] == 0
+        assert "pending" not in [n["status"] for n in _nodes(result).values()]
 
 
 # ---------------------------------------------------------------------------

@@ -265,7 +265,8 @@ class TreeResearchSkill:
                   max_breadth: int = 4, max_nodes: int = 40,
                   token_budget: int = 300_000, credit_budget: float = 150.0,
                   novelty_threshold: float = 0.30, expansion_policy: str = "best_first",
-                  stream: bool = False, outputs_dir: Optional[str] = None) -> Dict[str, Any]:
+                  stream: bool = False, outputs_dir: Optional[str] = None,
+                  time_budget_s: float = 600.0) -> Dict[str, Any]:
         query = query or self.researcher.query
         self._max_breadth = max_breadth
         start = time.time()
@@ -281,9 +282,16 @@ class TreeResearchSkill:
 
         # budgets are checked BEFORE each frontier pop; accepted-but-unresearched
         # nodes stay PENDING in the tree ("unexplored frontier")
+        # ponytail: nodes are researched strictly sequentially (~45s each), so
+        # max_nodes alone can't bound wall-clock — the caller's MCP idle timeout
+        # fires first. time_budget_s caps expansion only; the sequential roll-up
+        # that follows adds ~0.8x on top (measured: 180s expansion -> 321s total),
+        # so total ~= 1.8 * time_budget_s. The 600s default lands near 1080s,
+        # inside a 1200s idle timeout. Parallelize the frontier before raising it.
         while (len(frontier) and researched < max_nodes
                and self.tokens_spent < token_budget
-               and self.credits_spent < credit_budget):
+               and self.credits_spent < credit_budget
+               and time.time() - start < time_budget_s):
             node = frontier.pop()
             try:
                 await self.research_node(node)
@@ -343,6 +351,8 @@ class TreeResearchSkill:
         budget_respected = (researched <= max_nodes
                             and self.tokens_spent <= token_budget
                             and self.credits_spent <= credit_budget)
+        # unresearched nodes left in the frontier tell the caller the tree was cut short
+        time_budget_exhausted = (time.time() - start >= time_budget_s and len(frontier) > 0)
 
         # stable citation ids: URL union in first-seen node/insertion order
         citation_map: Dict[str, str] = {}
@@ -394,6 +404,8 @@ class TreeResearchSkill:
             "stats": {**meta, "researched": researched,
                       "tokens_spent": self.tokens_spent,
                       "credits_spent": self.credits_spent,
+                      "time_budget_exhausted": time_budget_exhausted,
+                      "pending_count": len(frontier),
                       "elapsed_s": round(time.time() - start, 2)},
         }
         if outputs_dir:
