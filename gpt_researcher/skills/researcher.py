@@ -820,7 +820,14 @@ class ResearchConductor:
                             "url": url,
                             "raw_content": raw_content,
                         })
-                        self.researcher.add_research_sources([{"url": url}])
+                        # carry raw_content into research_sources too: consumers
+                        # (tree_research's read-and-quoted narrowing) treat a
+                        # contentless entry as "never read", which would drop
+                        # every prefetched source regardless of provenance
+                        self.researcher.add_research_sources([{
+                            "url": url,
+                            "raw_content": raw_content,
+                        }])
                     elif url:
                         new_search_urls.append(url)
             except Exception as e:

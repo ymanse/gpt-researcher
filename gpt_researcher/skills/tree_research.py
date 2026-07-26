@@ -88,18 +88,21 @@ def _cosine(a: List[float], b: List[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-# matches "[1]", comma/semicolon-joined "[1, 3]" / "[1; 3]", whitespace-padded
-# "[ 1 ]", and hyphen ranges "[1-3]" (range endpoints capped at 3 digits so a
-# bracketed date like "[2024-07-26]" is not mistaken for citations) — LLM
-# rewrites emit all of these; any variant this misses escapes the fail-closed strip
+# matches "[1]", comma/semicolon-joined "[1, 3]" / "[1; 3]", space-only "[1 2]",
+# whitespace-padded "[ 1 ]", and hyphen ranges "[1-3]" (range endpoints capped at
+# 3 digits so a bracketed date like "[2024-07-26]" is not mistaken for citations)
+# — LLM rewrites emit all of these; any variant this misses escapes the strip
 _ITEM = r"(?:\d+|\d{1,3}\s*-\s*\d{1,3})"
-_CITE_ID_RE = re.compile(rf"\[\s*({_ITEM}(?:\s*[,;]\s*{_ITEM})*)\s*\]")
+_SEP = r"(?:\s*[,;]\s*|\s+)"
+_CITE_ID_RE = re.compile(rf"\[\s*({_ITEM}(?:{_SEP}{_ITEM})*)\s*\]")
 
 
 def _bracket_ids(group: str) -> List[str]:
-    """Individual ids cited by one bracket's inner text: "1", "1, 3", "1; 3", "1-3"."""
+    """Ids cited by one bracket's inner text: "1", "1, 3", "1; 3", "1 2", "1-3"."""
     ids: List[str] = []
-    for part in re.split(r"\s*[,;]\s*", group):
+    for part in re.split(_SEP, group):
+        if not part:
+            continue
         m = re.fullmatch(r"(\d{1,3})\s*-\s*(\d{1,3})", part)
         if m:
             lo, hi = sorted((int(m.group(1)), int(m.group(2))))
@@ -432,15 +435,13 @@ class TreeResearchSkill:
 
         root_text = "" if root.status == NodeStatus.PRUNED else await rollup(root)
 
-        lines = [f"# {query}", "", root_text or "_(no synthesis)_", ""]
-        if citation_map:
-            lines += ["## Citations", ""]
-            lines += [f"- [{cid}] {url}" for cid, url in citation_map.items()]
-        report_md = "\n".join(lines).strip() + "\n"
+        body = "\n".join([f"# {query}", "", root_text or "_(no synthesis)_", ""])
 
         # defect 6a fail-closed: an [id] with no citations entry never reaches
-        # the caller — detect, then strip the unbacked markers from the report.
-        uncited_ids = find_uncited_ids(report_md, citation_map)
+        # the caller — detect, then strip the unbacked markers. Body only: the
+        # Citations list is data, so a bracketed number inside a URL must never
+        # be read as a citation marker (nor be rewritten by the strip).
+        uncited_ids = find_uncited_ids(body, citation_map)
         if uncited_ids:
             logger.error(f"uncited [id] markers stripped from report: {uncited_ids}")
             bad = set(uncited_ids)
@@ -449,7 +450,13 @@ class TreeResearchSkill:
                 kept = [c for c in _bracket_ids(m.group(1)) if c not in bad]
                 return f"[{', '.join(kept)}]" if kept else ""
 
-            report_md = _CITE_ID_RE.sub(_keep_cited, report_md)
+            body = _CITE_ID_RE.sub(_keep_cited, body)
+
+        lines = [body]
+        if citation_map:
+            lines += ["", "## Citations", ""]
+            lines += [f"- [{cid}] {url}" for cid, url in citation_map.items()]
+        report_md = "\n".join(lines).strip() + "\n"
 
         # CitationAgent over the tree node claims: each learning is attributed
         # to the surviving node source that actually supports it; when none
