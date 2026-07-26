@@ -1,0 +1,583 @@
+# search-quality.yaml — gralph profile: deep_tree_research search-quality upgrade.
+#
+# Graph: s0-bench -> (s1..s5: red -> impl -> review -> measure) -> s6-benchmark
+#        -> harness-audit -> DONE
+#   red     = RED integrity (tests collect AND fail; hashes + base_sha recorded)
+#   impl    = GREEN anti-tamper, recomputed IN-GATE by verify_impl.py (hash re-check,
+#             stage + full cumulative suite, ruff on changed files, bench freeze)
+#   review  = SEPARATE-LANE adversarial reviewer (gets ONLY git diff + spec conditions;
+#             blocking findings route back to impl, max 3 rounds)
+#   measure = live container measurement (measure.py), thresholds from observed defects
+#   s6      = all-5-golden benchmark vs the FROZEN firecrawl baseline; below-baseline
+#             metrics route back to the owning stage's impl (max 3 rounds)
+#   audit   = audits the gates themselves (law 6 try matrix, score-tamper git log,
+#             law 10 regen idempotence, law 8 3-way sync)
+# Stop hierarchy: gate-pass > store progress (bench_round / bench_refit / rev:sN) >
+# fail_threshold session rotation > `gralph run --max-iterations N` (run-until-done.sh).
+# Usage limits are absorbed OUTSIDE gralph by ./run-until-done.sh (never a GALP launcher).
+# Models: impl/red/s0/audit = default tier; review/measure/benchmark = sonnet.
+
+agent:
+  command: ["claude", "-p", "{{prompt}}", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+  timeout: 75m
+
+fail_threshold: 3
+lua_timeout: 90s
+
+commands:
+  # ════════ s0 — benchmark harness + scorer (everything depends on this) ════════
+  - name: s0-bench
+    lua_timeout: 900s
+    guidance: |
+      [search-quality loop] Repos D:/dev_ext/gpt-researcher + D:/dev_ext/gptr-mcp (both on
+      feature/search-quality). CWD = harness-search/. Test python: ../venv/Scripts/python.
+      Spec: spec/search-quality.md — read it FIRST (metric definitions, golden schema,
+      scorer contract). HARD RULES: never edit harness-search/scripts/* or no_read/evidence/*
+      by hand; put a timeout on every shell command; commit only to feature/search-quality.
+
+      Build the benchmark harness under bench/:
+      1. bench/golden/*.json — >=5 golden sets per the spec schema. id "bun-rust-port" is
+         MANDATORY, seeded from D:/dev_ext/gptr-mcp/outputs/how-did-bun-port-*.tree.json
+         (meta.query verbatim) + session-confirmed facts; verify every fact/trap against a
+         primary source and cite it in desc. Exactly 2 goldens get "measure_pair":true
+         (one is bun-rust-port). Candidates for the other 4: the queries already run in
+         D:/dev_ext/gptr-mcp/outputs/ (failure modes / denormalized DB / edge-AI face
+         recognition / solid-state battery).
+      2. bench/score_report.py — DETERMINISTIC scorer per the spec CLI contract. NO LLM
+         calls (llm_calls must be 0; any LLM SDK import fails the gate). Only network:
+         S1 citation re-fetch, cached under --fetch-cache for idempotent re-scoring.
+         Must also run without --tree (baseline reports have no tree.json).
+      3. bench/fixtures/ — good_report.md/bad_report.md (+ optional good_tree.json/
+         bad_tree.json) + fixture_golden.txt naming the golden id they score against.
+         good must beat bad STRICTLY on S1,S2,S4,S5,S6 and be strictly LOWER on S3.
+      4. Baseline (one-shot, then frozen): for EVERY golden query run a firecrawl
+         multi-agent research (parallel sub-research + firecrawl search; FIRECRAWL_API_KEY
+         is in D:/docker/gptr-mcp/.env), save bench/baseline_runs/<id>.md and
+         <id>.sources.json, score each with score_report.py, then write
+         bench/baseline_firecrawl.json = {"queries":{<id>:{S1_pct..S6_pct,report,scores}},
+         "aggregate":{S1_pct..S6_pct}}.
+      Preflight until ok=1: python scripts/bench_selfcheck.py
+      (fields: golden_count>=5 golden_schema_ok=1 bun_first=1 measure_pairs=2 llm_calls=0
+      fixtures_passed=2 baseline_queries=golden_count). Then FREEZE:
+      python scripts/freeze_bench.py  (writes bench/manifest.sha256 — after this commit,
+      bench/golden/* and bench/baseline_firecrawl.json are READ-ONLY for the whole build;
+      frozen_ok is re-checked by every later gate).
+      COMMIT everything on feature/search-quality, message starting: [sq][s0]
+      (tracked trees clean in BOTH repos).
+      Submit: gralph do s0-bench --report no_read/evidence/s0_bench.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s0_bench.json" }
+    lua: scripts/s0_bench.lua
+    next: [s1-red]
+
+  # ════════ s1 — retriever recovery (defects 1+2) ════════
+  - name: s1-red
+    guidance: |
+      [search-quality loop] Repos D:/dev_ext/gpt-researcher + D:/dev_ext/gptr-mcp (both on
+      feature/search-quality). CWD = harness-search/. Test python: ../venv/Scripts/python.
+      Spec: spec/search-quality.md s1. HARD RULES: bench/golden/* + baseline READ-ONLY
+      (frozen_ok gate); no hand-edits under harness-search/; never delete/skip/weaken
+      tests; timeout every shell command; commit only to feature/search-quality.
+
+      Write FAILING (RED) pytest tests in ../tests/search_quality/s1/ — do NOT implement.
+      Deterministic, no network (mock retriever HTTP + scraper). Cover the OBSERVED defects:
+        (a) wikipedia language-code parsing bug ("wt" -> DNS fail) is normalized to a
+            valid code
+        (b) a tavily 432 response triggers fallback routing to another retriever instead
+            of a silent total loss
+        (c) a scrape pass returning 0 URLs increments a retriever/scraper error signal
+            (it must not pass silently)
+      Then RUN: python scripts/pytest_evidence.py --stage 1 --phase red
+      Confirm collected>=1, errors=0, passed=0, failed>=1 (base_sha is recorded for review).
+      Submit: gralph do s1-red --report no_read/evidence/s1_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s1_red.json" }
+    lua: scripts/s1_red.lua
+    next: [s1-impl]
+
+  - name: s1-impl
+    lua_timeout: 900s
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Spec: spec/search-quality.md s1.
+      HARD RULES: RED test files in ../tests/search_quality/s1/ stay BYTE-UNCHANGED (the
+      gate recomputes sha256 against the RED record); never delete/skip/weaken tests;
+      bench/ frozen (frozen_ok); no hand-edits under harness-search/; timeout every
+      command; container code is bind-mounted — live checks recreate it for you.
+
+      Implement s1 until the tests are GREEN: fix the wikipedia language-code bug, add
+      432/failure fallback routing, make 0-URL scrapes raise the error signal. IMPLEMENT
+      ONLY — do not review your own work (the next node does that adversarially).
+      If no_read/evidence/s1_review.json exists with blocking findings: fix EVERY blocking
+      finding first, then write no_read/evidence/s1_impl_ack.json =
+      {"addressed_findings":[<every blocking id>]} (the gate cross-checks ids).
+      Preflight: python scripts/verify_impl.py --stage 1  (must print ok=1: hash_match,
+      stage+full suite green, ruff_errors=0 on changed files, frozen_ok=1,
+      review_addressed_ok=1). The gate re-runs this itself — you cannot submit around it.
+      Submit: gralph do s1-impl --report no_read/evidence/s1_impl.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s1_impl.json" }
+    lua: scripts/s1_impl.lua
+    next: [s1-review]
+
+  - name: s1-review
+    fail_threshold: 2
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+    guidance: |
+      [search-quality loop] CWD = harness-search/. You are the ADVERSARIAL REVIEWER for s1.
+      Your ONLY inputs: (1) the diff printed by `python scripts/review_diff.py --stage 1`,
+      (2) the s1 completion conditions in spec/search-quality.md. You do NOT get the
+      implementer's reasoning. ASSUME THE CODE IS WRONG and argue why: hunt for the
+      defects the tests can't see — dead fallback paths, error signals that are counted
+      but ignored, language-code normalization that breaks other languages, swallowed
+      exceptions. DO NOT FIX CODE. DO NOT run implementation edits.
+      Write no_read/evidence/s1_review.json =
+      { "stage":1, "head_sha":"<git rev-parse HEAD of gpt-researcher>",
+        "findings":[{"id":"R1","severity":"blocking"|"minor","file":"...","why":"..."}],
+        "blocking_count":<N> }
+      blocking_count>0 routes the flow BACK to s1-impl (max 3 rounds); 0 advances to
+      s1-measure. head_sha must match the current HEAD (the gate recomputes it).
+      Submit: gralph do s1-review --report no_read/evidence/s1_review.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s1_review.json" }
+    lua: scripts/s1_review.lua
+    next: [s1-impl, s1-measure]
+
+  - name: s1-measure
+    fail_threshold: 2
+    lua_timeout: 900s
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+      timeout: 180m
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Live measure for s1 (retriever recovery).
+      RUN: python scripts/measure.py --stage 1
+      (acquires the live lock, force-recreates gptr-mcp-server, waits /health 200, then
+      docker-execs container_probe_s1.py for ALL 5 golden queries and aggregates
+      SQ_PROBE lines; stamps bench_round from the store; writes
+      no_read/evidence/s1_measure.json).
+      Gate thresholds: queries_run>=5 AND scraped_pages_min>=3 AND
+      retriever_errors_total=0 AND context_chars_median>=20000.
+      If unmet: the fix belongs in the IMPLEMENTATION (never in harness-search/scripts or
+      evidence) — fix, keep `python scripts/verify_impl.py --stage 1` ok=1, re-run measure.
+      When met, COMMIT everything on feature/search-quality with message starting
+      [sq][s1] (tracked trees clean in BOTH repos; the gate verifies commit + frozen_ok).
+      Submit: gralph do s1-measure --report no_read/evidence/s1_measure.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s1_measure.json" }
+    lua: scripts/s1_measure.lua
+    next: [s2-red, s6-benchmark]
+
+  # ════════ s2 — citation integrity (defect 6a) ════════
+  - name: s2-red
+    guidance: |
+      [search-quality loop] Repos both on feature/search-quality. CWD = harness-search/.
+      Spec: spec/search-quality.md s2. HARD RULES: bench/ frozen; no hand-edits under
+      harness-search/; never delete/skip/weaken tests (s1 tests stay intact); timeout
+      every command; commit only to feature/search-quality.
+
+      Write FAILING (RED) pytest tests in ../tests/search_quality/s2/ — do NOT implement.
+      Target: CitationAgent (gpt_researcher/skills/citation_verification.py, already used
+      by deep_research) wired into the TREE path (gpt_researcher/skills/tree_research.py).
+      Cover (mock scrape/LLM, deterministic):
+        (a) node.sources is narrowed to documents actually read AND quoted in the node
+            answer — a retriever-returned-but-unused URL does not survive
+        (b) a report [id] with no citations-map entry is detected (uncited id)
+        (c) CitationAgent verification runs over tree node claims and flags unverified
+      Then RUN: python scripts/pytest_evidence.py --stage 2 --phase red
+      Submit: gralph do s2-red --report no_read/evidence/s2_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s2_red.json" }
+    lua: scripts/s2_red.lua
+    next: [s2-impl]
+
+  - name: s2-impl
+    lua_timeout: 900s
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Spec: spec/search-quality.md s2.
+      HARD RULES: RED tests byte-unchanged; never delete/skip/weaken tests; bench/ frozen;
+      no hand-edits under harness-search/; timeout every command.
+
+      Implement s2 until GREEN: wire CitationAgent into tree_research.py, narrow
+      node.sources to actually-read-and-cited documents, make uncited [id]s impossible
+      (fail-closed). IMPLEMENT ONLY — no self-review.
+      If no_read/evidence/s2_review.json has blocking findings: fix EVERY one, then write
+      no_read/evidence/s2_impl_ack.json = {"addressed_findings":[<ids>]}.
+      Preflight: python scripts/verify_impl.py --stage 2 (ok=1; the gate re-runs it).
+      Submit: gralph do s2-impl --report no_read/evidence/s2_impl.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s2_impl.json" }
+    lua: scripts/s2_impl.lua
+    next: [s2-review]
+
+  - name: s2-review
+    fail_threshold: 2
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+    guidance: |
+      [search-quality loop] CWD = harness-search/. ADVERSARIAL REVIEWER for s2. Inputs
+      ONLY: `python scripts/review_diff.py --stage 2` + spec/search-quality.md s2
+      conditions. ASSUME THE CODE IS WRONG: does the citation narrowing actually depend
+      on what was QUOTED, or just on what was fetched? Can an uncited [id] still slip
+      through a formatting variant? Is CitationAgent actually invoked on the tree path or
+      only imported? DO NOT FIX CODE.
+      Write no_read/evidence/s2_review.json = { "stage":2, "head_sha":"<HEAD>",
+      "findings":[{"id","severity","file","why"}], "blocking_count":<N> }.
+      Submit: gralph do s2-review --report no_read/evidence/s2_review.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s2_review.json" }
+    lua: scripts/s2_review.lua
+    next: [s2-impl, s2-measure]
+
+  - name: s2-measure
+    fail_threshold: 2
+    lua_timeout: 900s
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+      timeout: 180m
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Live measure for s2 (citation integrity).
+      RUN: python scripts/measure.py --stage 2
+      (recreate + health, deep_tree_research for the 2 measure_pair goldens — LONG calls,
+      round-cached so re-runs only redo failures — scores each with the frozen scorer,
+      stamps bench_round, writes no_read/evidence/s2_measure.json).
+      Gate thresholds: queries_run>=2 AND S1_min_pct>=80 AND uncited_ids_total=0.
+      If unmet: fix the implementation (never harness scripts/evidence), keep
+      verify_impl --stage 2 ok=1, re-run measure. Then COMMIT [sq][s2] (both repos clean).
+      Submit: gralph do s2-measure --report no_read/evidence/s2_measure.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s2_measure.json" }
+    lua: scripts/s2_measure.lua
+    next: [s3-red, s6-benchmark]
+
+  # ════════ s3 — empty-context fail-closed (defect 3) ════════
+  - name: s3-red
+    guidance: |
+      [search-quality loop] Repos both on feature/search-quality. CWD = harness-search/.
+      Spec: spec/search-quality.md s3. HARD RULES: bench/ frozen; no hand-edits under
+      harness-search/; never delete/skip/weaken tests (s1-s2 intact); timeout every
+      command.
+
+      Write FAILING (RED) pytest tests in ../tests/search_quality/s3/ — do NOT implement.
+      Target: gpt_researcher/skills/tree_research.py node lifecycle. THIS IS THE
+      UNIT-LEVEL PROOF the user demanded (agent self-report forbidden). Cover
+      (mock research, deterministic):
+        (a) a node whose research returns 0 scraped docs / context below the threshold
+            transitions to NodeStatus.FAILED — NOT ANSWERED
+        (b) a FAILED node's text is excluded from post-order synthesis/rollup
+        (c) an ANSWERED node with real context is unaffected (no regression)
+      Then RUN: python scripts/pytest_evidence.py --stage 3 --phase red
+      Submit: gralph do s3-red --report no_read/evidence/s3_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s3_red.json" }
+    lua: scripts/s3_red.lua
+    next: [s3-impl]
+
+  - name: s3-impl
+    lua_timeout: 900s
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Spec: spec/search-quality.md s3.
+      HARD RULES: RED tests byte-unchanged; never delete/skip/weaken tests; bench/ frozen;
+      no hand-edits under harness-search/; timeout every command.
+
+      Implement s3 until GREEN: empty-scrape / below-threshold-context nodes become
+      FAILED (not ANSWERED, no prior-knowledge answers), FAILED nodes stay out of
+      rollup/synthesis. IMPLEMENT ONLY.
+      If no_read/evidence/s3_review.json has blocking findings: fix EVERY one, then write
+      no_read/evidence/s3_impl_ack.json = {"addressed_findings":[<ids>]}.
+      Preflight: python scripts/verify_impl.py --stage 3 (ok=1; gate re-runs it).
+      Submit: gralph do s3-impl --report no_read/evidence/s3_impl.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s3_impl.json" }
+    lua: scripts/s3_impl.lua
+    next: [s3-review]
+
+  - name: s3-review
+    fail_threshold: 2
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+    guidance: |
+      [search-quality loop] CWD = harness-search/. ADVERSARIAL REVIEWER for s3. Inputs
+      ONLY: `python scripts/review_diff.py --stage 3` + spec s3 conditions. ASSUME WRONG:
+      is the context threshold measured on the REAL research context or a proxy that can
+      be non-empty while research failed? Can a FAILED node's text still leak into the
+      rollup via citations or child summaries? Does the LLM still get asked when context
+      is empty? DO NOT FIX CODE.
+      Write no_read/evidence/s3_review.json = { "stage":3, "head_sha":"<HEAD>",
+      "findings":[...], "blocking_count":<N> }.
+      Submit: gralph do s3-review --report no_read/evidence/s3_review.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s3_review.json" }
+    lua: scripts/s3_review.lua
+    next: [s3-impl, s3-measure]
+
+  - name: s3-measure
+    fail_threshold: 2
+    lua_timeout: 900s
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+      timeout: 180m
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Live measure for s3 (fail-closed nodes).
+      RUN: python scripts/measure.py --stage 3
+      (recreate + health, the 2 measure_pair tree runs — round-cached — scored by the
+      frozen scorer; writes no_read/evidence/s3_measure.json).
+      Gate thresholds: queries_run>=2 AND traps_hit_total=0 (golden trap patterns are the
+      false-answer detectors; one hit means an empty-handed node still answered).
+      If unmet: fix the implementation, keep verify_impl --stage 3 ok=1, re-run measure.
+      Then COMMIT [sq][s3] (both repos clean).
+      Submit: gralph do s3-measure --report no_read/evidence/s3_measure.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s3_measure.json" }
+    lua: scripts/s3_measure.lua
+    next: [s4-red, s6-benchmark]
+
+  # ════════ s4 — coverage-driven expansion + embedding novelty (defects 4+5) ════════
+  - name: s4-red
+    guidance: |
+      [search-quality loop] Repos both on feature/search-quality. CWD = harness-search/.
+      Spec: spec/search-quality.md s4. HARD RULES: bench/ frozen; no hand-edits under
+      harness-search/; never delete/skip/weaken tests (s1-s3 intact); timeout every
+      command.
+
+      Write FAILING (RED) pytest tests in ../tests/search_quality/s4/ — do NOT implement.
+      Target: tree_research.py generate_child_questions + compute_novelty. Cover
+      (mock LLM + injected mock embeddings, deterministic):
+        (a) child-question generation receives the already-covered topics and the prompt
+            steers toward UNCOVERED areas
+        (b) compute_novelty is embedding-cosine based: a child semantically near an
+            existing question gets low novelty even with different wording
+        (c) a child below novelty_threshold is marked PRUNED and never expanded
+            (observed defect: pruned_count was ALWAYS 0)
+      Then RUN: python scripts/pytest_evidence.py --stage 4 --phase red
+      Submit: gralph do s4-red --report no_read/evidence/s4_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s4_red.json" }
+    lua: scripts/s4_red.lua
+    next: [s4-impl]
+
+  - name: s4-impl
+    lua_timeout: 900s
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Spec: spec/search-quality.md s4.
+      HARD RULES: RED tests byte-unchanged; never delete/skip/weaken tests; bench/ frozen;
+      no hand-edits under harness-search/; timeout every command.
+
+      Implement s4 until GREEN: coverage-driven generate_child_questions, embedding-based
+      compute_novelty (reuse the existing embedding stack), working pruning. IMPLEMENT
+      ONLY.
+      If no_read/evidence/s4_review.json has blocking findings: fix EVERY one, then write
+      no_read/evidence/s4_impl_ack.json = {"addressed_findings":[<ids>]}.
+      Preflight: python scripts/verify_impl.py --stage 4 (ok=1; gate re-runs it).
+      Submit: gralph do s4-impl --report no_read/evidence/s4_impl.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s4_impl.json" }
+    lua: scripts/s4_impl.lua
+    next: [s4-review]
+
+  - name: s4-review
+    fail_threshold: 2
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+    guidance: |
+      [search-quality loop] CWD = harness-search/. ADVERSARIAL REVIEWER for s4. Inputs
+      ONLY: `python scripts/review_diff.py --stage 4` + spec s4 conditions. ASSUME WRONG:
+      does "covered topics" reflect actual node ANSWERS or just question strings? Is the
+      embedding call failing silently and falling back to string matching (which would
+      make pruned_count 0 again)? Is the threshold comparison on the right scale
+      (cosine sim vs distance)? DO NOT FIX CODE.
+      Write no_read/evidence/s4_review.json = { "stage":4, "head_sha":"<HEAD>",
+      "findings":[...], "blocking_count":<N> }.
+      Submit: gralph do s4-review --report no_read/evidence/s4_review.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s4_review.json" }
+    lua: scripts/s4_review.lua
+    next: [s4-impl, s4-measure]
+
+  - name: s4-measure
+    fail_threshold: 2
+    lua_timeout: 900s
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+      timeout: 180m
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Live measure for s4 (coverage+pruning).
+      RUN: python scripts/measure.py --stage 4
+      (recreate + health, the 2 measure_pair tree runs — round-cached — scored; also sums
+      tree.json meta.pruned_count and compares mean S5_pct against the frozen baseline
+      mean; writes no_read/evidence/s4_measure.json).
+      Gate thresholds: queries_run>=2 AND S4_min_pct>=85 AND pruned_count_total>=1 AND
+      s5_improved=1.
+      If unmet: fix the implementation, keep verify_impl --stage 4 ok=1, re-run measure.
+      Then COMMIT [sq][s4] (both repos clean).
+      Submit: gralph do s4-measure --report no_read/evidence/s4_measure.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s4_measure.json" }
+    lua: scripts/s4_measure.lua
+    next: [s5-red, s6-benchmark]
+
+  # ════════ s5 — rollup contradiction scan (defect 6b) ════════
+  - name: s5-red
+    guidance: |
+      [search-quality loop] Repos both on feature/search-quality. CWD = harness-search/.
+      Spec: spec/search-quality.md s5. HARD RULES: bench/ frozen; no hand-edits under
+      harness-search/; never delete/skip/weaken tests (s1-s4 intact); timeout every
+      command.
+
+      Write FAILING (RED) pytest tests in ../tests/search_quality/s5/ — do NOT implement.
+      Target: tree_research.py post-order synthesis/rollup. Cover (mock LLM,
+      deterministic):
+        (a) a rollup claim contradicting a node answer (conflicting numeric value) is
+            detected
+        (b) a rollup claim supported by NO node answer is detected as unsupported
+        (c) supported, consistent claims pass through unchanged (no regression)
+        (d) tree.json nodes[] gain an "answer" field (backward-compatible addition per
+            the spec artifact contract)
+      Then RUN: python scripts/pytest_evidence.py --stage 5 --phase red
+      Submit: gralph do s5-red --report no_read/evidence/s5_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s5_red.json" }
+    lua: scripts/s5_red.lua
+    next: [s5-impl]
+
+  - name: s5-impl
+    lua_timeout: 900s
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Spec: spec/search-quality.md s5.
+      HARD RULES: RED tests byte-unchanged; never delete/skip/weaken tests; bench/ frozen;
+      no hand-edits under harness-search/; timeout every command.
+
+      Implement s5 until GREEN: rollup consistency pass (contradiction + unsupported-claim
+      detection against node answers; drop or re-ground offending claims), tree.json
+      nodes[].answer field. IMPLEMENT ONLY.
+      If no_read/evidence/s5_review.json has blocking findings: fix EVERY one, then write
+      no_read/evidence/s5_impl_ack.json = {"addressed_findings":[<ids>]}.
+      Preflight: python scripts/verify_impl.py --stage 5 (ok=1; gate re-runs it).
+      Submit: gralph do s5-impl --report no_read/evidence/s5_impl.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s5_impl.json" }
+    lua: scripts/s5_impl.lua
+    next: [s5-review]
+
+  - name: s5-review
+    fail_threshold: 2
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+    guidance: |
+      [search-quality loop] CWD = harness-search/. ADVERSARIAL REVIEWER for s5. Inputs
+      ONLY: `python scripts/review_diff.py --stage 5` + spec s5 conditions. ASSUME WRONG:
+      does the consistency pass compare against FAILED/PRUNED node text (it must not)?
+      Does "supported" mean a real textual match or a trivially-satisfiable substring?
+      Can dropping a claim break citation numbering? DO NOT FIX CODE.
+      Write no_read/evidence/s5_review.json = { "stage":5, "head_sha":"<HEAD>",
+      "findings":[...], "blocking_count":<N> }.
+      Submit: gralph do s5-review --report no_read/evidence/s5_review.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s5_review.json" }
+    lua: scripts/s5_review.lua
+    next: [s5-impl, s5-measure]
+
+  - name: s5-measure
+    fail_threshold: 2
+    lua_timeout: 900s
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+      timeout: 180m
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Live measure for s5 (rollup consistency).
+      RUN: python scripts/measure.py --stage 5
+      (recreate + health, the 2 measure_pair tree runs — round-cached — scored; writes
+      no_read/evidence/s5_measure.json).
+      Gate thresholds: queries_run>=2 AND contradictions_total=0 AND
+      unsupported_claims_total=0.
+      If unmet: fix the implementation, keep verify_impl --stage 5 ok=1, re-run measure.
+      Then COMMIT [sq][s5] (both repos clean).
+      Submit: gralph do s5-measure --report no_read/evidence/s5_measure.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s5_measure.json" }
+    lua: scripts/s5_measure.lua
+    next: [s6-benchmark]
+
+  # ════════ s6 — final benchmark vs frozen firecrawl baseline ════════
+  - name: s6-benchmark
+    fail_threshold: 2
+    lua_timeout: 900s
+    agent:
+      command: ["claude", "-p", "{{prompt}}", "--model", "sonnet", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+      timeout: 240m
+    guidance: |
+      [search-quality loop] CWD = harness-search/. FINAL CONTEST: gptr vs the frozen
+      firecrawl baseline, ALL 5 golden queries.
+      RUN: python scripts/benchmark.py
+      (recreate + health, deep_tree_research per golden — round-cached, so an interrupted
+      run resumes; scores with the frozen scorer; compares aggregates; stamps bench_round;
+      writes no_read/evidence/benchmark.json).
+      Gate: queries_scored must equal golden_count (>=5) — fewer is a hollow zero.
+      all_pass=1 requires S1,S2,S4,S5,S6 aggregates STRICTLY ABOVE baseline AND S3 AT OR
+      BELOW baseline. On all_pass=1 the flow advances to harness-audit. Otherwise the
+      gate routes back to the weakest_metric's owning stage impl (S1->s2, S2->s1, S3->s3,
+      S4->s4, S5->s4, S6->s5), increments bench_round (max 3 rounds), and that stage's
+      measure returns here directly.
+      If some queries errored: fix the cause, re-run benchmark.py (cached queries skip).
+      COMMIT any code changes [sq][s6] style before submitting if you had to fix code.
+      Submit: gralph do s6-benchmark --report no_read/evidence/benchmark.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to benchmark.json" }
+    lua: scripts/s6_benchmark.lua
+    next: [s1-impl, s2-impl, s3-impl, s4-impl, s5-impl, harness-audit]
+
+  # ════════ harness-audit — audit the gates themselves (DONE on pass) ════════
+  - name: harness-audit
+    fail_threshold: 2
+    lua_timeout: 3600s
+    guidance: |
+      [search-quality loop] CWD = harness-search/. You audit the HARNESS, not the build.
+      Produce the law-6 try matrix: for EVERY node in search-quality.yaml
+      (s0-bench, s1..s5 red/impl/review/measure, s6-benchmark, harness-audit) run
+      `python scripts/try_probe.py --node <node> --expect pass --report
+      no_read/audit/try/<node>_pass.json` against KNOWN-GOOD evidence and
+      `... --expect fail --report no_read/audit/try/<node>_fail.json` against KNOWN-BAD
+      evidence (try_probe runs `gralph try` and records its exit verdict — gralph try is
+      a dry-run: no store/cursor changes, safe against live state). Back up every real
+      evidence file BY FULL PATH before probing and restore it afterwards with
+      `python scripts/regen_evidence.py --what s0|impl|measure|benchmark [--stage N]` —
+      NEVER by hand.
+      Then RUN: python scripts/audit_check.py  — it verifies IN-GATE:
+        try_ok      (every node has pass+fail reports with correct verdicts)
+        git_ok      (git log: bench/golden/* + baseline_firecrawl.json untouched since
+                     the [sq][s0] freeze commit — score tampering fails the build)
+        frozen_ok   (manifest hashes still match)
+        regen_ok    (law 10: regenerators re-run twice -> byte-identical evidence)
+        sync_ok     (law 8: every gate threshold token appears in this profile's guidance
+                     AND HARNESS.md)
+      Fix what it reports (in the harness ONLY if the harness itself is wrong — that is
+      the one legitimate reason to touch scripts/, and it requires updating guidance +
+      HARNESS.md in the same commit). The gate re-runs audit_check.py itself.
+      Submit: gralph do harness-audit --report no_read/evidence/audit.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to audit.json" }
+    lua: scripts/harness_audit.lua
+    # no next -> pass = DONE
