@@ -378,6 +378,15 @@ class TreeResearchSkill:
         # answer; fail-closed on missing/empty documents.
         claims = [s for s in re.split(r"(?<=[.!?])\s+", node.answer_md) if s.strip()]
         claims += node.learnings
+        # a quoted span ending `..."` never splits above (the sentence-boundary
+        # regex needs punctuation directly before the whitespace, but a closing
+        # quote sits in between), so a verbatim quote stays merged with whatever
+        # exposition the answer LLM appended after it. That merged chunk's word
+        # set is mostly invented connective prose the source never contains,
+        # which drags _passage_covers's 70%-of-one-window ratio below threshold
+        # even though the quote itself is near-verbatim -- check quoted spans
+        # standalone so they ground on their own merit.
+        claims += re.findall(r'"([^"]{15,})"', node.answer_md)
         node.sources = sorted(u for u, doc_text in read_docs.items()
                               if doc_text
                               and any(text_supported(c, doc_text) for c in claims))
