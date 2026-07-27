@@ -82,13 +82,12 @@ _RETRIEVER_API_KEYS = {
 # "재시도/대체 라우팅": retry the call, and if the retriever still cannot serve,
 # route around it permanently rather than warning about it forever.
 #
-# Why the drop is logged at ERROR while a recovered first failure is only a
-# WARNING: the s1 live probe counts ERROR records, and a per-call WARNING made a
-# retriever that 432s on EVERY call indistinguishable from a healthy one as long as
-# a sibling in the same parallel bundle returned something (measured: tavily 432s
-# for every query of this deployment while retriever_errors read 0). One ERROR at
-# the moment a retriever is declared unusable draws that line exactly once, without
-# turning a transient blip that the retry recovered into a gate failure.
+# Every per-retriever failure — first, second, timeout — is a WARNING. The single
+# ERROR is emitted by search(), and only when the query ends up with no results at
+# all: spec/search-quality.md s1 (2026-07-27) defines retriever_errors as
+# UNRECOVERED failures only, because the live probe counts ERROR records and
+# counting failures a sibling already covered for would make retriever_errors == 0
+# a verdict on the external services' mood rather than on this code.
 #
 # ponytail: module-level because SmartRetriever is constructed fresh per search
 # call (actions/query_processing.get_search_results), so instance state could never
@@ -104,6 +103,9 @@ class SmartRetriever:
         self.query_domains = query_domains
         self.researcher = researcher
         self.cfg = researcher.cfg if researcher else kwargs.get("cfg")
+        # Retrievers that could not serve this query. Only read at the end of
+        # search(), where it is finally known whether anything covered for them.
+        self._failed_retrievers = []
 
     def search(self, max_results=10):
         """Classify the query, route to retrievers, execute in parallel, deduplicate."""
@@ -128,6 +130,14 @@ class SmartRetriever:
                 tried = {entry[0] for entry in retriever_configs}
                 results = self._deduplicate_results(
                     self._fallback_search(tried, max_results)
+                )
+            if not results:
+                # The one ERROR this class emits: the query got nothing from anyone.
+                # A failure a sibling or the fallback covered for stayed a WARNING.
+                failed = sorted(set(self._failed_retrievers))
+                logger.error(
+                    f"No results for query: {self.query} — unrecovered retriever "
+                    f"failures: {failed or 'none (every retriever returned empty)'}"
                 )
             return results[:max_results]
         except Exception as e:
@@ -222,9 +232,7 @@ class SmartRetriever:
             results = self._run_single_retriever(name, max_results, {})
             if results:
                 return results
-        logger.error(
-            f"Retriever fallback exhausted — no results for query: {self.query}"
-        )
+        # No ERROR here: search() owns the single "this query got nothing" record.
         return []
 
     def _check_retriever_availability(self, name):
@@ -259,11 +267,16 @@ class SmartRetriever:
                             logger.info(f"Retriever '{name}' returned {len(results)} results")
                             all_results.extend(results)
                     except Exception as e:
-                        logger.error(f"Retriever '{name}' failed: {e}")
+                        # Not a retriever error: _run_single_retriever catches those
+                        # itself and always returns a list. Reachable only when this
+                        # individual future overruns result(timeout=30).
+                        self._failed_retrievers.append(name)
+                        logger.warning(f"Retriever '{name}' did not return in time: {e}")
             except TimeoutError:
                 # Some futures didn't complete in time — keep partial results
                 timed_out = [futures[f] for f in futures if not f.done()]
-                logger.error(f"Retrievers timed out: {timed_out}. Returning partial results.")
+                self._failed_retrievers.extend(timed_out)
+                logger.warning(f"Retrievers timed out: {timed_out}. Returning partial results.")
 
         return all_results
 
@@ -279,16 +292,15 @@ class SmartRetriever:
         try:
             return self._invoke_retriever(name, max_results, extra_kwargs)
         except Exception as e:
-            # ERROR, not WARNING, and exactly once per retriever: a per-retriever
-            # failure is swallowed here into an empty list, so this record is the
-            # only trace it leaves. The live probe counts ERROR records — at
-            # WARNING a run where tavily 432s on every call but duckduckgo covers
-            # for it read exactly like a healthy one. Retiring the retriever is the
-            # "대체 라우팅" half: the next sub-query routes to something that works
-            # instead of re-paying for the same failure.
+            # WARNING, exactly once per retriever: whether this failure ends up
+            # mattering is only knowable one frame up, after the whole parallel
+            # bundle (and the fallback) resolves, so search() decides. Retiring the
+            # retriever is the "대체 라우팅" half: the next sub-query routes to
+            # something that works instead of re-paying for the same failure.
             _DEAD_RETRIEVERS.add(name)
-            logger.error(f"Retriever '{name}' failed twice ({e}) — retired from "
-                         f"routing for this process; routing to an alternate")
+            self._failed_retrievers.append(name)
+            logger.warning(f"Retriever '{name}' failed twice ({e}) — retired from "
+                           f"routing for this process; routing to an alternate")
             return []
 
     def _invoke_retriever(self, name, max_results, extra_kwargs):
