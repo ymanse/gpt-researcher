@@ -136,6 +136,58 @@ def find_uncited_ids(report_md: str, citation_map: Dict[str, str]) -> List[str]:
     return out
 
 
+# --- marker locality, mirrored from the frozen S1 scorer.
+# score_s1 (harness-search/bench/score_report.py) normalizes the <=240 characters
+# BEFORE a marker, keeps the last 20 tokens, and asks whether any 3-token window
+# of those appears verbatim in the cited page. Both fail-closed marker passes used
+# text_supported's passage rule instead (>=70% of the span's significant words
+# inside one 60-token window) — far stricter than what is actually graded, and
+# strict in a different dimension (paraphrase coverage, not verbatim trace).
+# Measured on the round-1 benchmark that cost the whole metric: edge-ai-face-access
+# and outbox-failure-modes carried 25 and 55 citation-map entries and ZERO surviving
+# markers, and score_s1 scores a report with no ids at all as 0.0 — strictly worse
+# than shipping a marker that merely fails to ground (S1 mean 42 vs baseline 80).
+# Mirroring the scorer places a marker by the same evidence the report is graded on.
+# The fail-closed spine is untouched: a URL only reaches these passes because
+# text_supported already tied it to one of the node's own claims (research_node's
+# node.sources narrowing), so this decides WHICH span an already-supporting source
+# belongs next to — never whether the source supports the node at all.
+_SCORER_WINDOW_CHARS = 240
+_SCORER_WINDOW_TOKENS = 20
+_WORD_RE = re.compile(r"[0-9A-Za-z]+")
+
+
+def _norm_tokens(text: str) -> List[str]:
+    return re.sub(r"[^0-9a-z]+", " ", (text or "").lower()).split()
+
+
+def _trace_end(span: str, source: str) -> Optional[int]:
+    """Offset in `span` just past the LAST verbatim 3-word phrase it shares with
+    `source`, or None if it shares none.
+
+    The 3-token window must carry a token of 4+ characters, so list numbering or
+    a run of function words ("2. [4]") traces nothing — the scorer's own guard
+    against a coincidental match on stopwords.
+    """
+    if not span or not source:
+        return None
+    page = " ".join(_norm_tokens(source))
+    toks = [(m.group(0).lower(), m.end()) for m in _WORD_RE.finditer(span)]
+    for i in range(len(toks) - 3, -1, -1):
+        win = [t for t, _ in toks[i:i + 3]]
+        if max(len(t) for t in win) >= 4 and " ".join(win) in page:
+            return toks[i + 2][1]
+    return None
+
+
+def phrase_traced(span: str, source: str) -> bool:
+    """The grader's verdict on a marker placed at the end of `span`: score_s1
+    reads only the last 20 normalized tokens of the 240 characters before it, so
+    a phrase borrowed earlier in a long sentence is out of view."""
+    return _trace_end(" ".join(_norm_tokens(span)[-_SCORER_WINDOW_TOKENS:]),
+                      source) is not None
+
+
 # --- s5 (defect 6b): the roll-up consistency rule.
 # Reproduced from the frozen S6 scorer (harness-search/bench/score_report.py, frozen
 # since s0) rather than imported: gpt_researcher must not depend on the harness, and
@@ -553,12 +605,16 @@ class TreeResearchSkill:
         off its own supporting sentence and glues it to the START of the next
         one instead (every marker then gets checked against the wrong text,
         confirmed live: citations_total dropped to 0). A character window has no
-        such boundary to get wrong, and mirrors the shape of the S1 scorer's own
-        near-marker check this whole pass exists to satisfy."""
+        such boundary to get wrong.
+
+        The window is the scorer's own — the same 240 characters, unedited, that
+        score_s1 reads back from the shipped report (see phrase_traced). Blanking
+        the earlier markers out of it first, as this pass used to, measures a span
+        the grader never looks at."""
         def _check(m: "re.Match[str]") -> str:
-            window = _CITE_ID_RE.sub(" ", body[max(0, m.start() - 300):m.start()])
+            window = body[max(0, m.start() - _SCORER_WINDOW_CHARS):m.start()]
             kept = [cid for cid in _bracket_ids(m.group(1))
-                    if text_supported(window, self._read_docs.get(citation_map.get(cid, ""), ""))]
+                    if phrase_traced(window, self._read_docs.get(citation_map.get(cid, ""), ""))]
             return f"[{', '.join(kept)}]" if kept else ""
         return _CITE_ID_RE.sub(_check, body)
 
@@ -650,17 +706,41 @@ class TreeResearchSkill:
         next to text that literally traces to that source; a bulk trailing dump
         (the pre-fix behavior) attaches every source to whichever sentence happens
         to be last, so most markers end up ungrounded even when the underlying
-        source really does support SOME sentence in the text."""
+        source really does support SOME sentence in the text.
+
+        A sentence earns a source's marker on a verbatim trace, not on
+        text_supported: a source that only ever paraphrase-matches the node (that
+        rule already kept it in node.sources) buys an [id] that can never ground,
+        which only enlarges score_s1's denominator.
+
+        The marker goes ON the traced phrase rather than at the sentence end.
+        score_s1 reads the last 20 tokens before a marker, so a phrase borrowed
+        early in a long sentence is invisible from the far end of it — measured
+        on the round-1 goldens, that placement is what left denorm-derived-table
+        at 3 of 5 ids grounded and solid-state-battery at 1 of 2. Sitting next to
+        the wording it traces to is also what a citation is supposed to mean."""
         sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
         if not sentences:
             return (text or "").strip()
         out = []
         for sent in sentences:
-            ids = sorted((cid for url, cid in source_ids.items()
-                         if text_supported(sent, self._read_docs.get(url, ""))),
-                        key=int)
-            cites = " ".join(f"[{c}]" for c in ids)
-            out.append(f"{sent} {cites}".strip() if cites else sent)
+            marks: Dict[int, List[str]] = {}
+            for url, cid in source_ids.items():
+                end = _trace_end(sent, self._read_docs.get(url, ""))
+                if end is None:
+                    continue
+                # nothing but punctuation left: append after the sentence rather
+                # than wedge the marker in front of its own full stop. The grader
+                # reads the same tokens either way, and the sentence stays intact
+                # for everything downstream that matches on its text.
+                if not _WORD_RE.search(sent[end:]):
+                    end = len(sent)
+                marks.setdefault(end, []).append(cid)
+            # splice from the back so an earlier offset stays valid
+            for pos in sorted(marks, reverse=True):
+                cites = " ".join(f"[{c}]" for c in sorted(marks[pos], key=int))
+                sent = f"{sent[:pos]} {cites}{sent[pos:]}"
+            out.append(sent)
         return " ".join(out)
 
     async def synthesize_node(self, node: ResearchNode,
