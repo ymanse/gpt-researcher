@@ -1,9 +1,13 @@
 # SerpApi Retriever
 
 # libraries
+import logging
 import os
 import requests
 import urllib.parse
+
+
+logger = logging.getLogger(__name__)
 
 
 class SerpApiSearch():
@@ -76,7 +80,7 @@ class SerpApiSearch():
                         search_response.append(search_result)
                         results_processed += 1
         except Exception as e:
-            print(f"Error: {e}. Failed fetching sources. Resulting in empty response.")
+            logger.error(f"Error: {e}. Failed fetching sources. Resulting in empty response.")
             search_response = []
 
         return search_response

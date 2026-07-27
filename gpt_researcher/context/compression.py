@@ -33,6 +33,28 @@ from ..vector_store import VectorStoreWrapper
 from .retriever import SearchAPIRetriever, SectionRetriever
 
 
+def spread_across_sources(docs: list[Document]) -> list[Document]:
+    """Round-robin relevance-ordered chunks across the documents they came from.
+
+    EmbeddingsFilter ranks every surviving chunk by similarity alone and the caller
+    keeps a flat top-N prefix, so one long page whose wording echoes the query can
+    fill the whole retained window while every other page that was scraped
+    contributes nothing (defect 2, context starvation: the node then answers from a
+    single source and the specifics only the other primary sources carry — a spec
+    sentence, a figure from a vendor's own page — never reach the report).
+    Interleaving puts every page's best chunk ahead of any page's second, so the
+    retained window spans the documents actually read. Order within one source, and
+    the relevance order of the sources themselves, are both preserved.
+    """
+    by_source: dict[str, list[Document]] = {}
+    for doc in docs:
+        by_source.setdefault(str(doc.metadata.get("source", "")), []).append(doc)
+    spread: list[Document] = []
+    for rank in range(max((len(chunks) for chunks in by_source.values()), default=0)):
+        spread.extend(chunks[rank] for chunks in by_source.values() if rank < len(chunks))
+    return spread
+
+
 class VectorstoreCompressor:
     """Retrieves and compresses context from a vector store.
 
@@ -175,7 +197,8 @@ class ContextCompressor:
         if cost_callback:
             cost_callback(estimate_embedding_cost(model=OPENAI_EMBEDDING_MODEL, docs=self.documents))
         relevant_docs = await asyncio.to_thread(compressed_docs.invoke, query, **self.kwargs)
-        return self.prompt_family.pretty_print_docs(relevant_docs, max_results)
+        return self.prompt_family.pretty_print_docs(
+            spread_across_sources(relevant_docs), max_results)
 
 
 class WrittenContentCompressor:

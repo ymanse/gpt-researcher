@@ -7,10 +7,14 @@
 # https://firecrawl.dev). Without the key the retriever degrades to [] (never raises).
 
 import json
+import logging
 import os
 import urllib.request
 
 _FIRECRAWL_SEARCH = "https://api.firecrawl.dev/v1/search"
+
+
+logger = logging.getLogger(__name__)
 
 
 class RedditSearch:
@@ -34,7 +38,7 @@ class RedditSearch:
         try:
             return self._search(max_results)
         except Exception as e:
-            print(f"Error: {e}. Failed fetching Reddit sources. Resulting in empty response.")
+            logger.error(f"Error: {e}. Failed fetching Reddit sources. Resulting in empty response.")
             return []
 
     def _search(self, max_results):

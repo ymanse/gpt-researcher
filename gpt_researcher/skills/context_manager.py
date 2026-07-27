@@ -5,7 +5,7 @@ retrieval, compression, and similarity matching for research queries.
 """
 
 import asyncio
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Set
 
 from ..actions.utils import stream_output
 from ..context.compression import (
@@ -58,8 +58,12 @@ class ContextManager:
             prompt_family=self.researcher.prompt_family,
             **self.researcher.kwargs
         )
+        # 14, not 10: the retained chunks are now spread one-per-source
+        # (spread_across_sources), so a 10-chunk window over ~10 scraped pages gave
+        # each page a single 1000-char chunk. 14 lets the best-ranked pages carry a
+        # second chunk without the per-node 60k clip in tree_research biting.
         return await context_compressor.async_get_context(
-            query=query, max_results=10, cost_callback=self.researcher.add_costs
+            query=query, max_results=14, cost_callback=self.researcher.add_costs
         )
 
     async def get_similar_content_by_query_with_vectorstore(self, query: str, filter: dict | None) -> str:

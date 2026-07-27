@@ -810,7 +810,7 @@ class TreeResearchSkill:
                   token_budget: int = 300_000, credit_budget: float = 150.0,
                   novelty_threshold: float = 0.30, expansion_policy: str = "best_first",
                   stream: bool = False, outputs_dir: Optional[str] = None,
-                  time_budget_s: float = 600.0) -> Dict[str, Any]:
+                  time_budget_s: float = 600.0, node_concurrency: int = 3) -> Dict[str, Any]:
         query = query or self.researcher.query
         self._root_query = str(query or "")
         self._max_breadth = max_breadth
@@ -832,86 +832,101 @@ class TreeResearchSkill:
         researched = 0
         pruned = 0
 
-        # budgets are checked BEFORE each frontier pop; accepted-but-unresearched
+        # budgets are checked BEFORE each frontier batch; accepted-but-unresearched
         # nodes stay PENDING in the tree ("unexplored frontier")
-        # ponytail: nodes are researched strictly sequentially (~45s each), so
-        # max_nodes alone can't bound wall-clock — the caller's MCP idle timeout
-        # fires first. time_budget_s caps expansion only; the sequential roll-up
-        # that follows adds ~0.8x on top (measured: 180s expansion -> 321s total),
-        # so total ~= 1.8 * time_budget_s. The 600s default lands near 1080s,
-        # inside a 1200s idle timeout. Parallelize the frontier before raising it.
+        # defect 2, at tree scale: researching nodes strictly sequentially (~45s
+        # each) made time_budget_s — not max_nodes — decide how much of the tree
+        # was ever researched. Bench round 2 ended with 12 of 21 (denorm) and 17 of
+        # 29 (outbox) nodes still PENDING, and every primary-source question those
+        # nodes carried ("what did Celko write about closure tables") went
+        # unresearched, so the context that reached the report was a third of the
+        # tree the expansion had already earned. Each node researches with its OWN
+        # GPTResearcher (see research_node) and shares only visited_urls — a set
+        # mutated inside this one event loop — so a batch of them is safe to run
+        # concurrently. Scoring/expansion bookkeeping stays sequential in priority
+        # order, so novelty and covered ground see exactly what they saw before.
+        worst_node_tokens = 0
         while (len(frontier) and researched < max_nodes
                and self.tokens_spent < token_budget
                and self.credits_spent < credit_budget
                and time.time() - start < time_budget_s):
-            node = frontier.pop()
-            try:
-                await self.research_node(node)
-            except Exception as e:
-                logger.error(f"tree node {node.id} research failed: {e}")
-                node.status = NodeStatus.FAILED
-                continue
-            researched += 1
-            self.tokens_spent += node.tokens_spent
-            self.credits_spent += node.credits_spent
+            batch_size = min(node_concurrency, len(frontier), max_nodes - researched)
+            if worst_node_tokens:
+                # keep the budget honest at batch granularity: the sequential loop
+                # stopped ON the budget, so reserve room for the costliest node
+                # seen so far rather than letting a batch overshoot it
+                headroom = (token_budget - self.tokens_spent) // worst_node_tokens
+                batch_size = min(batch_size, max(1, headroom))
+            batch = [frontier.pop() for _ in range(batch_size)]
+            outcomes = await asyncio.gather(
+                *(self.research_node(node) for node in batch), return_exceptions=True)
+            for node, outcome in zip(batch, outcomes):
+                if isinstance(outcome, BaseException):
+                    logger.error(f"tree node {node.id} research failed: {outcome}")
+                    node.status = NodeStatus.FAILED
+                    continue
+                researched += 1
+                self.tokens_spent += node.tokens_spent
+                self.credits_spent += node.credits_spent
+                worst_node_tokens = max(worst_node_tokens, node.tokens_spent)
 
-            if node.status == NodeStatus.FAILED:
-                # defect 3: nothing to expand from and nothing to roll up. Skipping
-                # compute_novelty matters too — registering a starved node's
-                # question as covered ground would let the hole it left prune a
-                # later child that would have filled it.
-                continue
+                if node.status == NodeStatus.FAILED:
+                    # defect 3: nothing to expand from and nothing to roll up. Skipping
+                    # compute_novelty matters too — registering a starved node's
+                    # question as covered ground would let the hole it left prune a
+                    # later child that would have filled it.
+                    continue
 
-            node.novelty = self.compute_novelty(node)
-            if node.novelty < novelty_threshold:
-                node.status = NodeStatus.PRUNED
-                pruned += 1
-                continue  # pruned nodes are never expanded
+                node.novelty = self.compute_novelty(node)
+                if node.novelty < novelty_threshold:
+                    node.status = NodeStatus.PRUNED
+                    pruned += 1
+                    continue  # pruned nodes are never expanded
 
-            if node.depth >= max_depth:
-                continue
-            try:
-                candidates = await self.generate_child_questions(node)
-            except Exception as e:
-                logger.error(f"tree node {node.id} expansion failed: {e}")
-                candidates = []
-            accepted = 0
-            for question in candidates:
-                if accepted >= max_breadth:
-                    break
+                if node.depth >= max_depth:
+                    continue
                 try:
-                    emb = await self.embed_question(question)
+                    candidates = await self.generate_child_questions(node)
                 except Exception as e:
-                    logger.warning(f"embedding failed, dedup degraded: {e}")
-                    emb = None
-                if emb and any(_cosine(emb, e) >= DEDUP_COSINE for e in self._embeddings):
-                    continue  # near-duplicate question -> dropped, no node created
-                child = ResearchNode(id=f"{node.id}.{len(node.children)}",
-                                     question=question, parent_id=node.id,
-                                     depth=node.depth + 1)
-                child.question_embedding = emb
-                # ponytail: heuristic priority (design's novelty/gap terms need research
-                # results a fresh child doesn't have yet); bfs/dfs just reorder by depth
-                if expansion_policy == "bfs":
-                    child.priority = -child.depth
-                elif expansion_policy == "dfs":
-                    child.priority = float(child.depth)
-                else:
-                    # the affinity term is sized to outrank one depth band: a
-                    # "what does <entity>'s own documentation say" child is worth
-                    # more of a budget that never reaches the whole frontier than
-                    # a generic question one level shallower.
-                    child.priority = max(0.0, 0.5 + 0.15 * node.priority
-                                         - 0.10 * child.depth
-                                         + 0.35 * _primary_source_affinity(question))
-                if emb:
-                    self._embeddings.append(emb)
-                self.nodes[child.id] = child
-                node.children.append(child.id)
-                frontier.push(child)
-                accepted += 1
-            if node.children:
-                node.status = NodeStatus.EXPANDED
+                    logger.error(f"tree node {node.id} expansion failed: {e}")
+                    candidates = []
+                accepted = 0
+                for question in candidates:
+                    if accepted >= max_breadth:
+                        break
+                    try:
+                        emb = await self.embed_question(question)
+                    except Exception as e:
+                        logger.warning(f"embedding failed, dedup degraded: {e}")
+                        emb = None
+                    if emb and any(_cosine(emb, e) >= DEDUP_COSINE for e in self._embeddings):
+                        continue  # near-duplicate question -> dropped, no node created
+                    child = ResearchNode(id=f"{node.id}.{len(node.children)}",
+                                         question=question, parent_id=node.id,
+                                         depth=node.depth + 1)
+                    child.question_embedding = emb
+                    # ponytail: heuristic priority (design's novelty/gap terms need research
+                    # results a fresh child doesn't have yet); bfs/dfs just reorder by depth
+                    if expansion_policy == "bfs":
+                        child.priority = -child.depth
+                    elif expansion_policy == "dfs":
+                        child.priority = float(child.depth)
+                    else:
+                        # the affinity term is sized to outrank one depth band: a
+                        # "what does <entity>'s own documentation say" child is worth
+                        # more of a budget that never reaches the whole frontier than
+                        # a generic question one level shallower.
+                        child.priority = max(0.0, 0.5 + 0.15 * node.priority
+                                             - 0.10 * child.depth
+                                             + 0.35 * _primary_source_affinity(question))
+                    if emb:
+                        self._embeddings.append(emb)
+                    self.nodes[child.id] = child
+                    node.children.append(child.id)
+                    frontier.push(child)
+                    accepted += 1
+                if node.children:
+                    node.status = NodeStatus.EXPANDED
 
         budget_respected = (researched <= max_nodes
                             and self.tokens_spent <= token_budget

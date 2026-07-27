@@ -4,11 +4,15 @@
 # web result carries the full-page clean markdown (not just a snippet).
 # Requires FIRECRAWL_API_KEY (https://firecrawl.dev).
 
+import logging
 import os
 
 import requests
 
 _FIRECRAWL_V2_SEARCH = "https://api.firecrawl.dev/v2/search"
+
+
+logger = logging.getLogger(__name__)
 
 
 class FirecrawlSearch:
@@ -32,7 +36,7 @@ class FirecrawlSearch:
         try:
             return self._search(max_results)
         except Exception as e:
-            print(f"Error: {e}. Failed fetching sources from Firecrawl. Resulting in empty response.")
+            logger.error(f"Error: {e}. Failed fetching sources from Firecrawl. Resulting in empty response.")
             return []
 
     def _search(self, max_results):

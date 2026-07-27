@@ -1,7 +1,12 @@
+import logging
+
 from ..utils import check_pkg, normalize_wikipedia_lang
 
 # ddgs "worldwide" default; its lang segment "wt" is a placeholder, not a language.
 _DEFAULT_REGION = 'wt-wt'
+
+
+logger = logging.getLogger(__name__)
 
 
 class Duckduckgo:
@@ -31,6 +36,6 @@ class Duckduckgo:
         try:
             search_response = self.ddg.text(self.query, region=region, max_results=max_results)
         except Exception as e:
-            print(f"Error: {e}. Failed fetching sources. Resulting in empty response.")
+            logger.error(f"Error: {e}. Failed fetching sources. Resulting in empty response.")
             search_response = []
         return search_response

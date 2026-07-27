@@ -5,10 +5,14 @@ using the Tavily API.
 """
 
 import json
+import logging
 import os
 from typing import Literal, Sequence
 
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 class TavilySearch:
@@ -124,6 +128,6 @@ class TavilySearch:
             # route to a fallback retriever — swallowed, they read as "no results".
             raise
         except Exception as e:
-            print(f"Error: {e}. Failed fetching sources. Resulting in empty response.")
+            logger.error(f"Error: {e}. Failed fetching sources. Resulting in empty response.")
             search_response = []
         return search_response

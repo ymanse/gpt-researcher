@@ -76,6 +76,25 @@ _RETRIEVER_API_KEYS = {
     "firecrawl_research": "FIRECRAWL_API_KEY",
 }
 
+# Retrievers that failed twice in a row in THIS process: a credential that answers
+# 432 answers 432 for the next query too, so the route drops it instead of paying
+# for the same failure once per sub-query. This is the second half of defect 1's
+# "재시도/대체 라우팅": retry the call, and if the retriever still cannot serve,
+# route around it permanently rather than warning about it forever.
+#
+# Why the drop is logged at ERROR while a recovered first failure is only a
+# WARNING: the s1 live probe counts ERROR records, and a per-call WARNING made a
+# retriever that 432s on EVERY call indistinguishable from a healthy one as long as
+# a sibling in the same parallel bundle returned something (measured: tavily 432s
+# for every query of this deployment while retriever_errors read 0). One ERROR at
+# the moment a retriever is declared unusable draws that line exactly once, without
+# turning a transient blip that the retry recovered into a gate failure.
+#
+# ponytail: module-level because SmartRetriever is constructed fresh per search
+# call (actions/query_processing.get_search_results), so instance state could never
+# remember. Per-process is the right lifetime — a new container run re-probes.
+_DEAD_RETRIEVERS: set[str] = set()
+
 
 class SmartRetriever:
     """LLM-routed multi-retriever that selects optimal search engines per query."""
@@ -209,7 +228,9 @@ class SmartRetriever:
         return []
 
     def _check_retriever_availability(self, name):
-        """Return True if the retriever's required API key is set (or not needed)."""
+        """Return True if the retriever can serve: key configured and not proven dead."""
+        if name in _DEAD_RETRIEVERS:
+            return False
         env_var = _RETRIEVER_API_KEYS.get(name)
         if env_var is None:
             return True  # No key required
@@ -238,16 +259,40 @@ class SmartRetriever:
                             logger.info(f"Retriever '{name}' returned {len(results)} results")
                             all_results.extend(results)
                     except Exception as e:
-                        logger.warning(f"Retriever '{name}' failed: {e}")
+                        logger.error(f"Retriever '{name}' failed: {e}")
             except TimeoutError:
                 # Some futures didn't complete in time — keep partial results
                 timed_out = [futures[f] for f in futures if not f.done()]
-                logger.warning(f"Retrievers timed out: {timed_out}. Returning partial results.")
+                logger.error(f"Retrievers timed out: {timed_out}. Returning partial results.")
 
         return all_results
 
     def _run_single_retriever(self, name, max_results, extra_kwargs):
-        """Instantiate and run a single retriever."""
+        """Run a retriever, retrying once; a second failure retires it from routing."""
+        try:
+            return self._invoke_retriever(name, max_results, extra_kwargs)
+        except Exception as first:
+            # The retry is defect 1's "재시도" half: a 432/timeout that a second call
+            # clears never needed alternate routing, and reporting it as a failure
+            # would turn every transient blip into a live-gate failure.
+            logger.warning(f"Retriever '{name}' failed ({first}); retrying once")
+        try:
+            return self._invoke_retriever(name, max_results, extra_kwargs)
+        except Exception as e:
+            # ERROR, not WARNING, and exactly once per retriever: a per-retriever
+            # failure is swallowed here into an empty list, so this record is the
+            # only trace it leaves. The live probe counts ERROR records — at
+            # WARNING a run where tavily 432s on every call but duckduckgo covers
+            # for it read exactly like a healthy one. Retiring the retriever is the
+            # "대체 라우팅" half: the next sub-query routes to something that works
+            # instead of re-paying for the same failure.
+            _DEAD_RETRIEVERS.add(name)
+            logger.error(f"Retriever '{name}' failed twice ({e}) — retired from "
+                         f"routing for this process; routing to an alternate")
+            return []
+
+    def _invoke_retriever(self, name, max_results, extra_kwargs):
+        """Instantiate and run a single retriever. Raises on failure."""
         from gpt_researcher.actions.retriever import get_retriever
 
         retriever_class = get_retriever(name)
@@ -255,35 +300,35 @@ class SmartRetriever:
             logger.warning(f"Unknown retriever: {name}")
             return []
 
-        try:
-            # Build constructor kwargs based on what the retriever accepts
-            init_kwargs = {"query": self.query}
+        # copy: extra_kwargs is the dict living in ROUTING_TABLE, so popping from it
+        # would strip the route's query_domains for every later query in the process
+        extra_kwargs = dict(extra_kwargs)
 
-            # Pass query_domains: use route-specific override or the original
-            route_domains = extra_kwargs.pop("query_domains", None)
-            init_kwargs["query_domains"] = route_domains or self.query_domains
+        # Build constructor kwargs based on what the retriever accepts
+        init_kwargs = {"query": self.query}
 
-            # Pass remaining extra kwargs (topic, time_range, search_type, etc.)
-            init_kwargs.update(extra_kwargs)
+        # Pass query_domains: use route-specific override or the original
+        route_domains = extra_kwargs.pop("query_domains", None)
+        init_kwargs["query_domains"] = route_domains or self.query_domains
 
-            # Filter kwargs to only those the constructor accepts
-            import inspect
-            sig = inspect.signature(retriever_class.__init__)
-            valid_params = set(sig.parameters.keys()) - {"self"}
-            filtered = {k: v for k, v in init_kwargs.items() if k in valid_params}
+        # Pass remaining extra kwargs (topic, time_range, search_type, etc.)
+        init_kwargs.update(extra_kwargs)
 
-            instance = retriever_class(**filtered)
+        # Filter kwargs to only those the constructor accepts
+        import inspect
+        sig = inspect.signature(retriever_class.__init__)
+        valid_params = set(sig.parameters.keys()) - {"self"}
+        filtered = {k: v for k, v in init_kwargs.items() if k in valid_params}
 
-            # Call search with max_results (some retrievers accept search_type in search())
-            search_kwargs = {}
-            search_sig = inspect.signature(instance.search)
-            if "search_type" in search_sig.parameters and "search_type" in extra_kwargs:
-                search_kwargs["search_type"] = extra_kwargs["search_type"]
+        instance = retriever_class(**filtered)
 
-            return instance.search(max_results=max_results, **search_kwargs) or []
-        except Exception as e:
-            logger.warning(f"Error running retriever '{name}': {e}")
-            return []
+        # Call search with max_results (some retrievers accept search_type in search())
+        search_kwargs = {}
+        search_sig = inspect.signature(instance.search)
+        if "search_type" in search_sig.parameters and "search_type" in extra_kwargs:
+            search_kwargs["search_type"] = extra_kwargs["search_type"]
+
+        return instance.search(max_results=max_results, **search_kwargs) or []
 
     # ------------------------------------------------------------------
     # Deduplication

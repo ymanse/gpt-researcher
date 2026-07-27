@@ -6,9 +6,13 @@
 # API: https://api.github.com/search/repositories
 
 import json
+import logging
 import os
 import urllib.parse
 import urllib.request
+
+
+logger = logging.getLogger(__name__)
 
 
 class GithubSearch:
@@ -29,7 +33,7 @@ class GithubSearch:
         try:
             return self._search(max_results)
         except Exception as e:
-            print(f"Error: {e}. Failed fetching GitHub sources. Resulting in empty response.")
+            logger.error(f"Error: {e}. Failed fetching GitHub sources. Resulting in empty response.")
             return []
 
     def _search(self, max_results):

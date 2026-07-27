@@ -6,6 +6,7 @@
 # optional from/to recency window applied client-side.
 # Requires FIRECRAWL_API_KEY (https://firecrawl.dev).
 
+import logging
 import os
 import re
 from datetime import date, timedelta
@@ -19,6 +20,9 @@ _DATE_KEYS = (
     "created", "createdAt", "updated", "updatedAt",
 )
 _ARXIV_YYMM = re.compile(r"arxiv:(\d{2})(\d{2})\.")
+
+
+logger = logging.getLogger(__name__)
 
 
 class FirecrawlResearchSearch:
@@ -45,7 +49,7 @@ class FirecrawlResearchSearch:
         try:
             return self._search(max_results)
         except Exception as e:
-            print(f"Error: {e}. Failed fetching papers from Firecrawl research. Resulting in empty response.")
+            logger.error(f"Error: {e}. Failed fetching papers from Firecrawl research. Resulting in empty response.")
             return []
 
     def _search(self, max_results):

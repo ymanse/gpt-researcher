@@ -5,9 +5,13 @@
 # $0.00015 per tweet — 33x cheaper than the official X API.
 
 import json
+import logging
 import os
 import urllib.parse
 import urllib.request
+
+
+logger = logging.getLogger(__name__)
 
 
 class XquikSearch:
@@ -48,7 +52,7 @@ class XquikSearch:
             results = self._search_tweets(max_results)
             return results
         except Exception as e:
-            print(f"Error: {e}. Failed fetching X/Twitter sources. Resulting in empty response.")
+            logger.error(f"Error: {e}. Failed fetching X/Twitter sources. Resulting in empty response.")
             return []
 
     def _search_tweets(self, max_results):
