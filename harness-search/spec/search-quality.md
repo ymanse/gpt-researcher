@@ -141,6 +141,14 @@ python bench/score_report.py --golden bench/golden/<id>.json \
 - live measure (골든 5쿼리, 컨테이너 내 `conduct_research` probe):
   `scraped_pages_per_query >= 3`(최소값 기준), `retriever_errors == 0`,
   `context_chars_median >= 20000`.
+- **`retriever_errors` 의 정의(2026-07-27 확정)**: "**복구되지 않은** retriever 실패"만 센다.
+  같은 병렬 번들의 형제 retriever(예: general_web = tavily+firecrawl+duckduckgo)가 결과를
+  돌려줘 검색이 결국 성공했다면 그것은 **WARNING**이고 ERROR가 아니다. ERROR 레코드는
+  그 쿼리가 결국 결과를 못 얻었을 때만 남긴다.
+  이유: 실측 결함 ①은 "tavily 432 **전량실패**"였고 게이트가 잡아야 할 것은 그 전량실패다.
+  복구된 실패까지 ERROR로 세면 `retriever_errors == 0` 이 외부 서비스의 그날 컨디션에
+  좌우되어(코드 품질이 아니라) 게이트가 동전던지기가 된다 — s1 리뷰 R1 지적, 타당함.
+  fail-closed 는 유지된다: 복구 실패는 여전히 즉시 게이트를 깨뜨린다.
 
 ### s2 — 인용 무결성 (결함 6a)
 - `CitationAgent` 를 tree 경로(`tree_research.py`)에 연결. `node.sources` 를 "retriever 반환

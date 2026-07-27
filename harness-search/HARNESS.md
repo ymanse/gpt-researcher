@@ -25,7 +25,9 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
 | **harness-audit** | 게이트 자체 감사: try_ok(law 6 — 전 노드 known-good/bad `try_probe.py` 리포트 쌍), git_ok(**점수 조작 탐지** — `[sq][s0]` freeze 커밋 이후 bench/golden/*·baseline_firecrawl.json을 건드린 커밋 0), frozen_ok, regen_ok(law 10 — 재생성기 2회 실행 바이트 동일), sync_ok(law 8 — 게이트 토큰이 profile guidance와 이 문서에 존재) | in-gate `audit_check.py` |
 
 측정 임계값 (실측 결함에서 도출):
-- s1: queries_run>=5, scraped_pages_min>=3, retriever_errors_total=0, context_chars_median>=20000 (관측 median 1.3~8KB)
+- s1: queries_run>=5, scraped_pages_min>=3, retriever_errors_total=0, context_chars_median>=20000 (관측 median 1.3~8KB).
+  `retriever_errors` = **복구되지 않은** 실패만(형제 retriever가 커버한 실패는 WARNING) — 복구된
+  실패까지 세면 임계값이 외부 서비스 컨디션에 좌우된다. 스펙 s1 절 참조
 - s2: queries_run>=2, S1_min_pct>=80, uncited_ids_total=0 (근거 없는 [id] fail-closed)
 - s3: queries_run>=2, traps_hit_total=0 (+빈 컨텍스트→FAILED 단위테스트는 s3 RED가 강제)
 - s4: queries_run>=2, S4_min_pct>=85, pruned_count_total>=1 (관측: pruned_count 항상 0), s5_improved=1
