@@ -404,6 +404,17 @@ class TreeResearchSkill:
         self._read_docs.update(read_docs)
 
         # ponytail: one LLM call yields answer + digest + learnings; parse-tolerant
+        #
+        # defect 6b, the half S6 scores as "contested 병기": the roll-up only
+        # CONCATENATES node answers (see synthesize_node — every rewrite design
+        # measured worse), so this prompt is the last place a disagreement can
+        # survive. Whatever it collapses is gone from the report for good.
+        # Bench round 3 measured the cost: of the 11 contested sides the goldens
+        # ask for and the reports miss, 8 are missing from EVERY node answer too —
+        # the tree read the sources, the answer picked one side, and S6 came in at
+        # 33 against the baseline's 52. Hence the explicit both-sides rule below,
+        # and the wider word budget it needs to hold both (60k chars of context
+        # squeezed into 400 words has no room for a minority view).
         response = await create_chat_completion(
             messages=[
                 {"role": "system",
@@ -412,7 +423,12 @@ class TreeResearchSkill:
                  "content": (
                      f"Question: {node.question}\n\nContext:\n{context}\n\n"
                      "Write three sections:\n"
-                     "ANSWER: a markdown answer (<=400 words). Do not add citation "
+                     "ANSWER: a markdown answer (<=900 words). Wherever the context "
+                     "DISAGREES with itself — two sources giving different figures "
+                     "for the same quantity, or taking opposing positions on the "
+                     "same question — state EVERY side explicitly and name who "
+                     "reports which. Never average or range-merge disagreeing "
+                     "figures, and never drop the minority view. Do not add citation "
                      "markers, footnotes, or bracketed references of any kind — "
                      "citations are attached separately from the real source list.\n"
                      "DIGEST: a <=120-word summary of the answer.\n"
@@ -682,6 +698,19 @@ class TreeResearchSkill:
         # figure launder an unsupported one past the check. _scrubbed() is
         # offset-preserving, so a span here is still the same span of `body`.
         parts = _SENT_SPLIT_RE.split(_scrubbed(body))
+        # review F1: the separator strip below runs on the RAW slice, and
+        # _scrubbed() blanks a fenced block exactly like a marker — so a fence
+        # abutting a dropped sentence's period ("...48,500 units.```data[1] =
+        # load()```") lands INSIDE that separator and the strip would delete the
+        # array index out of shipped code. A bracket inside a fence is code, never
+        # a citation; the scorer never reads it either way.
+        fences = [m.span() for m in _SCRUB_RES[0].finditer(body)]
+
+        def _strip_orphan_markers(raw: str, base: int) -> str:
+            return _CITE_ID_RE.sub(
+                lambda m: m.group(0) if any(a <= base + m.start() < b for a, b in fences)
+                else "", raw)
+
         contradictions: List[str] = []
         unsupported: List[str] = []
         out: List[str] = []
@@ -697,7 +726,7 @@ class TreeResearchSkill:
                 # that sentence and keeping its marker ships an [id] next to text
                 # it never supported — what _prune_ungrounded_markers ran earlier
                 # to stop, and this pass runs after it.
-                out.append(_CITE_ID_RE.sub("", raw) if drop_prev else raw)
+                out.append(_strip_orphan_markers(raw, start) if drop_prev else raw)
                 continue
             drop_prev = False
             if not part.strip():
