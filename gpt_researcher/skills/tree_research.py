@@ -106,12 +106,21 @@ def _cosine(a: List[float], b: List[float]) -> float:
 # and malformed punctuation an LLM rewrite drops in — doubled ("[1,2,,3]") or
 # trailing ("[1, 99,]") separators before the closing bracket
 # — any variant this still misses escapes the strip
-_ITEM = r"(?:\d+|\d{1,3}\s*-\s*\d{1,3})"
+# R2 fix: the plain-number alternative is capped at 3 digits too, matching the
+# frozen S1 scorer's own marker regex (bench/score_report.py, `\[(\d{1,3})\](?!\()`)
+# -- an uncapped `\d+` here misread a bare 4+-digit bracket (any year, any large
+# figure, e.g. "[2024]") as a citation-id candidate and stripped it, even though
+# the scorer would never have scored it as a marker in the first place.
+_ITEM = r"(?:\d{1,3}|\d{1,3}\s*-\s*\d{1,3})"
 _SEP = r"(?:\s*[,;]+\s*|\s+)"
-_CITE_ID_RE = re.compile(rf"\[\s*({_ITEM}(?:{_SEP}{_ITEM})*){_SEP}?\s*\]")
+# R6 fix: the trailing negative lookahead mirrors the scorer's own `(?!\()` -- a
+# markdown link whose visible anchor text is a bare number, "[1](https://...)",
+# is never a citation marker to the scorer, so it must never be detected (and
+# then stripped, leaving a dangling "(https://...)") as an uncited one either.
+_CITE_ID_RE = re.compile(rf"\[\s*({_ITEM}(?:{_SEP}{_ITEM})*){_SEP}?\s*\](?!\()")
 # range alternative FIRST so a spaced range ("1 - 3") stays one token — splitting
 # the group on _SEP instead shreds a range at its own internal whitespace
-_TOKEN_RE = re.compile(r"(\d{1,3})\s*-\s*(\d{1,3})|(\d+)")
+_TOKEN_RE = re.compile(r"(\d{1,3})\s*-\s*(\d{1,3})|(\d{1,3})")
 
 
 def _bracket_ids(group: str) -> List[str]:
