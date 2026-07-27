@@ -128,6 +128,13 @@ commands:
       Implement s1 until the tests are GREEN: fix the wikipedia language-code bug, add
       432/failure fallback routing, make 0-URL scrapes raise the error signal. IMPLEMENT
       ONLY — do not review your own work (the next node does that adversarially).
+      ERROR-SIGNAL CONTRACT (spec s1, decided 2026-07-27): emit exactly one
+      logger.error("SQ_RETRIEVAL_UNRECOVERED ...") when a query's retrieval ends with NO
+      usable results. A failure a sibling retriever in the same bundle already covered is
+      a logger.warning, NOT an error — the live gate counts only marker-carrying ERROR
+      records (marker_wired proves the marker exists), so an error on a covered failure
+      would make the gate depend on external service weather. Unit-test that the marker
+      fires on total failure and does not fire when a fallback covers.
       If no_read/evidence/s1_review.json exists with blocking findings: fix EVERY blocking
       finding first, then write no_read/evidence/s1_impl_ack.json =
       {"addressed_findings":[<every blocking id>], "review_head_sha":"<the head_sha field

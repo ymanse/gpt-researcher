@@ -46,7 +46,7 @@ NODES = ["s0-bench"] + [f"s{n}-{k}" for n in range(1, 6)
 # gate threshold tokens that guidance + HARNESS.md must both mention (law 8)
 SYNC_TOKENS = [
     "golden_count", "fixtures_passed", "llm_calls", "baseline_queries", "diversity_ok",
-    "scraped_pages_min", "retriever_errors_total", "context_chars_median",
+    "scraped_pages_min", "retriever_errors_total", "context_chars_median", "marker_wired",
     "S1_min_pct", "uncited_ids_total", "traps_hit_total",
     "S4_min_pct", "pruned_count_total", "s5_improved",
     "contradictions_total", "unsupported_claims_total",

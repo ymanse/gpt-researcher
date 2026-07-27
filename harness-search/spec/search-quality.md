@@ -149,6 +149,15 @@ python bench/score_report.py --golden bench/golden/<id>.json \
   복구된 실패까지 ERROR로 세면 `retriever_errors == 0` 이 외부 서비스의 그날 컨디션에
   좌우되어(코드 품질이 아니라) 게이트가 동전던지기가 된다 — s1 리뷰 R1 지적, 타당함.
   fail-closed 는 유지된다: 복구 실패는 여전히 즉시 게이트를 깨뜨린다.
+- **마커 계약(구현이 지켜야 할 것)**: 한 쿼리의 검색이 **쓸 만한 결과 0건으로 끝났을 때**
+  정확히 한 줄 `logger.error("SQ_RETRIEVAL_UNRECOVERED ...")` 를 남긴다. 형제 retriever가
+  커버한 실패는 `logger.warning` 이다. 프로브(`container_probe_s1.py`)는 이 마커가 붙은
+  ERROR 레코드만 세며, 마커가 소스 어디에도 없으면 `marker_wired:0` 으로 **게이트가 먼저
+  실패**한다(law 4 — 아무도 안 쓰는 마커의 0은 공허하다). 마커가 실제로 발화하는지는
+  단위테스트로 증명한다.
+  참고: 프로브의 이전 버전은 root logger 의 **모든** ERROR 를 셌다. 무관한 라이브러리
+  오류와 "형제가 커버한 실패"까지 집계돼 게이트가 외부 서비스 컨디션에 좌우됐다.
+  `error_records_total` 로 원시 카운트는 계속 기록하되 게이트하지 않는다.
 
 ### s2 — 인용 무결성 (결함 6a)
 - `CitationAgent` 를 tree 경로(`tree_research.py`)에 연결. `node.sources` 를 "retriever 반환

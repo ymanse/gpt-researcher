@@ -27,7 +27,10 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
 측정 임계값 (실측 결함에서 도출):
 - s1: queries_run>=5, scraped_pages_min>=3, retriever_errors_total=0, context_chars_median>=20000 (관측 median 1.3~8KB).
   `retriever_errors` = **복구되지 않은** 실패만(형제 retriever가 커버한 실패는 WARNING) — 복구된
-  실패까지 세면 임계값이 외부 서비스 컨디션에 좌우된다. 스펙 s1 절 참조
+  실패까지 세면 임계값이 외부 서비스 컨디션에 좌우된다. 구현은 쓸 만한 결과 0건으로 끝난
+  쿼리에만 `logger.error("SQ_RETRIEVAL_UNRECOVERED ...")` 를 남기고, 프로브는 그 마커가 붙은
+  ERROR 만 센다. **`marker_wired=1` 이 먼저 검사된다** — 마커가 소스에 없으면 0은 공허하다
+  (law 4). 원시 ERROR 총계는 `error_records_total` 로 기록만 하고 게이트하지 않는다
 - s2: queries_run>=2, S1_min_pct>=80, uncited_ids_total=0 (근거 없는 [id] fail-closed)
 - s3: queries_run>=2, traps_hit_total=0 (+빈 컨텍스트→FAILED 단위테스트는 s3 RED가 강제)
 - s4: queries_run>=2, S4_min_pct>=85, pruned_count_total>=1 (관측: pruned_count 항상 0), s5_improved=1

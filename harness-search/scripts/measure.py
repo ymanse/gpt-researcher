@@ -97,10 +97,14 @@ def main() -> int:
                 ev["scraped_pages_min"] = min(p["scraped_pages"] for p in probes)
                 ev["retriever_errors_total"] = sum(p["retriever_errors"] for p in probes)
                 ev["context_chars_median"] = int(statistics.median(p["context_chars"] for p in probes))
+                # law 4: retriever_errors counts records carrying the unrecovered marker,
+                # so a marker nobody emits would make that 0 meaningless. Bind it.
+                ev["marker_wired"] = 1 if all(p.get("marker_wired") for p in probes) else 0
             else:
                 ev["scraped_pages_min"] = 0
                 ev["retriever_errors_total"] = 999
                 ev["context_chars_median"] = 0
+                ev["marker_wired"] = 0
         else:
             pair = hconf.measure_pair()
             scores = tree_scores(pair, rnd, ev["errors"])

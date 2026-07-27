@@ -14,8 +14,17 @@ dofile(gralph.profile_dir .. "/scripts/measure_common.lua")(1, "s2-red", functio
       "scrapes fewer than 3 pages; the retriever/scraper path is still broken for it")
     return false
   end
+  -- retriever_errors counts ONLY records carrying the implementation's
+  -- SQ_RETRIEVAL_UNRECOVERED marker (spec s1). A marker nobody emits would make that
+  -- zero a hollow one, so the probe proves the marker exists in the source first.
+  if not L.must(blob, '"marker_wired":1',
+      "the SQ_RETRIEVAL_UNRECOVERED marker is not present anywhere in gpt_researcher/ — " ..
+      "without it retriever_errors_total=0 proves nothing. Emit exactly one " ..
+      "logger.error(\"SQ_RETRIEVAL_UNRECOVERED ...\") when a query's retrieval ends with no " ..
+      "usable results (a failure a sibling retriever covered is a WARNING, not an error), " ..
+      "and unit-test that it fires") then return false end
   if not L.must(blob, '"retriever_errors_total":0',
-      "retriever errors are still occurring live (tavily 432 / wikipedia lang-code / scrape failures) — fix the retriever, not the probe") then return false end
+      "a query's retrieval ended with NO usable results (unrecovered failure) — fix the retriever routing/fallback, never the probe") then return false end
   local cc = L.num(blob, '"context_chars_median":(%d+)')
   if not cc or cc < 20000 then
     gralph.fail("s1 measure: context_chars_median=" .. tostring(cc) .. " < 20000 — context starvation persists " ..
