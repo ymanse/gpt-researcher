@@ -46,9 +46,19 @@ if not weakest then
   gralph.fail('all_pass=0 but no "weakest_metric":"S<k>" recorded — re-run benchmark.py (it computes the largest shortfall)')
   return
 end
-if br >= 3 then
-  gralph.fail("benchmark rounds exhausted (3) and " .. weakest .. " is still not beating the baseline — " ..
-    "human review needed: see no_read/evidence/benchmark.json per_metric")
+-- refit rounds counted from the append-only journal, not the mutable store (see
+-- review_common.lua: an agent reset a store counter to escape a cap on 2026-07-27).
+local lout = L.popen("python scripts/loop_audit.py", "loop_audit.py")
+if not lout then return end
+local spent = L.num(lout, "bench_journal=(%d+)")
+local granted = L.num(lout, "grant_bench=(%d+)") or 0
+if not spent then gralph.fail("loop_audit.py did not report bench_journal"); return end
+if (spent - granted) >= 3 then
+  gralph.fail("benchmark refit rounds exhausted (" .. (spent - granted) .. " spent, " .. granted ..
+    " human-granted) and " .. weakest .. " is still not beating the baseline — a HUMAN must decide: " ..
+    "read no_read/evidence/benchmark.json per_metric, then either fix the losing metric's stage and record " ..
+    "a grant in no_read/audit/grants.json, or accept the partial result. Do NOT edit .gralph/ state to " ..
+    "continue — the journal counts what the loop actually did.")
   return
 end
 local owner = { S1 = "s2", S2 = "s1", S3 = "s3", S4 = "s4", S5 = "s4", S6 = "s5" }

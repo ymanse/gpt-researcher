@@ -73,6 +73,11 @@ commands:
       frozen_ok is re-checked by every later gate).
       COMMIT everything on feature/search-quality, message starting: [sq][s0]
       (tracked trees clean in BOTH repos).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s0-bench --report no_read/evidence/s0_bench.json
       {{usage}}
     args:
@@ -99,6 +104,11 @@ commands:
             (it must not pass silently)
       Then RUN: python scripts/pytest_evidence.py --stage 1 --phase red
       Confirm collected>=1, errors=0, passed=0, failed>=1 (base_sha is recorded for review).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s1-red --report no_read/evidence/s1_red.json
       {{usage}}
     args:
@@ -126,6 +136,11 @@ commands:
       Preflight: python scripts/verify_impl.py --stage 1  (must print ok=1: hash_match,
       stage+full suite green, ruff_errors=0 on changed files, frozen_ok=1,
       review_addressed_ok=1). The gate re-runs this itself — you cannot submit around it.
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s1-impl --report no_read/evidence/s1_impl.json
       {{usage}}
     args:
@@ -151,6 +166,11 @@ commands:
         "blocking_count":<N> }
       blocking_count>0 routes the flow BACK to s1-impl (max 3 rounds); 0 advances to
       s1-measure. head_sha must match the current HEAD (the gate recomputes it).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s1-review --report no_read/evidence/s1_review.json
       {{usage}}
     args:
@@ -188,6 +208,11 @@ commands:
       after measuring, the gate rejects the evidence; just re-run the measure script
       (cached tree runs re-run live automatically once the fingerprint moves, so a fix
       is always scored against fresh artifacts, never the old run's).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s1-measure --report no_read/evidence/s1_measure.json
       {{usage}}
     args:
@@ -212,6 +237,11 @@ commands:
         (b) a report [id] with no citations-map entry is detected (uncited id)
         (c) CitationAgent verification runs over tree node claims and flags unverified
       Then RUN: python scripts/pytest_evidence.py --stage 2 --phase red
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s2-red --report no_read/evidence/s2_red.json
       {{usage}}
     args:
@@ -234,6 +264,11 @@ commands:
       "review_head_sha":"<head_sha COPIED FROM s2_review.json>"} — the gate checks
       both, so a leftover ack from an earlier round cannot satisfy a new finding.
       Preflight: python scripts/verify_impl.py --stage 2 (ok=1; the gate re-runs it).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s2-impl --report no_read/evidence/s2_impl.json
       {{usage}}
     args:
@@ -254,6 +289,11 @@ commands:
       only imported? DO NOT FIX CODE.
       Write no_read/evidence/s2_review.json = { "stage":2, "head_sha":"<HEAD>",
       "findings":[{"id","severity","file","why"}], "blocking_count":<N> }.
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s2-review --report no_read/evidence/s2_review.json
       {{usage}}
     args:
@@ -287,6 +327,11 @@ commands:
       after measuring, the gate rejects the evidence; just re-run the measure script
       (cached tree runs re-run live automatically once the fingerprint moves, so a fix
       is always scored against fresh artifacts, never the old run's).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s2-measure --report no_read/evidence/s2_measure.json
       {{usage}}
     args:
@@ -311,6 +356,11 @@ commands:
         (b) a FAILED node's text is excluded from post-order synthesis/rollup
         (c) an ANSWERED node with real context is unaffected (no regression)
       Then RUN: python scripts/pytest_evidence.py --stage 3 --phase red
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s3-red --report no_read/evidence/s3_red.json
       {{usage}}
     args:
@@ -333,6 +383,11 @@ commands:
       "review_head_sha":"<head_sha COPIED FROM s3_review.json>"} — the gate checks
       both, so a leftover ack from an earlier round cannot satisfy a new finding.
       Preflight: python scripts/verify_impl.py --stage 3 (ok=1; gate re-runs it).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s3-impl --report no_read/evidence/s3_impl.json
       {{usage}}
     args:
@@ -353,6 +408,11 @@ commands:
       is empty? DO NOT FIX CODE.
       Write no_read/evidence/s3_review.json = { "stage":3, "head_sha":"<HEAD>",
       "findings":[...], "blocking_count":<N> }.
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s3-review --report no_read/evidence/s3_review.json
       {{usage}}
     args:
@@ -386,6 +446,11 @@ commands:
       after measuring, the gate rejects the evidence; just re-run the measure script
       (cached tree runs re-run live automatically once the fingerprint moves, so a fix
       is always scored against fresh artifacts, never the old run's).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s3-measure --report no_read/evidence/s3_measure.json
       {{usage}}
     args:
@@ -411,6 +476,11 @@ commands:
         (c) a child below novelty_threshold is marked PRUNED and never expanded
             (observed defect: pruned_count was ALWAYS 0)
       Then RUN: python scripts/pytest_evidence.py --stage 4 --phase red
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s4-red --report no_read/evidence/s4_red.json
       {{usage}}
     args:
@@ -433,6 +503,11 @@ commands:
       "review_head_sha":"<head_sha COPIED FROM s4_review.json>"} — the gate checks
       both, so a leftover ack from an earlier round cannot satisfy a new finding.
       Preflight: python scripts/verify_impl.py --stage 4 (ok=1; gate re-runs it).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s4-impl --report no_read/evidence/s4_impl.json
       {{usage}}
     args:
@@ -453,6 +528,11 @@ commands:
       (cosine sim vs distance)? DO NOT FIX CODE.
       Write no_read/evidence/s4_review.json = { "stage":4, "head_sha":"<HEAD>",
       "findings":[...], "blocking_count":<N> }.
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s4-review --report no_read/evidence/s4_review.json
       {{usage}}
     args:
@@ -487,6 +567,11 @@ commands:
       after measuring, the gate rejects the evidence; just re-run the measure script
       (cached tree runs re-run live automatically once the fingerprint moves, so a fix
       is always scored against fresh artifacts, never the old run's).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s4-measure --report no_read/evidence/s4_measure.json
       {{usage}}
     args:
@@ -512,6 +597,11 @@ commands:
         (d) tree.json nodes[] gain an "answer" field (backward-compatible addition per
             the spec artifact contract)
       Then RUN: python scripts/pytest_evidence.py --stage 5 --phase red
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s5-red --report no_read/evidence/s5_red.json
       {{usage}}
     args:
@@ -534,6 +624,11 @@ commands:
       "review_head_sha":"<head_sha COPIED FROM s5_review.json>"} — the gate checks
       both, so a leftover ack from an earlier round cannot satisfy a new finding.
       Preflight: python scripts/verify_impl.py --stage 5 (ok=1; gate re-runs it).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s5-impl --report no_read/evidence/s5_impl.json
       {{usage}}
     args:
@@ -553,6 +648,11 @@ commands:
       Can dropping a claim break citation numbering? DO NOT FIX CODE.
       Write no_read/evidence/s5_review.json = { "stage":5, "head_sha":"<HEAD>",
       "findings":[...], "blocking_count":<N> }.
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s5-review --report no_read/evidence/s5_review.json
       {{usage}}
     args:
@@ -586,6 +686,11 @@ commands:
       after measuring, the gate rejects the evidence; just re-run the measure script
       (cached tree runs re-run live automatically once the fingerprint moves, so a fix
       is always scored against fresh artifacts, never the old run's).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s5-measure --report no_read/evidence/s5_measure.json
       {{usage}}
     args:
@@ -626,6 +731,11 @@ commands:
       after measuring, the gate rejects the evidence; just re-run the measure script
       (cached tree runs re-run live automatically once the fingerprint moves, so a fix
       is always scored against fresh artifacts, never the old run's).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do s6-benchmark --report no_read/evidence/benchmark.json
       {{usage}}
     args:
@@ -657,9 +767,17 @@ commands:
         regen_ok    (law 10: regenerators re-run twice -> byte-identical evidence)
         sync_ok     (law 8: every gate threshold token appears in this profile's guidance
                      AND HARNESS.md)
+        store_untampered (round caps are counted from the append-only journal; a
+                     .gralph/store.json counter BELOW journal-minus-human-grant means
+                     someone reset it to escape a cap — see no_read/audit/grants.json)
       Fix what it reports (in the harness ONLY if the harness itself is wrong — that is
       the one legitimate reason to touch scripts/, and it requires updating guidance +
       HARNESS.md in the same commit). The gate re-runs audit_check.py itself.
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
       Submit: gralph do harness-audit --report no_read/evidence/audit.json
       {{usage}}
     args:

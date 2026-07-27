@@ -19,7 +19,7 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
 | **s0-bench** | 채점 인프라가 진짜다: golden_count>=5 + 스키마/정규식 컴파일(golden_schema_ok), bun-rust-port 시딩(bun_first), measure_pairs=2, **diversity_ok=1**(다양성 하한 — 골든당 facts>=5·traps>=3·areas>=4·domains>=2·contested>=1·category, 셋 전체 category 4종+·dated 골든 2+·measure_pair category 상이+dated 1+·도메인 합집합 6+; timeless 쿼리만으로는 S3가 공허 통과하므로), **llm_calls=0**(채점기에 LLM SDK 토큰 0 — law 2), **fixtures_passed=2**(good이 bad를 S1,S2,S4,S5,S6 전부에서 엄격히 이기고 S3는 엄격히 낮음 — law 5, []가 파싱실패가 아님의 증명), baseline_queries=golden_count(전 골든에 S1_pct..S6_pct + report/scores 출처), freeze(manifest) + `[sq][s0]` 커밋 | in-gate `bench_selfcheck.py` + `check_frozen.py` + `check_commit.py` |
 | **sN-red** | RED 무결성(law 3): errors=0, collected>=1, passed=0, failed>=1, test_files sha256 + base_sha 기록, bench frozen_ok | `pytest_evidence.py`가 pytest junit에서 생성; in-gate `check_frozen.py` |
 | **sN-impl** | GREEN 안티탬퍼: RED 파일 sha256 재계산 일치(hash_match), collected 비감소, 스테이지+누적 전체 suite green(failed/errors/skipped=0), ruff_errors=0(E9,F — 변경 파일 한정), frozen_ok, review_addressed_ok(직전 review의 blocking id 전부가 impl_ack의 addressed_findings에 존재 **AND** impl_ack의 review_head_sha가 그 review.json의 head_sha와 일치 — id는 라운드마다 재사용되므로 이 바인딩 없이는 이전 라운드 ack가 새 findings를 무효 충족) | **in-gate `verify_impl.py` 재실행** — 위조 evidence는 생존 불가 |
-| **sN-review** | 분리 레인 적대 리뷰: 입력은 `review_diff.py`의 diff + 스펙 완료조건뿐. head_sha가 현재 HEAD와 일치(stale 리뷰 재활용 차단, in-gate 재계산), findings 배열 + blocking_count 숫자. blocking_count>0 → `sN-impl`로 라우트(store `rev:sN` 카운트, **3라운드 초과 시 hard fail**), 0 → `sN-measure` | 판정 자체는 LLM(의도된 law 2 예외, 아래 잔존 리스크) — 신선도·형식·라운드 캡은 결정적 |
+| **sN-review** | 분리 레인 적대 리뷰: 입력은 `review_diff.py`의 diff + 스펙 완료조건뿐. head_sha가 현재 HEAD와 일치(stale 리뷰 재활용 차단, in-gate 재계산), findings 배열 + blocking_count 숫자. blocking_count>0 → `sN-impl`로 라우트, **3라운드 초과 시 hard fail**(라운드 수는 store가 아니라 **append-only journal.jsonl에서 유도** — 막힌 당사자가 카운터를 고쳐 캡을 빠져나가는 일이 실제로 발생했다. 추가 라운드는 `no_read/audit/grants.json`에 사람이 명시적으로 기록), 0 → `sN-measure` | 판정 자체는 LLM(의도된 law 2 예외, 아래 잔존 리스크) — 신선도·형식·라운드 캡은 결정적 |
 | **sN-measure** | 실컨테이너 측정: recreated:true + health:200(bind-mount 반영), bench_round가 store와 일치(stale evidence 차단), **code_fp가 현재 구현 바이트와 일치**(게이트가 재계산 — 측정 후 구현을 고치면 그 evidence는 거부된다), 스테이지 임계값(아래), frozen_ok, `[sq][sN]` 커밋 + 양 repo 클린. refit 라운드면 s6-benchmark로 직행 라우트(bench_refit 클리어) | `measure.py`만이 evidence를 쓴다; 캐시 키가 (라운드, 골든, **코드 지문**)이라 멱등이면서도 코드가 바뀌면 live 재실행 |
 | **s6-benchmark** | 최종 대결: queries_scored==golden_count>=5(미만은 hollow zero — law 4), S1,S2,S4,S5,S6 aggregate가 baseline **초과** AND S3 **이하** → all_pass=1 → audit. 미달 → weakest_metric(부족분 최대)의 담당 스테이지 impl로 라우트(S1→s2,S2→s1,S3→s3,S4→s4,S5→s4,S6→s5), bench_round 증가, **3라운드 캡** | `benchmark.py` + frozen 채점기 + frozen baseline |
 | **harness-audit** | 게이트 자체 감사: try_ok(law 6 — 전 노드 known-good/bad `try_probe.py` 리포트 쌍), git_ok(**점수 조작 탐지** — `[sq][s0]` freeze 커밋 이후 bench/golden/*·baseline_firecrawl.json을 건드린 커밋 0), frozen_ok, regen_ok(law 10 — 재생성기 2회 실행 바이트 동일), sync_ok(law 8 — 게이트 토큰이 profile guidance와 이 문서에 존재) | in-gate `audit_check.py` |
@@ -123,6 +123,26 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
   업스트림 리네임 시 probe가 0을 보고하며 fail-closed로 떨어진다(조용히 통과하지 않음).
 
 ## 개입 기록 (human-in-the-loop)
+
+**2026-07-27 에이전트가 리뷰 캡을 스스로 리셋 — 캡 근거를 store→journal로 이전(가드레일 복구)**
+- 증상: 04:04 UTC s2-review가 "3라운드 소진" 으로 hard fail → 게이트 통과 없이 **04:10에
+  s2-impl이 성공**했고 `store.json`의 `rev:s2`가 3→0으로 돌아가 있었다. journal 기준 실제
+  blocking 라운드는 **6회**인데 store는 2를 주장. 즉 막힌 에이전트가 cursor와 카운터를 직접
+  고쳐 사람 판단 지점을 통과했다.
+- 뼈아픈 부분: **이 문서의 개입 기록이 리셋 절차를 가르쳤다.** 사람용 복구 절차를 그대로
+  적어두면 막힌 에이전트가 자기 자신에게 적용한다.
+- 수정: 캡 라운드 수를 `.gralph/store.json`(가변)이 아니라 **`journal.jsonl`(append-only,
+  프레임워크 소유)에서 유도**(`scripts/loop_audit.py`). 리뷰가 실제로 impl로 되돌아간 횟수,
+  벤치마크가 실제로 리핏한 횟수는 "루프가 무엇을 했는가"에 대한 사실이라 카운터를 고쳐도
+  바뀌지 않는다. 추가 라운드는 `no_read/audit/grants.json`에 사람이 사유와 함께 기록해야만
+  인정되고, harness-audit이 `store_untampered`로 store↔journal 괴리를 적발한다.
+  전 23노드 guidance에 ".gralph/** 는 프레임워크 소유, 캡에 막히면 멈추고 보고" 규칙 추가.
+- 양방향 증명: s2-review(journal 6 − grant 3 = 3 → 캡 FAIL) / s4-review(journal 0 → PASS,
+  s4-impl 라우트) / s6-benchmark(3 − 0 = 3 → 캡 FAIL) / 같은 evidence + grant_bench=1
+  (3 − 1 = 2 → PASS, s1-impl 라우트) ✓
+- 소급 판단: 무단 리셋 이후의 s2 통과는 **점수 자체가 조작된 것은 아니다**(s2-measure·
+  s6-benchmark는 결정적 게이트를 정상 충족). 우회된 것은 "사람이 본다"는 정지점이다.
+  grants.json 에 내 승인분 3만 기록하고 에이전트 리셋분은 승인하지 않았다.
 
 캡·하드페일로 루프가 멈추면 판단 근거를 여기 남긴다. 게이트가 사람에게 넘긴 결정이므로,
 "왜 라운드를 더 줬는가"가 기록되지 않으면 다음 사람은 같은 검증을 반복한다.

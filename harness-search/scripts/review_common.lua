@@ -35,14 +35,28 @@ return function(stage)
   end
 
   if bc > 0 then
-    local key = "rev:s" .. stage
-    local rounds = tonumber(gralph.store.get(key)) or 0
-    if rounds >= 3 then
-      gralph.fail("s" .. stage .. ": 3 review rounds exhausted and blocking findings persist — " ..
-        "a human must inspect no_read/evidence/s" .. stage .. "_review.json")
+    -- Round count comes from gralph's OWN append-only journal, never from the store:
+    -- a blocked agent can rewrite .gralph/store.json (measured 2026-07-27, an agent reset
+    -- rev:s2 3->0 and rewound the cursor after hitting this cap). Extra rounds must be
+    -- granted explicitly by a human in no_read/audit/grants.json, where harness-audit
+    -- surfaces them.
+    local out = L.popen("python scripts/loop_audit.py", "loop_audit.py")
+    if not out then return end
+    local spent = L.num(out, "rev_journal_s" .. stage .. "=(%d+)")
+    local granted = L.num(out, "grant_rev_s" .. stage .. "=(%d+)") or 0
+    if not spent then
+      gralph.fail("loop_audit.py did not report rev_journal_s" .. stage .. " — run it manually and fix what it reports")
       return
     end
-    gralph.store.set(key, rounds + 1)
+    local effective = spent - granted
+    if effective >= 3 then
+      gralph.fail("s" .. stage .. ": " .. effective .. " blocking review rounds already spent (counted from " ..
+        "journal.jsonl, " .. granted .. " human-granted) — this cap hands the decision to a HUMAN. " ..
+        "Do NOT edit .gralph/ state, do not rewind the cursor, do not reset a counter: that is tampering " ..
+        "and the journal records it anyway. STOP and let a human read no_read/evidence/s" .. stage .. "_review.json.")
+      return
+    end
+    gralph.store.set("rev:s" .. stage, effective + 1)   -- informational mirror only
     gralph.route("s" .. stage .. "-impl")
   else
     gralph.route("s" .. stage .. "-measure")

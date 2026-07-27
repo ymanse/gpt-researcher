@@ -52,6 +52,7 @@ SYNC_TOKENS = [
     "contradictions_total", "unsupported_claims_total",
     "queries_scored", "all_pass", "weakest_metric", "bench_round", "code_fp",
     "blocking_count", "addressed_findings", "review_head_sha", "frozen_ok",
+    "store_untampered",
 ]
 
 
@@ -61,8 +62,29 @@ def rerun(cmd: list[str]) -> None:
 
 def main() -> int:
     vals = {"nodes_tried": 0, "try_ok": 0, "git_ok": 0, "frozen_ok": 0,
-            "regen_ok": 0, "sync_ok": 0}
+            "regen_ok": 0, "sync_ok": 0, "store_untampered": 0}
     reason = "-"
+
+    # Round caps are journal-derived; the store mirrors them. A store counter BELOW the
+    # journal count (minus human grants) means someone reset it to escape a cap.
+    r = subprocess.run([str(hconf.VENV_PY), "scripts/loop_audit.py"], capture_output=True,
+                       text=True, cwd=str(hconf.HARNESS), timeout=300)
+    lo = r.stdout or ""
+
+    def _n(key: str) -> int:
+        m = re.search(rf"{key}=(\d+)", lo)
+        return int(m.group(1)) if m else 0
+
+    tamper = []
+    for n in range(1, 6):
+        spent = _n(f"rev_journal_s{n}")
+        grant = _n(f"grant_rev_s{n}")
+        mirror = int(hconf.store_get(f"rev:s{n}", 0) or 0)
+        if mirror < spent - grant:
+            tamper.append(f"rev:s{n}(store {mirror} < journal {spent}-grant {grant})")
+    vals["store_untampered"] = 0 if tamper else 1
+    if tamper and reason == "-":
+        reason = "store_counter_reset:" + ",".join(tamper)
 
     # law 6 try matrix
     tried = 0
@@ -145,7 +167,8 @@ def main() -> int:
         if reason == "-":
             reason = "profile_or_HARNESS_md_unreadable"
 
-    ok_all = all(vals[k] == 1 for k in ("try_ok", "git_ok", "frozen_ok", "regen_ok", "sync_ok"))
+    ok_all = all(vals[k] == 1 for k in ("try_ok", "git_ok", "frozen_ok", "regen_ok",
+                                        "sync_ok", "store_untampered"))
     hconf.write_json(hconf.EVID / "audit.json", {**vals, "ok": 1 if ok_all else 0})
     line = " ".join(f"{k}={v}" for k, v in vals.items())
     print(f"{line} ok={1 if ok_all else 0} reason={reason}")
