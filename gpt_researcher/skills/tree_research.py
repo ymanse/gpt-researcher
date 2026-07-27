@@ -126,6 +126,18 @@ def _bracket_ids(group: str) -> List[str]:
     return ids
 
 
+def render_ids(ids: List[str]) -> str:
+    """Re-render a bracket's surviving ids in the ONE shape the frozen S1 scorer
+    can read: its marker regex (bench/score_report.py, `\\[(\\d{1,3})\\](?!\\()`)
+    matches only digits sitting DIRECTLY between the brackets, so re-joining two
+    survivors into a single "[7, 9]" makes both invisible to the grader — the ids
+    still count in citations_total through their "- [id] url" line in the
+    Citations block, but can never count in citations_grounded, which is the
+    metric the whole fail-closed strip exists to protect. One bracket per id,
+    space-joined, exactly what _attribute_citations writes everywhere else."""
+    return " ".join(f"[{cid}]" for cid in ids)
+
+
 def find_uncited_ids(report_md: str, citation_map: Dict[str, str]) -> List[str]:
     """[id] markers in report_md with no citations-map entry, first-appearance order."""
     out: List[str] = []
@@ -615,7 +627,7 @@ class TreeResearchSkill:
             window = body[max(0, m.start() - _SCORER_WINDOW_CHARS):m.start()]
             kept = [cid for cid in _bracket_ids(m.group(1))
                     if phrase_traced(window, self._read_docs.get(citation_map.get(cid, ""), ""))]
-            return f"[{', '.join(kept)}]" if kept else ""
+            return render_ids(kept)
         return _CITE_ID_RE.sub(_check, body)
 
     def verify_rollup(self, body: str) -> tuple:
@@ -738,7 +750,7 @@ class TreeResearchSkill:
                 marks.setdefault(end, []).append(cid)
             # splice from the back so an earlier offset stays valid
             for pos in sorted(marks, reverse=True):
-                cites = " ".join(f"[{c}]" for c in sorted(marks[pos], key=int))
+                cites = render_ids(sorted(marks[pos], key=int))
                 sent = f"{sent[:pos]} {cites}{sent[pos:]}"
             out.append(sent)
         return " ".join(out)
@@ -948,7 +960,7 @@ class TreeResearchSkill:
 
             def _keep_cited(m: "re.Match[str]") -> str:
                 kept = [c for c in _bracket_ids(m.group(1)) if c not in bad]
-                return f"[{', '.join(kept)}]" if kept else ""
+                return render_ids(kept)
 
             body = _CITE_ID_RE.sub(_keep_cited, body)
 
