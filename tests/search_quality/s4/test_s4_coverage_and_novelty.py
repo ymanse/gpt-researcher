@@ -270,3 +270,92 @@ async def test_low_novelty_child_is_pruned_and_never_expanded(monkeypatch):
     assert nodes[pruned_id]["children"] == [], (
         "a PRUNED node must never be expanded further -- no grandchildren"
     )
+
+
+# ---------------------------------------------------------------------------
+# (d) a budget that never reaches the whole frontier must spend itself on the
+#     questions that target a primary source
+# ---------------------------------------------------------------------------
+
+PS_ROOT_Q = "What are the practical failure modes of the transactional outbox pattern?"
+# no capitalized token past the leading interrogative -> primary-source affinity 0
+PS_GENERIC_Q = "How do teams generally handle schema drift between producers and consumers?"
+# names the originator possessively AND asks for its own material -> affinity 1.0
+PS_PRIMARY_Q = "What does Debezium's own documentation say about relay failure modes?"
+
+
+async def test_primary_source_question_is_researched_before_a_generic_sibling(monkeypatch):
+    """Measured in bench round 0: a live run ends on time_budget_s with most of the
+    tree PENDING (edge-ai researched 6 of 25 nodes), and priority was depth-only, so
+    which siblings made the cut was the order the expansion LLM emitted them in.
+    Every question that named a primary source -- "What do NIST's FRTE ... report",
+    "What do QuantumScape's own investor disclosures reveal" -- sat unresearched
+    behind generic commentary, and S4 (primary-domain coverage) scored 56 against
+    the frozen baseline's 83. The generic sibling below is emitted FIRST, so
+    insertion order alone researches it and leaves the primary-source question
+    PENDING."""
+    answers = {PS_ROOT_Q: "Relays stall and duplicate events under partial failure.",
+               PS_GENERIC_Q: "Teams version the payload envelope and roll consumers first.",
+               PS_PRIMARY_Q: "The connector reports snapshot gaps when the slot is dropped."}
+    urls = {q: f"https://example.com/{i}" for i, q in enumerate(answers)}
+    # orthogonal: every candidate clears DEDUP_COSINE and the novelty floor, so
+    # scheduling order is the only thing this test can be measuring
+    embeddings = {PS_ROOT_Q: [1.0, 0.0, 0.0], PS_GENERIC_Q: [0.0, 1.0, 0.0],
+                  PS_PRIMARY_Q: [0.0, 0.0, 1.0]}
+
+    class _FakeNodeResearcher:
+        def __init__(self, query=None, visited_urls=None, **kwargs):
+            self.query = query
+            self.visited_urls = visited_urls if visited_urls is not None else set()
+
+        async def conduct_research(self):
+            self.visited_urls.add(urls[self.query])
+            return RICH_CONTEXT
+
+        def get_research_sources(self):
+            return [{"url": urls[self.query], "title": "doc",
+                     "raw_content": answers[self.query] + " Archive prose. " * 20}]
+
+        def get_costs(self):
+            return 0.0
+
+    async def fake_chat(messages=None, **kwargs):
+        content = " ".join(str(m.get("content", "")) for m in (messages or []))
+        if "Generate up to" in content:  # the generic candidate is emitted FIRST
+            return f"Question: {PS_GENERIC_Q}\nQuestion: {PS_PRIMARY_Q}\n"
+        for q, answer in answers.items():
+            if q in content:
+                return _llm_response(answer)
+        return _llm_response("unmapped")
+
+    monkeypatch.setattr(tree_mod, "GPTResearcher", _FakeNodeResearcher)
+    monkeypatch.setattr(tree_mod, "create_chat_completion", fake_chat)
+
+    skill = tree_mod.TreeResearchSkill(_parent_stub(PS_ROOT_Q))
+
+    async def fake_embed(text):
+        return list(embeddings.get(text, [0.0, 0.0, 0.0]))
+
+    skill.embed_question = fake_embed
+
+    # max_nodes=2 == the root plus exactly ONE child: the budget cannot reach the
+    # whole frontier, which is the live condition this is about
+    result = await skill.run(query=PS_ROOT_Q, max_depth=1, max_breadth=2, max_nodes=2)
+
+    by_question = {n["question"]: n for n in result["tree"]["nodes"].values()}
+    assert set(by_question) == {PS_ROOT_Q, PS_GENERIC_Q, PS_PRIMARY_Q}, (
+        "both candidates must become real nodes (orthogonal embeddings, so neither "
+        f"is a dedup drop) -- got {sorted(by_question)}"
+    )
+    assert by_question[PS_PRIMARY_Q]["status"] in ("answered", "expanded"), (
+        "the one child the budget could afford must be the question that asks a "
+        "NAMED originator for its OWN documentation -- that is the question whose "
+        "sources land the golden's required primary domain (measured: 'What do "
+        "Debezium's own documentation and issue tracker report...' is the single "
+        "outbox node that landed debezium.io). got "
+        f"{by_question[PS_PRIMARY_Q]['status']!r}"
+    )
+    assert by_question[PS_GENERIC_Q]["status"] == "pending", (
+        "the generic sibling was emitted first, so only depth-blind insertion order "
+        "would spend the last node of the budget on it"
+    )

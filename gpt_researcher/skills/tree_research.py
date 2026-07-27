@@ -194,6 +194,52 @@ def _scrubbed(text: str) -> str:
     return text
 
 
+# defect 4, bench round 1: expansion ALREADY names the primary source when it knows
+# one — measured, "What does Debezium's own documentation and issue tracker report..."
+# is the single outbox node whose sources landed debezium.io. What those questions do
+# not get is RESEARCHED. A run ends on time_budget_s with most of the tree still
+# PENDING (round 0: edge-ai researched 6 of 25 nodes, solid-state 4 of 17), and
+# best_first priority was depth-only, so which children make the cut is the order the
+# expansion LLM happened to emit them in. Every question that named a primary source —
+# "What do NIST's Face Recognition Technology Evaluation ... report", "What do
+# QuantumScape's own investor disclosures reveal" — sat PENDING behind generic
+# commentary questions, and S4 came in at 56 against the frozen baseline's 83. The
+# affinity below is what moves those questions to the front of the frontier.
+_PRIMARY_STOP = {"a", "an", "the", "what", "how", "which", "who", "whose", "where",
+                 "when", "why", "it", "its", "this", "that", "these", "those",
+                 "there", "they", "their", "and", "or", "but", "if", "beyond", "do",
+                 "does", "are", "is", "in", "for", "of", "to"}
+_NAMED_ENTITY_RE = re.compile(r"\b[A-Z][A-Za-z0-9.+/-]*\b")
+# "NIST's", "QuantumScape's", "Debezium's" — a named org asked about itself
+_POSSESSIVE_ENTITY_RE = re.compile(r"\b[A-Z][A-Za-z0-9.+/-]*['’]s\b")
+_OWN_SOURCE_RE = re.compile(
+    r"\b(?:own|official|primary)\b[^.?!]{0,60}?\b(?:doc|docs|documentation|blog|"
+    r"site|website|spec|specs|specification|whitepaper|white paper|filing|filings|"
+    r"release notes|changelog|repo|repository|issue tracker|announcement|"
+    r"publication|standard|standards|guide|manual|datasheet|disclosure|disclosures|"
+    r"report|reports|paper|papers)\b", re.I)
+
+
+def _primary_source_affinity(question: str) -> float:
+    """0..1 — how directly a question asks a NAMED originator for its OWN material.
+
+    Three independent signals, because they discriminate at different strengths:
+    naming any specific entity is weak (nearly every question mentions some proper
+    noun), addressing a named entity possessively is stronger, and asking that
+    entity for its own/official material rather than for third-party commentary
+    about it is what actually lands the primary domain.
+    """
+    # the leading interrogative is capitalized by grammar, not by being an entity
+    tail = question.split(" ", 1)[-1]
+    named = any(m.group(0).lower() not in _PRIMARY_STOP
+                for m in _NAMED_ENTITY_RE.finditer(tail))
+    if not named:
+        return 0.0
+    return (0.30
+            + 0.35 * bool(_POSSESSIVE_ENTITY_RE.search(tail))
+            + 0.35 * bool(_OWN_SOURCE_RE.search(question)))
+
+
 def _slug(text: str, max_len: int = 40) -> str:
     s = re.sub(r"[^\w\s-]", "", text or "").strip().lower()
     s = re.sub(r"[\s_-]+", "-", s)
@@ -407,7 +453,11 @@ class TreeResearchSkill:
                        "question itself (e.g. 'What does the <project>'s own blog/documentation "
                        "say about X' rather than a generic phrasing of the same question), so "
                        "the search targets that primary source directly instead of generic "
-                       "secondary commentary. Return "
+                       "secondary commentary. At least one question must address the entity "
+                       "that DEFINES the root topic — the standards body, specification "
+                       "author, or originating vendor whose own site is the authority on it, "
+                       "not only the tools built on top of it — and ask for that entity's own "
+                       "documentation, specification, or filings by name. Return "
                        "0 questions if the root query is fully covered. "
                        "Format each on its own line as 'Question: <question>'."
                  )},
@@ -737,7 +787,13 @@ class TreeResearchSkill:
                 elif expansion_policy == "dfs":
                     child.priority = float(child.depth)
                 else:
-                    child.priority = max(0.0, 0.5 + 0.15 * node.priority - 0.10 * child.depth)
+                    # the affinity term is sized to outrank one depth band: a
+                    # "what does <entity>'s own documentation say" child is worth
+                    # more of a budget that never reaches the whole frontier than
+                    # a generic question one level shallower.
+                    child.priority = max(0.0, 0.5 + 0.15 * node.priority
+                                         - 0.10 * child.depth
+                                         + 0.35 * _primary_source_affinity(question))
                 if emb:
                     self._embeddings.append(emb)
                 self.nodes[child.id] = child
