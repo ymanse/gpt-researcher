@@ -34,15 +34,23 @@ end
 
 -- run a harness script in-gate (cmd-safe: relative forward-slash path, no quotes) and
 -- return its stdout squashed to single spaces, or nil after a prescriptive fail.
+-- Retries once on empty output: under load a python interpreter start occasionally
+-- yields nothing, and treating that as a verdict failed three real gates (head_sha.py
+-- twice, code_fp.py once) on work that was actually fine. A genuinely broken command
+-- fails both attempts, so this loses no strictness.
 function L.popen(cmd, what)
-  local p = io.popen(cmd)
-  if not p then gralph.fail("could not launch " .. what .. " — python must be on PATH"); return nil end
-  local out = p:read("*a"); p:close()
-  if not out or out == "" then
-    gralph.fail(what .. " produced no output — run `" .. cmd .. "` manually and fix what it reports")
-    return nil
+  for attempt = 1, 2 do
+    local p = io.popen(cmd)
+    if p then
+      local out = p:read("*a"); p:close()
+      if out and out ~= "" then return (out:gsub("%s+", " ")) end
+    end
+    if attempt == 2 then
+      gralph.fail(what .. " produced no output on two attempts — run `" .. cmd ..
+        "` manually and fix what it reports")
+      return nil
+    end
   end
-  return (out:gsub("%s+", " "))
 end
 
 -- bench read-only law: recompute golden/baseline hashes against bench/manifest.sha256.
