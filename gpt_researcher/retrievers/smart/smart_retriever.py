@@ -136,12 +136,16 @@ class SmartRetriever:
                 # A failure a sibling or the fallback covered for stayed a WARNING.
                 failed = sorted(set(self._failed_retrievers))
                 logger.error(
-                    f"No results for query: {self.query} — unrecovered retriever "
-                    f"failures: {failed or 'none (every retriever returned empty)'}"
+                    f"SQ_RETRIEVAL_UNRECOVERED No results for query: {self.query} — "
+                    f"unrecovered retriever failures: "
+                    f"{failed or 'none (every retriever returned empty)'}"
                 )
             return results[:max_results]
         except Exception as e:
-            logger.error(f"SmartRetriever failed: {e}")
+            # Same marker: this query also ends with nothing usable, and an
+            # uncounted crash is exactly the hollow zero the live gate exists to
+            # catch. Mutually exclusive with the branch above, so still one record.
+            logger.error(f"SQ_RETRIEVAL_UNRECOVERED SmartRetriever failed: {e}")
             return []
 
     # ------------------------------------------------------------------

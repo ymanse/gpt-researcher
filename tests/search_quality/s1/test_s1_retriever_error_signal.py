@@ -27,6 +27,12 @@ from types import SimpleNamespace
 
 import requests
 
+# The literal the live probe (harness-search/scripts/container_probe_s1.py) greps for
+# and counts. Spelled out here rather than imported, on purpose: importing it from the
+# implementation would let a rename pass both sides silently while marker_wired goes
+# false at live-measure time.
+MARKER = "SQ_RETRIEVAL_UNRECOVERED"
+
 
 class _Resp432:
     status_code = 432
@@ -90,6 +96,12 @@ def test_tavily_432_a_fallback_covers_for_is_a_warning_not_an_error(monkeypatch,
         "recovered is not silent: the 432 must still leave a WARNING naming tavily, "
         f"or a retriever that 432s every call reads as healthy. records: {caplog.messages}"
     )
+    assert not [msg for msg in caplog.messages if MARKER in msg], (
+        f"{MARKER} marks UNRECOVERED retrieval only. Asserted across every level, not "
+        "just ERROR: a covered failure tagged at WARNING today is one severity bump "
+        "away from being counted, and then the live gate is back at the mercy of "
+        f"external service weather. records: {caplog.messages}"
+    )
 
 
 def test_tavily_432_no_one_covers_for_emits_an_error_naming_it(monkeypatch, caplog):
@@ -115,6 +127,12 @@ def test_tavily_432_no_one_covers_for_emits_an_error_naming_it(monkeypatch, capl
     )
     assert len(errors) == 1, (
         f"one query that came back empty is one ERROR, not a pile. got {errors}"
+    )
+    assert [msg for msg in errors if MARKER in msg] == errors, (
+        f"the ERROR has to carry the {MARKER} marker verbatim. The live probe counts "
+        "ONLY marker-carrying records (so an adapter's own logger.error for a failure "
+        "a sibling covered cannot inflate the count), which means an unmarked ERROR "
+        f"here is an unrecovered total loss the gate never sees. records: {errors}"
     )
 
 
