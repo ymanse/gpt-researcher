@@ -1,8 +1,11 @@
 -- s7-dedup gate — the roll-up must SYNTHESIZE the tree, not concatenate it.
 --
--- Measured before any fix (round 4, all 5 goldens): 35 of 62 scanned node answers were
--- carried into the report >=70% verbatim (max lift 100% on every query), and the report
--- was 47-89% as long as the sum of node answers. That is the redundancy a reader sees;
+-- Measured before any fix (round 4, all 5 goldens): EVERY kept node answer is carried into
+-- the report >=70% verbatim (lifted == kept exactly, 5/5 queries, max lift 100%), and the
+-- report runs 120-133% of the kept answers -- all of them plus a preamble, no merging.
+-- Upstream cause (see no_read/audit/pending_rca.md): expansion is blind to the PENDING
+-- queue, so siblings research near-identical questions and their answers overlap by
+-- construction. That is the redundancy a reader sees;
 -- a sentence-level dedup scan reports ~0% on the same files because each pasted answer
 -- is internally unique prose and the overlap between siblings is topical, not lexical.
 --
@@ -51,10 +54,12 @@ if lifted > 1 then
 end
 local ratio = L.num(blob, '"synthesis_ratio_pct_max":(%d+)')
 if not ratio then gralph.fail('s7: report a numeric "synthesis_ratio_pct_max"'); return end
-if ratio > 45 then
-  gralph.fail("s7: synthesis_ratio_pct_max=" .. ratio .. "% > 45% — the report is still nearly as long as " ..
-    "the sum of its node answers (baseline 47-89%), which is concatenation with a preamble. Merge " ..
-    "overlapping findings; do NOT reach the number by truncating sections")
+if ratio > 70 then
+  gralph.fail("s7: synthesis_ratio_pct_max=" .. ratio .. "% > 70% — the report is still at least as long as " ..
+    "the answers of the nodes the roll-up may use (baseline 120-133%: every kept answer plus a preamble, " ..
+    "zero merging). NOTE the denominator is KEPT nodes only — pruned/pending answers are excluded from the " ..
+    "roll-up by design, and counting them rewarded a tree for pruning more. Merge overlapping findings; " ..
+    "do NOT reach the number by truncating sections")
   return
 end
 local heads = L.num(blob, '"headings_min":(%d+)')

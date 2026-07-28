@@ -190,9 +190,17 @@ python bench/score_report.py --golden bench/golden/<id>.json \
 
 ### s7 — 취합 중복 제거 (리포트는 종합이지 연결이 아니다)
 
-실측된 결함(round 4, 골든 5개 전부): 스캔한 노드 답변 62개 중 **35개가 리포트에 70% 이상
-그대로 복사**돼 있고(모든 쿼리에서 최대 lift 100%), 리포트 길이가 노드 답변 총합의 47~89%다.
-outbox 가 극단으로 lifted 10개 / 89% / 69,747자에 헤딩 3개다. 독자에게는 같은 주제가
+실측된 결함(round 4, 골든 5개 전부): **kept(expanded/answered) 노드 답변이 전부 리포트에
+70% 이상 그대로 복사**돼 있다 — lifted 개수가 kept 개수와 5/5 쿼리에서 정확히 일치하고
+(7=7, 5=5, 5=5, 10=10, 8=8) 최대 lift 는 모두 100%다. 리포트 길이는 **kept 답변 합의
+120~133%** — 전부 담고 서문을 얹은 것이며 병합이 0이다.
+(주의: 전체 노드 기준 47~89% 라는 첫 측정치는 **프루닝을 보상하는 오염된 분모**였다.
+pruned/pending 답변은 애초에 롤업에서 제외되므로 분모는 kept 만이어야 한다.)
+
+**상류 원인**(`no_read/audit/pending_rca.md`): `_covered_ground()`(tree_research.py:515)가
+PENDING 을 제외해 확장기가 **큐에 이미 있는 질문을 모른 채** 자식 질문을 만든다. 형제 노드가
+사실상 같은 질문을 조사하므로 답변이 구조적으로 겹치고, 롤업은 그걸 성실히 둘 다 싣는다.
+따라서 근본 수정은 확장 단계에 있고, 이 게이트는 **독자가 보는 증상**을 잰다. 독자에게는 같은 주제가
 섹션마다 반복돼 보인다("duplicate delivery" / "duplicate messages under multiple instances"
 / "at-least-once, not exactly-once" 는 한 발견을 세 번 쓴 것).
 
@@ -203,12 +211,13 @@ outbox 가 극단으로 lifted 10개 / 89% / 69,747자에 헤딩 3개다. 독자
 
 측정(`scripts/rollup_scan.py`, 결정적·오프라인·크레딧 0):
 - `lifted_nodes` — 5-gram 이 리포트에 70% 이상 존재하는 노드 답변 수
-- `synthesis_ratio_pct` — len(report) / sum(len(node answers)) × 100
+- `synthesis_ratio_pct` — len(report) / sum(len(**kept** node answers)) × 100
+  (전체 노드 기준값은 `ratio_vs_all_nodes_pct` 로 참고만 기록)
 - `headings` — 조직화 신호
 - `s2_aggregate_pct` — **동결 채점기**의 사실 재현율을 그대로 실어 온다
 
 게이트: `queries_scanned=5`, `node_answers_scanned_total>=20`(양의 결속),
-`lifted_nodes_max<=1`, `synthesis_ratio_pct_max<=45`, `headings_min>=4`,
+`lifted_nodes_max<=1`, `synthesis_ratio_pct_max<=70`(분모 = **kept 노드**), `headings_min>=4`,
 **`s2_aggregate_pct>=80`**.
 
 마지막 조건이 안티치트다 — 어떤 중복 지표든 **내용을 지우면 가장 싸게 통과**하므로,

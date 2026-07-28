@@ -63,11 +63,18 @@ def scan_query(gid: str, d: pathlib.Path) -> dict | None:
         nodes = json.loads(tree_p.read_text(encoding="utf-8")).get("nodes", [])
     except json.JSONDecodeError:
         return None
-    lifted, scanned, total_chars = 0, 0, 0
+    lifted, scanned, total_chars, kept_chars = 0, 0, 0, 0
     worst = 0
     for n in nodes:
         answer = str(n.get("answer") or "")
         total_chars += len(answer)
+        # PRUNED/PENDING answers are excluded from the roll-up BY DESIGN, so they must
+        # not sit in the denominator: measured against all nodes the ratio rewards a
+        # tree for pruning more (edge-ai scored "best" at 47% purely because it pruned
+        # 8 nodes). Against the KEPT nodes the real picture appears — the report runs
+        # 120-133% of them, i.e. every kept answer plus a preamble, no merging at all.
+        if str(n.get("status")) in ("expanded", "answered"):
+            kept_chars += len(answer)
         g = ngrams(toks(answer))
         if len(g) < MIN_NGRAMS:
             continue
@@ -83,7 +90,11 @@ def scan_query(gid: str, d: pathlib.Path) -> dict | None:
         "max_lift_pct": worst,
         "report_chars": len(report),
         "node_answer_chars": total_chars,
-        "synthesis_ratio_pct": round(100 * len(report) / total_chars) if total_chars else 999,
+        "kept_answer_chars": kept_chars,
+        # the gated number: report vs the answers the roll-up is actually allowed to use
+        "synthesis_ratio_pct": round(100 * len(report) / kept_chars) if kept_chars else 999,
+        # informational only — kept for continuity with the first measurement
+        "ratio_vs_all_nodes_pct": round(100 * len(report) / total_chars) if total_chars else 999,
         "headings": len(re.findall(r"^#{1,6}\s+\S", report, re.M)),
     }
 
