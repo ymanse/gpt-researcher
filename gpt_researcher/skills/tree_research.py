@@ -322,12 +322,18 @@ def _scrubbed(text: str) -> str:
 #      taken, until the report's length is spent. Where a paragraph sits in the roll-up
 #      has no bearing on whether it survives -- the direct repair of R1 -- and a node
 #      the report has already drawn heavily from is held back, so the length is spread
-#      across the tree instead of pasting in whichever answer is densest. Contested
-#      paragraphs never compete (R2: a rebuttal restates its opponent's vocabulary by
-#      construction, so a coverage rule is precisely what deletes one side of a
-#      disagreement). Figures and named entities are weighted _FACT_WEIGHT above prose
-#      terms because the frozen scorer's facts are keyed on them -- s2_aggregate_pct
-#      >= 80 is the anti-cheat, and it belongs in the objective, not only in the gate.
+#      across the tree instead of pasting in whichever answer is densest. The length is
+#      spent in a fixed ORDER, which is what separates this from deletion: contested
+#      paragraphs never compete at all, then every paragraph stating a datum the report
+#      has not stated yet, and only then breadth under _GAIN_FLOOR (R3 measured the
+#      version where an unstated datum bought only a lower floor: what the budget ran
+#      out on was the single occurrence of a graded finding). A paragraph whose LEAD-IN
+#      is contested is contested too -- a disagreement is announced in one place and
+#      evidenced in the items under it, and protecting only the announcement ships the
+#      announcement with its evidence deleted (R1). Figures and named entities are
+#      weighted _FACT_WEIGHT above prose terms because the frozen scorer's facts are
+#      keyed on them -- s2_aggregate_pct >= 80 is the anti-cheat, and it belongs in the
+#      objective, not only in the gate.
 #
 # The UNIT of both jobs is a paragraph, and inside it a sentence (Claimify / FActScore
 # / NuggetIndex use the atomic claim; the previous cut used a bare sentence and review
@@ -335,8 +341,11 @@ def _scrubbed(text: str) -> str:
 # 43-49 adjacent pairs printed out of source order, i.e. "$180-350M" printed with its
 # subject in another section). Sentences are the merge unit; paragraphs are the unit
 # that is printed, in their own line and list structure, in source order inside a
-# section. An inherited "## " NEVER ships as a heading -- its words label the paragraph
-# that follows it, in bold (R3).
+# section. Inside a paragraph the ITEM is atomic: these answers put six labelled
+# bullets on one 2,789-character line, and cutting between a label and the sentence it
+# is the subject of is how Samsung SDI's timeline shipped under Toyota's bullet (R2).
+# An inherited "## " NEVER ships as a heading -- its words label the paragraph that
+# follows it, in bold (R3 of the round before).
 #
 # WHAT THE MERGE CAN AND CANNOT REACH, measured a third way. The candidate-pair index
 # below was starving the merge: it discarded any term used by more than 40 claims, which
@@ -349,20 +358,26 @@ def _scrubbed(text: str) -> str:
 # duplication is not there, not because the bar was set wrong -- and offline it is the
 # only merge available, since resynth.py's stub carries no embedding configuration and
 # d0's netblocked=0 forbids the replay to reach one. The compression therefore has to
-# come from SELECTION, and what makes that legitimate rather than deletion is that the
-# selection is budgeted, spread across sources, and floored on unstated data --
-# s2_aggregate_pct >= 80 is the check on it, and it is met with margin (83).
+# come from SELECTION, and what makes that legitimate rather than deletion is the ORDER
+# it spends the length in: contested material first, then every passage stating a datum
+# the report has not stated yet, and only then breadth. s2_aggregate_pct >= 80 is the
+# check on it, and it is met with margin (83).
 #
 # Every constant below was swept against the captured corpus and reported with the
 # submission -- a threshold not measured against this corpus is a guess. The operating
-# point sits inside a PLATEAU, not on a knee: _GAIN_FLOOR 0.55-0.65, _NODE_DECAY
-# 0.90-0.95 and _REPORT_SHARE 0.68-0.69 all give lifted_nodes_max 0, ratio 68-69 and
-# s2_aggregate 83, so no gated number depends on the third decimal of any of them.
+# point sits inside a PLATEAU, not on a knee: _NODE_DECAY 0.85-0.98 gives the same
+# lifted/ratio/S2 on all five goldens, and _GAIN_FLOOR 0.50-0.65 gives BYTE-IDENTICAL
+# reports -- on this corpus the budget is exhausted by the data round, so the floor
+# only binds on a tree small enough that there is length to spare. _REPORT_SHARE is the
+# one live knob and it is bracketed on both sides: 0.66 costs facts (s2_aggregate
+# 83 -> 78, denorm 50 -> 38, solid-state 100 -> 88) and 0.70 puts the ratio ON the
+# gate's 70, with no margin for the live run d2 measures.
 _DUP_COS = 0.90         # embedding cosine at/above which two claims state one finding
 _DUP_TERM_COS = 0.60    # ...the offline bar, an idf cosine over content terms
 _BLOCK_TAU = 0.35       # blocking bar: below it a pair is never a duplicate candidate
 _GAIN_FLOOR = 0.58      # share of a passage's content that must be new to print it
-_FACT_FLOOR = 0.44      # ...the lower bar for one that STATES a figure not yet printed
+                        # ...and none at all for one stating a datum not yet printed,
+                        # which is round one of _select_passages rather than a constant
 _REPORT_SHARE = 0.68    # length the report is written to, as a share of the answers
 _MIN_REPORT_CHARS = 6000  # ...below which a roll-up is already a report, and is not cut
 _FACT_WEIGHT = 3.0      # figures/entities against prose terms in the coverage objective
@@ -457,6 +472,21 @@ _ABBREV_END_RE = re.compile(
     r"|\b[A-Za-z])\.[\"')\]*_]*$")
 _COHERE_TAU = 0.30      # idf cosine at/above which two sentences are still one passage
 _MIN_STANDALONE = 4     # content terms a sentence needs to be a passage of its own
+# where an ITEM of an enumeration begins: its own list marker, or a bold/italic label
+# carrying a colon -- "- **Samsung SDI**: ...", "**Cost figures disagree:**". These
+# answers put several items on ONE physical line (corpus line 11 of
+# solid-state-battery is 2,789 characters holding six of them), so after
+# _MD_LIST_RE has taken the line's own marker this regex is the only place the item
+# boundary still exists. Review R2: a sentence whose SUBJECT is the label in front of
+# it does not mean anything alone, however well it parses and however far its lexical
+# cohesion has drifted -- printed on its own it is read as belonging to whatever item
+# precedes it in the report, which is a finding attributed to the wrong entity.
+_ITEM_HEAD_RE = re.compile(
+    r"^[\s>]*(?:[-*+]|\d{1,2}[.)])\s+\S"
+    r"|^[\s>]*(?:\*\*|__|\*)[^*_\n]{1,80}"
+    r"(?::\s*(?:\*\*|__|\*)|(?:\*\*|__|\*)[^:*\n]{0,40}:)")
+_LEAD_LABEL_RE = re.compile(
+    r"^[\s>]*(?:(?:[-*+]|\d{1,2}[.)])\s+)?(?:\*\*|__)([^*_\n]{2,80}?):?(?:\*\*|__)")
 
 
 def _split_sentences(line: str) -> List[str]:
@@ -534,6 +564,19 @@ def _form_passages(node: str, rows: List[Any], weights: Dict[str, float],
         no opening anaphor, at least _MIN_STANDALONE content terms, and drifted below
         _COHERE_TAU from the sentence before it (TextTiling's lexical-cohesion
         boundary, Hearst 1997, with an anaphora bind on top).
+
+    THE ITEM OVERRIDES BOTH, in both directions (review R2). A sentence that opens a new
+    item -- _ITEM_HEAD_RE, a list marker or a labelled lead-in -- always begins a
+    passage, because it brings its own subject however cohesive it is with what came
+    before. A sentence UNDER such a label never begins one, because its subject is that
+    label: "Timeline conflict: ... 2027 limited production ..." parses alone, clears
+    _MIN_STANDALONE and drifts below _COHERE_TAU, and the previous cut therefore shipped
+    Samsung SDI's timeline directly under Toyota's bullet with Samsung SDI's own
+    sentence deleted. The standalone test asks whether a sentence PARSES alone; what the
+    report needs is whether it MEANS anything alone.
+
+    The line's own list marker and heading go to the FIRST passage cut out of it, not
+    the last: they introduce the item they were written in front of.
     """
     passages: List[_Passage] = []
     frame, frame_block = "", -1
@@ -557,19 +600,37 @@ def _form_passages(node: str, rows: List[Any], weights: Dict[str, float],
             continue
         terms = [_content_terms(u) for u in units]
         run: List[str] = []
+        labelled = False        # ...is the run under way an item with its own label?
         for k, unit in enumerate(units):
-            stands = (run
-                      and not _ANAPHOR_RE.match(unit)
-                      and len(terms[k]) >= _MIN_STANDALONE
-                      and _cosine_terms(terms[k], terms[k - 1], weights) < _COHERE_TAU)
+            item = bool(_ITEM_HEAD_RE.match(unit))
+            stands = bool(run) and (
+                item or (not labelled
+                         and not _ANAPHOR_RE.match(unit)
+                         and len(terms[k]) >= _MIN_STANDALONE
+                         and _cosine_terms(terms[k], terms[k - 1], weights) < _COHERE_TAU))
             if stands:
-                add(block, head if not run else "", [(prefix if not run else "", run)])
-                head, run = "", [unit]
+                add(block, head, [(prefix, run)])
+                head, prefix = "", ""
+            if stands or not run:
+                run, labelled = [unit], item
             else:
                 run.append(unit)
         if run:
             add(block, head, [(prefix, run)])
     return passages
+
+
+def _lead_label(text: str) -> str:
+    """The bold lead-in a passage (or its frame) opens with.
+
+    A heading its own source wrote, just written inline instead of as a `##`:
+    "**Cost figures disagree:**", "**Supply chain precursor gaps:**", "**Timeline
+    disagreement:**". Review R4 counted 20 of 29 shipped section titles still being term
+    bags because the only titles offered were markdown headings, and these answers put
+    most of their headings in bold text instead.
+    """
+    m = _LEAD_LABEL_RE.match(text or "")
+    return m.group(1).strip() if m else ""
 
 
 def _render_lines(label: str, lines: List[Any]) -> str:
@@ -1667,22 +1728,48 @@ class TreeResearchSkill:
             it the compression concentrates: measured, two node answers still shipped
             >=70% present (bun-rust-port 82%, edge-ai-face-access 79%) at exactly the
             same length and the same fact recall -- i.e. the report was the same size
-            but was one or two answers pasted in rather than a synthesis of seven. With
-            it, no answer exceeds 69%.
+            but was one or two answers pasted in rather than a synthesis of seven.
+            With it, ONE answer per golden can still cross 70% (bun-rust-port 82%,
+            outbox-failure-modes 79%), which is the one lift the contract allows -- the
+            node whose wording a shared claim keeps. That is a property of the ITEM
+            being atomic, not of this constant: swept 0.85 / 0.92 / 0.95 / 0.98, the
+            lift, ratio and S2 of all five goldens do not move.
 
         TWO THINGS THE BUDGET MAY NOT SILENTLY TAKE, because both are how a shorter
         report cheats rather than summarises:
 
-          * a passage stating a datum -- a figure, a named thing, or the two together --
-            that the report has not stated yet drops to the lower _FACT_FLOOR instead of
-            _GAIN_FLOOR. That is the s2_aggregate_pct >= 80 anti-cheat written INTO the
-            objective instead of left for the gate to catch afterwards.
-          * a CONTESTED passage is printed unconditionally. Its content is by
-            construction its opponent's content, so a coverage rule is exactly what
-            deletes one side of a disagreement (R2). They are added after the pass
-            rather than seeded before it: seeded first they suppress everything they
-            touch, which cost seven points of fact recall on this corpus to protect
-            material that was going to be printed anyway.
+          * THE DATA GO FIRST. The pass runs in two rounds over one budget and one
+            coverage state: round one considers only passages stating a datum -- a
+            figure, a named thing, or the two together -- that the report has not
+            printed yet, and applies no novelty floor to them at all; round two spends
+            whatever is left on breadth, under _GAIN_FLOOR. Review R3 measured the
+            single-round version, where an unstated datum only bought a lower floor and
+            still had to out-rank prose: what the budget ran out on was the one
+            occurrence of "REFRESH MATERIALIZED VIEW ... completely replaces" in a query
+            about incremental maintenance, the one occurrence of ISO/IEC 30107, the one
+            passage on replication-slot/WAL growth. A passage no other passage restates
+            is not what a length limit is for. Ordering inside each round is unchanged
+            (fresh mass per character, decayed per node), so breadth still decides which
+            of the data-bearing passages comes first.
+          * a CONTESTED passage is printed unconditionally, and so is one whose LEAD-IN
+            is contested. A disagreement is announced in one place and evidenced in
+            another: "Electrolyte families create distinct scaling problems, and sources
+            diverge on which is most viable:" carries the word, and the sulfide/oxide/
+            polymer items under it carry the sides. Protecting only the sentence that
+            contains the word ships the announcement of a disagreement with its evidence
+            deleted -- review R1 measured exactly that, both of CATL's sides and all
+            three researched oxide passages gone while "**CATL**: Major disagreement
+            here." survived (S6 100 -> 33). What a coverage rule deletes first is a
+            rebuttal, because a rebuttal restates its opponent by construction.
+
+        Contested passages are settled BEFORE the rounds, not appended after them
+        (review R5): their characters are charged through the same `cost`, their
+        lead-ins are marked paid so no later item is billed for a frame already shipped,
+        and their content enters `covered`/`stated`/`bonded` so a passage that merely
+        restates one is not printed a second time by the pass whose purpose is to remove
+        duplication. What the earlier "seeded first they suppress everything they touch"
+        measurement was about is the FLOOR, and that is now round one's business: a
+        passage carrying an unstated datum has no floor to fail.
         """
         terms = [_content_terms(t) for t in texts]
         weights = _term_weights(terms)
@@ -1699,12 +1786,12 @@ class TreeResearchSkill:
         bonded: set = set()          # ...and which of them it printed next to what
         kept: List[int] = []
         pool = set(range(len(texts)))
-        contested = {i for i in pool if _CONTEST_RE.search(texts[i])}
+        contested = {i for i in pool
+                     if _CONTEST_RE.search(texts[i])
+                     or (passages[i].frame and _CONTEST_RE.search(passages[i].frame))}
         pool -= contested
-        spent = sum(len(texts[i]) for i in contested)
+        spent = 0
         taken: "collections.Counter[str]" = collections.Counter()
-        for i in contested:
-            taken[passages[i].node] += len(texts[i])
         # a lead-in ships once, in front of whichever of its items survive, so the
         # FIRST item taken out of an enumeration pays for it and the rest ride free.
         # Leaving it unpriced is what made the report overrun its own budget: measured,
@@ -1717,33 +1804,40 @@ class TreeResearchSkill:
             return len(texts[i]) + 2 + (len(frame) + 1 if frame and frame not in paid
                                         else 0)
 
-        while pool:
-            best, rank = -1, 0.0
-            for i in sorted(pool):
-                if spent + cost(i) > budget:
-                    continue
-                fresh = terms[i] - covered
-                r = _mass(fresh, weights) / sizes[i]
-                b = len(bonds[i] - bonded)
-                new = bool(facts[i] - stated) or bool(b)
-                if r < (_FACT_FLOOR if new else _GAIN_FLOOR):
-                    continue
-                nd = passages[i].node
-                key = (_mass(fresh, weights) / max(1, len(texts[i]))
-                       * (1.0 - _NODE_DECAY * taken[nd] / max(1, whole[nd])))
-                if best < 0 or key > rank:
-                    best, rank = i, key
-            if best < 0:
-                break
-            kept.append(best)
-            covered |= terms[best]
-            stated |= facts[best]
-            bonded |= bonds[best]
-            spent += cost(best)
-            paid.add(passages[best].frame)
-            taken[passages[best].node] += len(texts[best])
-            pool.discard(best)
-        kept.extend(contested)
+        def take(i: int) -> None:
+            nonlocal spent
+            kept.append(i)
+            covered.update(terms[i])
+            stated.update(facts[i])
+            bonded.update(bonds[i])
+            spent += cost(i)
+            paid.add(passages[i].frame)
+            taken[passages[i].node] += len(texts[i])
+            pool.discard(i)
+
+        for i in sorted(contested):
+            take(i)
+
+        for data_round in (True, False):
+            while pool:
+                best, rank = -1, 0.0
+                for i in sorted(pool):
+                    if spent + cost(i) > budget:
+                        continue
+                    states_datum = bool(facts[i] - stated) or bool(bonds[i] - bonded)
+                    if data_round != states_datum:
+                        continue
+                    fresh = terms[i] - covered
+                    if not data_round and _mass(fresh, weights) / sizes[i] < _GAIN_FLOOR:
+                        continue
+                    nd = passages[i].node
+                    key = (_mass(fresh, weights) / max(1, len(texts[i]))
+                           * (1.0 - _NODE_DECAY * taken[nd] / max(1, whole[nd])))
+                    if best < 0 or key > rank:
+                        best, rank = i, key
+                if best < 0:
+                    break
+                take(best)
         # per node, because "which node lost how much" is the number that says whether
         # the selection spread its cuts or hollowed out one answer
         by_node: "collections.Counter[str]" = collections.Counter()
@@ -1774,21 +1868,36 @@ class TreeResearchSkill:
         is still derived from the findings rather than inherited from the tree's shape,
         because the section it names was formed from the claims.
 
+        A "heading the sources wrote" is not only a markdown one, and review R4 named
+        why the path almost never fired: these answers write most of their headings as
+        BOLD LEAD-INS inside the text ("**Cost figures disagree:**", "**Supply chain
+        precursor gaps:**") rather than as `##`, so `topic` was empty for most sections
+        and 20 of 29 shipped titles fell through to a term bag. The caller therefore
+        offers a label per section, markdown heading first and lead-in after.
+
         Nothing downstream depends on which path ran: the number of sections, and so the
         d1 heading count, is fixed before this is called.
         """
         def as_title(label: str) -> str:
             """A source's heading, or "" when it does not name a subject.
 
-            Two kinds have to go. A node answer's own scaffolding -- "Answer",
+            Three kinds have to go. A node answer's own scaffolding -- "Answer",
             "Digest", "Bottom line" -- says what the LLM was writing, not what the
             section is about, and is a worse title than the term bag it would replace.
-            And a heading's enumeration ("3. Event reordering") numbered the node's
-            list, not this report's sections, so the number is stripped and the words
-            kept.
+            A ONE-WORD label ("Toyota", "CATL") names the item it introduces, not the
+            section that item landed in. And a heading's enumeration ("3. Event
+            reordering") numbered the node's list, not this report's sections, so the
+            number is stripped and the words kept.
+
+            An [id] inside a lead-in goes with it: a marker in a HEADING grounds
+            nothing (the frozen scorer reads the 240 characters before it, which for a
+            title is the section above), so carrying it up would spend a citation to
+            say nothing and cost S1 the difference.
             """
-            t = re.sub(r"^\s*\d{1,2}[.)]\s*", "", label).strip(" *_#:")
-            return "" if not t or len(t) > 60 or t.lower() in _SCAFFOLD_TITLES else t
+            t = _CITE_ID_RE.sub(" ", re.sub(r"^\s*\d{1,2}[.)]\s*", "", label))
+            t = re.sub(r"\s+", " ", t).strip().strip("*_#:.—-").strip()
+            return ("" if not t or len(t) > 60 or len(t.split()) < 2
+                    or t.lower() in _SCAFFOLD_TITLES else t)
 
         fallback: List[str] = []
         for g in groups:
@@ -1937,14 +2046,19 @@ class TreeResearchSkill:
                            "merged report ships unsectioned", len(kept))
             return "\n\n".join(texts[i] for i in kept)
         groups = _themes(vectors)
+        # a section is titled from a heading its own material came under -- the
+        # markdown one the answer wrote, or, when it wrote none, the bold lead-in it
+        # used instead (review R4)
         titles = await self._theme_titles(
             groups, [" ".join(texts[i] for i in units[k]) for k in keys], weights,
-            [next((passages[i].topic for i in units[k] if passages[i].topic), "")
+            [next((lab for i in units[k]
+                   if (lab := passages[i].topic or _lead_label(passages[i].frame)
+                       or _lead_label(texts[i]))), "")
              for k in keys])
 
         out: List[str] = []
         for title, group in zip(titles, groups):
-            out.append(f"## {title}")
+            out.append(f"## {title.strip()}")
             out.append("")
             for g in sorted(group, key=lambda q: units[keys[q]][0]):
                 members = units[keys[g]]
