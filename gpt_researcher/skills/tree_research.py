@@ -888,6 +888,118 @@ class TreeResearchSkill:
             return own
         return "\n\n".join([own, *child_summaries])
 
+    # --------------------------------------------------------------- assembly
+
+    async def assemble_report(self, query: str) -> Dict[str, Any]:
+        """Citation map -> post-order roll-up -> fail-closed marker passes -> report.
+
+        Split out of run() so the offline re-synthesis runner
+        (harness-search/scripts/resynth.py) replays THIS assembly rather than a copy
+        of it. It reads only self.nodes and self._read_docs and performs no retrieval
+        — create_chat_completion appears twice in this module and both call sites are
+        upstream — so a captured tree can be re-assembled for free instead of at ~330
+        Firecrawl credits and 12 minutes per query. A private copy in the runner would
+        pass its fidelity check today and diverge silently the next time the real one
+        is edited, which is exactly the drift nobody would see.
+
+        Returns report_md plus the by-products run() reports: citation_map,
+        uncited_ids, contradictions, unsupported.
+        """
+        # stable citation ids: URL union in first-seen node/insertion order
+        citation_map: Dict[str, str] = {}
+        url_to_id: Dict[str, str] = {}
+        for n in self.nodes.values():
+            # defect 3: a failed node's URLs are not evidence either — otherwise its
+            # sources leak into the report through the Citations list even though the
+            # roll-up already dropped its text
+            if n.status == NodeStatus.FAILED:
+                continue
+            for url in n.sources:
+                if url not in url_to_id:
+                    cid = str(len(url_to_id) + 1)
+                    url_to_id[url] = cid
+                    citation_map[cid] = url
+
+        # post-order roll-up: children before parent, root synthesized last
+        async def rollup(n: ResearchNode) -> str:
+            summaries = []
+            for cid in n.children:
+                child = self.nodes[cid]
+                if child.status == NodeStatus.PRUNED:
+                    continue
+                summaries.append(await rollup(child))
+            node_source_ids = {u: url_to_id[u] for u in n.sources if u in url_to_id}
+            text = await self.synthesize_node(n, summaries, node_source_ids)
+            self._syntheses[n.id] = text
+            return text
+
+        # the root is the first node inserted (run() seeds it before the frontier
+        # loop), which is also the order the resynth sidecar preserves
+        root = next(iter(self.nodes.values()), None)
+        root_text = ("" if root is None or root.status == NodeStatus.PRUNED
+                     else await rollup(root))
+
+        body = "\n".join([f"# {query}", "", root_text or "_(no synthesis)_", ""])
+
+        # defect 6a fail-closed: an [id] with no citations entry never reaches
+        # the caller — detect, then strip the unbacked markers. Body only: the
+        # Citations list is data, so a bracketed number inside a URL must never
+        # be read as a citation marker (nor be rewritten by the strip).
+        # Scanned over the node answers as well as the assembled body: s3 drops a
+        # starved node's text out of the roll-up, so a marker the answer LLM
+        # fabricated on a dropped node would stop being REPORTED exactly when the
+        # tree is failing — the signal goes quiet at the moment it matters most.
+        # The strip below still rewrites only the body; an id that never reached it
+        # is a no-op there.
+        uncited_ids = find_uncited_ids(
+            "\n".join([body, *(n.answer_md for n in self.nodes.values())]), citation_map)
+        if uncited_ids:
+            logger.error(f"uncited [id] markers stripped from report: {uncited_ids}")
+            bad = set(uncited_ids)
+
+            def _keep_cited(m: "re.Match[str]") -> str:
+                kept = [c for c in _bracket_ids(m.group(1)) if c not in bad]
+                return render_ids(kept)
+
+            body = _CITE_ID_RE.sub(_keep_cited, body)
+
+        body = self._prune_ungrounded_markers(body, citation_map)
+
+        # defect 6b: last, so the claim check sees the body as it will ship and the
+        # Citations list below is rendered from what SURVIVED it — a dropped claim
+        # must not leave its source behind in the citations block.
+        body, contradictions, unsupported = self.verify_rollup(body)
+        if contradictions or unsupported:
+            # the ratio separates "one claim was cleaned" from "the report collapsed":
+            # when most nodes FAILED the corpus is tiny and every figure misses, and
+            # the counts alone read the same either way
+            logger.error(f"roll-up consistency: dropped {len(contradictions)} claim(s) "
+                         f"contradicting a node answer and {len(unsupported)} no node "
+                         f"answer supports "
+                         f"({self._rollup_dropped_ratio:.1%} of the body): "
+                         f"{[*contradictions, *unsupported]}")
+
+        # a source that survived node.sources narrowing but whose id never made it
+        # into the synthesized body (e.g. an internal rollup dropped it while
+        # merging sub-findings) must not be RENDERED in the Citations list either:
+        # the S1 scorer treats "- [id] url" as one more occurrence of that marker,
+        # and an id with no real in-body usage can only ever ground against the
+        # citations list's own boilerplate line, never a supporting sentence.
+        # citation_map itself (returned to the caller, and what tree.json's
+        # "citations" field is built from) stays the full node.sources union.
+        used_ids = {cid for m in _CITE_ID_RE.finditer(body) for cid in _bracket_ids(m.group(1))}
+        rendered_map = {cid: url for cid, url in citation_map.items() if cid in used_ids}
+
+        lines = [body]
+        if rendered_map:
+            lines += ["", "## Citations", ""]
+            lines += [f"- [{cid}] {url}" for cid, url in rendered_map.items()]
+        report_md = "\n".join(lines).strip() + "\n"
+
+        return {"report_md": report_md, "citation_map": citation_map,
+                "uncited_ids": uncited_ids, "contradictions": contradictions,
+                "unsupported": unsupported}
+
     # -------------------------------------------------------------------- run
 
     async def run(self, query: Optional[str] = None, max_depth: int = 3,
@@ -1042,92 +1154,12 @@ class TreeResearchSkill:
         # unresearched nodes left in the frontier tell the caller the tree was cut short
         time_budget_exhausted = (time.time() - start >= time_budget_s and len(frontier) > 0)
 
-        # stable citation ids: URL union in first-seen node/insertion order
-        citation_map: Dict[str, str] = {}
-        url_to_id: Dict[str, str] = {}
-        for n in self.nodes.values():
-            # defect 3: a failed node's URLs are not evidence either — otherwise its
-            # sources leak into the report through the Citations list even though the
-            # roll-up already dropped its text
-            if n.status == NodeStatus.FAILED:
-                continue
-            for url in n.sources:
-                if url not in url_to_id:
-                    cid = str(len(url_to_id) + 1)
-                    url_to_id[url] = cid
-                    citation_map[cid] = url
-
-        # post-order roll-up: children before parent, root synthesized last
-        async def rollup(n: ResearchNode) -> str:
-            summaries = []
-            for cid in n.children:
-                child = self.nodes[cid]
-                if child.status == NodeStatus.PRUNED:
-                    continue
-                summaries.append(await rollup(child))
-            node_source_ids = {u: url_to_id[u] for u in n.sources if u in url_to_id}
-            text = await self.synthesize_node(n, summaries, node_source_ids)
-            self._syntheses[n.id] = text
-            return text
-
-        root_text = "" if root.status == NodeStatus.PRUNED else await rollup(root)
-
-        body = "\n".join([f"# {query}", "", root_text or "_(no synthesis)_", ""])
-
-        # defect 6a fail-closed: an [id] with no citations entry never reaches
-        # the caller — detect, then strip the unbacked markers. Body only: the
-        # Citations list is data, so a bracketed number inside a URL must never
-        # be read as a citation marker (nor be rewritten by the strip).
-        # Scanned over the node answers as well as the assembled body: s3 drops a
-        # starved node's text out of the roll-up, so a marker the answer LLM
-        # fabricated on a dropped node would stop being REPORTED exactly when the
-        # tree is failing — the signal goes quiet at the moment it matters most.
-        # The strip below still rewrites only the body; an id that never reached it
-        # is a no-op there.
-        uncited_ids = find_uncited_ids(
-            "\n".join([body, *(n.answer_md for n in self.nodes.values())]), citation_map)
-        if uncited_ids:
-            logger.error(f"uncited [id] markers stripped from report: {uncited_ids}")
-            bad = set(uncited_ids)
-
-            def _keep_cited(m: "re.Match[str]") -> str:
-                kept = [c for c in _bracket_ids(m.group(1)) if c not in bad]
-                return render_ids(kept)
-
-            body = _CITE_ID_RE.sub(_keep_cited, body)
-
-        body = self._prune_ungrounded_markers(body, citation_map)
-
-        # defect 6b: last, so the claim check sees the body as it will ship and the
-        # Citations list below is rendered from what SURVIVED it — a dropped claim
-        # must not leave its source behind in the citations block.
-        body, contradictions, unsupported = self.verify_rollup(body)
-        if contradictions or unsupported:
-            # the ratio separates "one claim was cleaned" from "the report collapsed":
-            # when most nodes FAILED the corpus is tiny and every figure misses, and
-            # the counts alone read the same either way
-            logger.error(f"roll-up consistency: dropped {len(contradictions)} claim(s) "
-                         f"contradicting a node answer and {len(unsupported)} no node "
-                         f"answer supports "
-                         f"({self._rollup_dropped_ratio:.1%} of the body): "
-                         f"{[*contradictions, *unsupported]}")
-
-        # a source that survived node.sources narrowing but whose id never made it
-        # into the synthesized body (e.g. an internal rollup dropped it while
-        # merging sub-findings) must not be RENDERED in the Citations list either:
-        # the S1 scorer treats "- [id] url" as one more occurrence of that marker,
-        # and an id with no real in-body usage can only ever ground against the
-        # citations list's own boilerplate line, never a supporting sentence.
-        # citation_map itself (returned to the caller, and what tree.json's
-        # "citations" field is built from) stays the full node.sources union.
-        used_ids = {cid for m in _CITE_ID_RE.finditer(body) for cid in _bracket_ids(m.group(1))}
-        rendered_map = {cid: url for cid, url in citation_map.items() if cid in used_ids}
-
-        lines = [body]
-        if rendered_map:
-            lines += ["", "## Citations", ""]
-            lines += [f"- [{cid}] {url}" for cid, url in rendered_map.items()]
-        report_md = "\n".join(lines).strip() + "\n"
+        assembled = await self.assemble_report(query)
+        report_md = assembled["report_md"]
+        citation_map = assembled["citation_map"]
+        uncited_ids = assembled["uncited_ids"]
+        contradictions = assembled["contradictions"]
+        unsupported = assembled["unsupported"]
 
         # CitationAgent over the tree node claims: each learning is attributed
         # to the surviving node source that actually supports it; when none
@@ -1207,7 +1239,16 @@ class TreeResearchSkill:
 
     def _persist(self, outputs_dir: str, query: str, meta: Dict[str, Any],
                  citation_map: Dict[str, str], report_md: str) -> Dict[str, str]:
-        """Write tree.json (smoke-gate contract shape) + final report markdown."""
+        """Write tree.json (smoke-gate contract shape) + final report markdown +
+        the <stem>.resynth.json sidecar the offline re-synthesis runner replays.
+
+        The sidecar is ADDITIVE — tree.json's shape is what the frozen scorer reads
+        and does not move. It carries what assemble_report needs and tree.json
+        deliberately drops: self._read_docs (citation attribution traces against the
+        scraped text), and per-node answer_md/sources/learnings unblanked, in
+        self.nodes INSERTION order because citation ids are assigned in it. Losing
+        any of those makes the offline replay diverge from this run's own report,
+        which is what the d0 gate's bytes_identical check refuses to let happen."""
         out = Path(outputs_dir)
         out.mkdir(parents=True, exist_ok=True)
         stem = f"{_slug(query)}-{uuid.uuid4().hex[:8]}"
@@ -1226,7 +1267,20 @@ class TreeResearchSkill:
         }
         tree_path = out / f"{stem}.tree.json"
         report_path = out / f"{stem}.tree-report.md"
+        resynth_path = out / f"{stem}.resynth.json"
         tree_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
                              encoding="utf-8")
         report_path.write_text(report_md, encoding="utf-8")
-        return {"tree_json": str(tree_path), "report_md": str(report_path)}
+        resynth_path.write_text(json.dumps({
+            "schema": 1,
+            "query": query,
+            "read_docs": self._read_docs,
+            "nodes": [{"id": n.id, "parent_id": n.parent_id, "children": list(n.children),
+                       "depth": n.depth, "status": n.status.value, "question": n.question,
+                       "answer_md": n.answer_md, "answer_digest": n.answer_digest,
+                       "learnings": list(n.learnings), "sources": list(n.sources),
+                       "novelty": n.novelty, "priority": n.priority}
+                      for n in self.nodes.values()],
+        }, ensure_ascii=False) + "\n", encoding="utf-8")
+        return {"tree_json": str(tree_path), "report_md": str(report_path),
+                "resynth_json": str(resynth_path)}
