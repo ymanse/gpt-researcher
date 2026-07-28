@@ -164,11 +164,35 @@ are directly comparable with the table above.
 | `credits_delta` | 0 | read from Firecrawl's own balance before/after; -1 (unreadable) fails closed |
 | `queries_scanned` | 5 | hollow-zero guard |
 | `node_answers_scanned_total` | ≥ 20 | live baseline scanned 62 |
-| `lifted_nodes_max` | ≤ 1 | 12 |
+| `s2_min_delta` | ≥ −5 | per-query, vs that query's own concatenating baseline |
+| `s2_aggregate_pct` | ≥ 80 | corpus baseline 88 |
 | `synthesis_ratio_pct_max` | ≤ 70 | 120–133% (denominator = **kept** nodes only) |
 | `headings_min` | ≥ 4 | 2–6 |
-| `s2_aggregate_pct` | ≥ 80 | 80 — the anti-cheat |
+| `lifted_nodes_max` | *reported, not gated* | 12 |
 | `code_fp` | recomputed in-gate | evidence must describe the bytes on disk now |
+
+**Why `lifted_nodes_max` stopped being a gate (2026-07-28, human decision).** Measured over
+the captured corpus, every kept node's 5-grams are **98–100% unique** against every other
+node (`bun-rust-port` 9 nodes: 100×8, 99; `denorm` 10×100; `edge-ai` 7×100; `outbox` 13
+nodes: 100×10, 99, 99, 98; `solid-state` 6×100). Siblings share almost no wording — the
+redundancy is entirely topical. So no other node's text can supply a node's 5-grams, and
+`lifted ≤ 1` demanded that ≥30% of **every** node's own wording be deleted or re-worded.
+Re-wording is what destroyed citations three times (`citations_total=0`); deleting is what
+`s2_min_delta` refuses. The threshold was inherited from the s7 gate by analogy and never
+derived, and gating on it drove three cuts toward deletion — the third dropped 60–68% of
+claim units, positionally (keep-rate by decile 83,43,26,29,26,43,23,20,20,11), and shipped
+an adjacency swap whose own comment admitted it existed to defeat an ordered 5-gram
+measure. What the metric was for — catching pure concatenation — is covered by
+`synthesis_ratio_pct_max`, since concatenation measures 120–133%. The number is still
+computed and recorded on every run.
+
+**Why fact retention is now per query.** `s2_aggregate_pct` is a mean over five queries, so
+one report can lose half its facts and still pass. Measured: a merge scored 83 aggregate
+while dropping **13 and 12 points** on `denorm-derived-table` and `edge-ai-face-access` —
+the two queries whose concatenating baselines were already the weakest. Each query is now
+scored against its own baseline from the frozen corpus (`S2_base_pct` / `S2_delta` in
+`per_query`; baselines 100 / 63 / 75 / 100 / 100, aggregate 88), and no query may fall more
+than 5 points.
 
 The denominator is kept nodes on purpose: measured against *all* nodes the ratio rewards a
 tree for pruning more (one query scored "best" at 47% purely because it pruned 8).
@@ -185,10 +209,10 @@ One golden (`outbox-failure-modes`, the worst case) through the real container.
 |---|---|---|
 | `ratio_gap` | ≤ 10 | → `d0-resynth` (the instrument is wrong, not the merge) |
 | `lifted_gap` | ≤ 2 | → `d0-resynth` |
-| `live_lifted_nodes` | ≤ 1 (was 12) | → `s9-impl` |
+| `live_lifted_nodes` | *reported, not gated* | used only by `lifted_gap` above |
 | `live_synthesis_ratio_pct` | ≤ 70 (was 129) | → `s9-impl` |
 | `live_headings` | ≥ 4 (was 2) | → `s9-impl` |
-| `live_S2_pct` | ≥ 88 (was 100) | → `s9-impl` — facts lost |
+| `live_S2_pct` | ≥ 95 (concat scores 100) | → `s9-impl` — facts lost |
 | `live_S1_pct` | ≥ 95 (was 99) | → `s9-impl` — citation integrity lost |
 | `live_S3_pct` | ≤ 0 (was 0) | → `s9-impl` — a trap value entered the report |
 

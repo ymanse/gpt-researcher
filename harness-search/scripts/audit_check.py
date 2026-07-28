@@ -53,7 +53,7 @@ DEDUP_TOKENS = [
     "corpus_queries", "corpus_fresh", "bytes_identical", "netblocked", "shares_assembly",
     "read_docs_min", "suite_collected", "credits_delta", "resynth_failed",
     "queries_scanned", "node_answers_scanned_total", "lifted_nodes_max",
-    "synthesis_ratio_pct_max", "headings_min", "s2_aggregate_pct",
+    "synthesis_ratio_pct_max", "headings_min", "s2_aggregate_pct", "s2_min_delta",
     "live_lifted_nodes", "live_synthesis_ratio_pct", "live_headings",
     "live_S1_pct", "live_S2_pct", "live_S3_pct", "ratio_gap", "lifted_gap",
     "code_fp", "blocking_count", "addressed_findings", "review_head_sha", "frozen_ok",

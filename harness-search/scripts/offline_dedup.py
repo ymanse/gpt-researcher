@@ -72,7 +72,7 @@ def main() -> int:
             errors.append(err)
     after = credits.remaining()
 
-    rows, s2s = [], []
+    rows, s2s, deltas = [], [], []
     for g in hconf.load_golden():
         gid = g["id"]
         row = rollup_scan.scan_query(gid, OFFLINE)
@@ -80,11 +80,24 @@ def main() -> int:
             errors.append(f"{gid}: no re-synthesised report/tree in {OFFLINE.name}/")
             continue
         s2 = rollup_scan.s2_from_scores(gid, OFFLINE) or rollup_scan.rescore(gid, OFFLINE)
+        # Per-query baseline: the frozen scorer on the CONCATENATING report this merge
+        # replaces, scored once off the frozen corpus and cached beside it. The aggregate
+        # alone hides the failure that matters — measured 2026-07-28, a merge scored 83
+        # aggregate while losing 13 and 12 points on the two queries whose baseline was
+        # already the weakest (63 and 75). A mean over five queries lets one report lose
+        # half its facts, which is exactly the deletion this gate exists to refuse.
+        base = (rollup_scan.s2_from_scores(gid, CORPUS)
+                or rollup_scan.rescore(gid, CORPUS))
         if s2 is None:
             errors.append(f"{gid}: frozen scorer produced no S2")
+        elif base is None:
+            errors.append(f"{gid}: frozen scorer produced no baseline S2 for the captured report")
         else:
             s2s.append(s2)
             row["S2_pct"] = s2
+            row["S2_base_pct"] = base
+            row["S2_delta"] = s2 - base
+            deltas.append(s2 - base)
         rows.append(row)
 
     ev = {
@@ -102,6 +115,9 @@ def main() -> int:
         "synthesis_ratio_pct_max": max((r["synthesis_ratio_pct"] for r in rows), default=999),
         "headings_min": min((r["headings"] for r in rows), default=0),
         "s2_aggregate_pct": round(sum(s2s) / len(s2s)) if s2s else 0,
+        # the decisive fact-retention field: worst per-query loss against that query's own
+        # concatenating baseline. -999 when a baseline is missing (law 4: unknown != zero)
+        "s2_min_delta": min(deltas) if deltas and len(deltas) == len(hconf.load_golden()) else -999,
         "per_query": rows,
         "errors": errors,
     }
@@ -110,7 +126,12 @@ def main() -> int:
     for r in rows:
         print(f"  {r['qid'][:22]:24} lifted {r['lifted_nodes']}/{r['node_answers_scanned']} "
               f"max_lift {r['max_lift_pct']}% synth_ratio {r['synthesis_ratio_pct']}% "
-              f"S2 {r.get('S2_pct', '-')} headings {r['headings']}")
+              f"S2 {r.get('S2_pct', '-')}(base {r.get('S2_base_pct', '-')}, "
+              f"d{r.get('S2_delta', '-'):+}) headings {r['headings']}"
+              if "S2_delta" in r else
+              f"  {r['qid'][:22]:24} lifted {r['lifted_nodes']}/{r['node_answers_scanned']} "
+              f"max_lift {r['max_lift_pct']}% synth_ratio {r['synthesis_ratio_pct']}% "
+              f"S2 - headings {r['headings']}")
     return 0
 
 

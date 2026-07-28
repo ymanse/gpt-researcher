@@ -70,19 +70,30 @@ local lifted = L.num(blob, '"lifted_nodes_max":(%d+)')
 local ratio = L.num(blob, '"synthesis_ratio_pct_max":(%d+)')
 local heads = L.num(blob, '"headings_min":(%d+)')
 local s2 = L.num(blob, '"s2_aggregate_pct":(%d+)')
-if not lifted or not ratio or not heads or not s2 then
+local s2d = L.num(blob, '"s2_min_delta":(%-?%d+)')
+if not lifted or not ratio or not heads or not s2 or not s2d then
   gralph.fail('d1: evidence must carry numeric lifted_nodes_max, synthesis_ratio_pct_max, ' ..
-    'headings_min and s2_aggregate_pct — re-run scripts/offline_dedup.py')
+    'headings_min, s2_aggregate_pct and s2_min_delta — re-run scripts/offline_dedup.py')
   return
 end
-if s2 < 80 then
+-- lifted_nodes_max is REPORTED, not gated. Measured 2026-07-28 on the captured corpus:
+-- every kept node's 5-grams are 98-100% UNIQUE against every other node, so no other
+-- node's text can supply them. Requiring all-but-one node under 70% therefore demands
+-- that >=30% of EVERY node's own wording be deleted or re-worded — and keeping a claim's
+-- original wording is precisely what keeps its [id] grounded (three rewrite designs lost
+-- citations, one to citations_total=0). The threshold was inherited from the s7 gate by
+-- analogy, never derived; gating on it forced deletion, which is the one outcome this
+-- harness exists to refuse. What it was for -- catching pure concatenation -- is covered
+-- by synthesis_ratio_pct_max, since concatenation measures 120-133%.
+if s2d < -5 then
+  miss, why = "s2_min_delta", "s2_min_delta=" .. s2d .. " < -5 — at least one query LOST facts " ..
+    "against its own concatenating baseline (per_query S2_base_pct/S2_delta name it). The " ..
+    "aggregate hides this: a merge measured 83 aggregate while dropping 13 and 12 points on the " ..
+    "two weakest queries. Deleting content is not de-duplication"
+elseif s2 < 80 then
   miss, why = "s2_aggregate_pct", "s2_aggregate_pct=" .. s2 .. " < 80 — facts were LOST while " ..
     "removing redundancy. Deleting content is not de-duplication; every fact the concatenating " ..
     "report carried must survive the merge"
-elseif lifted > 1 then
-  miss, why = "lifted_nodes_max", "lifted_nodes_max=" .. lifted .. " > 1 — that many node answers " ..
-    "are still carried into the report >=70% verbatim (baseline 12). MERGE overlapping node " ..
-    "findings into one statement per claim; do not append each node's essay under its own heading"
 elseif ratio > 70 then
   miss, why = "synthesis_ratio_pct_max", "synthesis_ratio_pct_max=" .. ratio .. "% > 70% — the " ..
     "report is still at least as long as the answers of the nodes the roll-up may use (baseline " ..

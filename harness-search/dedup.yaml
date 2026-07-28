@@ -222,6 +222,14 @@ commands:
       passes verify_impl and only fails four stages later. Report in your submission, for
       the captured corpus: claim units merged away, characters removed, and per-node lift.
       A threshold you did not measure against this corpus is a guess.
+      WATCH s2_min_delta, NOT THE AGGREGATE. Each query is scored against its own
+      concatenating baseline (100/63/75/100/100, aggregate 88); >-5 per query is the bar.
+      A cut that measured 83 aggregate was dropping 13 and 12 points on the two weakest
+      queries — the aggregate hid it. Note that lifted_nodes_max is no longer gated
+      (see the d1-offline guidance for why), so DO NOT trade content away to move it, and
+      do not add passes whose purpose is to defeat a measurement: an earlier cut shipped
+      an adjacency swap whose own comment said it existed because "a 5-gram is ordered".
+      That is tampering with the instrument, and the review lane reads the diff.
       Do NOT delete findings to force the numbers down — a smaller report that lost facts
       is the one outcome this harness exists to prevent, and s2_aggregate_pct>=80 catches
       it anyway. You must not touch the test files; if you believe the contract itself is
@@ -294,11 +302,22 @@ commands:
       comparable) and re-scores with the FROZEN bench/score_report.py.
 
       GATE: resynth_failed=0, credits_delta=0, queries_scanned=5,
-      node_answers_scanned_total>=20, lifted_nodes_max<=1, synthesis_ratio_pct_max<=70
-      (denominator = KEPT nodes only), headings_min>=4, s2_aggregate_pct>=80, code_fp
-      recomputed in-gate, frozen_ok, and a [sq][s9] commit with both tracked trees clean.
-      Baseline for scale: lifted == kept EXACTLY on all five goldens (12/12 on the worst),
-      ratio 120-133%, headings 2-6.
+      node_answers_scanned_total>=20, s2_min_delta>=-5, s2_aggregate_pct>=80,
+      synthesis_ratio_pct_max<=70 (denominator = KEPT nodes only), headings_min>=4,
+      code_fp recomputed in-gate, frozen_ok, and a [sq][s9] commit with both tracked
+      trees clean.
+      lifted_nodes_max is MEASURED AND REPORTED BUT NOT GATED (2026-07-28): every kept
+      node's 5-grams are 98-100% unique against every other node on this corpus, so no
+      other node's text can supply them, and requiring all-but-one node under 70% demanded
+      deleting or re-wording >=30% of EVERY node's own wording. Keeping original wording is
+      what keeps a claim's [id] grounded. Pure concatenation is still caught, by
+      synthesis_ratio_pct_max (it measures 120-133%).
+      s2_min_delta is the fact-retention guard and it is PER QUERY: each query is scored
+      against its OWN concatenating baseline from the frozen corpus (S2_base_pct in
+      per_query). The aggregate alone hid the failure — a merge measured 83 aggregate
+      while dropping 13 and 12 points on the two weakest queries (baselines 63 and 75).
+      Baseline for scale: ratio 120-133%, headings 2-6, per-query S2 base
+      100/63/75/100/100 (aggregate 88).
       A metric miss is NOT your failure to fix — the gate routes back to s9-impl with the
       reason (max 3 rounds, counted from journal.jsonl as off_journal_d1). Your job is an
       honest measurement: never edit reports or evidence to move a number.
@@ -335,11 +354,15 @@ commands:
       GATE, in this order: ratio_gap<=10 and lifted_gap<=2 FIRST — that is the
       offline<->live agreement check, and a gap means d0's fidelity proof stopped holding,
       so the gate routes back to d0-resynth rather than blaming the merge. Then
-      live_lifted_nodes<=1, live_synthesis_ratio_pct<=70, live_headings>=4,
-      live_S2_pct>=88, live_S1_pct>=95, live_S3_pct<=0, plus recreated/health 200, code_fp
-      recomputed in-gate, frozen_ok and a [sq][s9] commit with both tracked trees clean
-      (the code under test is s9's). Measured on this query before
-      the fix: 12 lifted nodes, 129% ratio, 2 headings, S1 99, S2 100, S3 0.
+      live_synthesis_ratio_pct<=70, live_headings>=4, live_S2_pct>=95, live_S1_pct>=95,
+      live_S3_pct<=0, plus recreated/health 200, code_fp recomputed in-gate, frozen_ok and
+      a [sq][s9] commit with both tracked trees clean (the code under test is s9's).
+      live_lifted_nodes is reported but NOT gated, for the reason d1 records; lifted_gap
+      still uses it because there it compares offline against live, which is an instrument
+      check rather than a quality bar. live_S2_pct is 95 (not the old 88) because the
+      concatenating report scores exactly 100 on this query over the captured corpus —
+      the same 5-point allowance d1 gives every query. Measured on this query before the
+      fix: 12 lifted nodes, 129% ratio, 2 headings, S1 99, S2 100, S3 0.
       A miss routes back to s9-impl; three re-routes (live_journal_d2) hand the decision
       to a HUMAN.
       NEVER BACKGROUND THE RUN. A `claude -p` session ends when it stops emitting and the
@@ -381,6 +404,7 @@ commands:
                           suite_collected, credits_delta, resynth_failed, queries_scanned,
                           node_answers_scanned_total, lifted_nodes_max,
                           synthesis_ratio_pct_max, headings_min, s2_aggregate_pct,
+                          s2_min_delta,
                           live_lifted_nodes, live_synthesis_ratio_pct, live_headings,
                           live_S1_pct, live_S2_pct, live_S3_pct, ratio_gap, lifted_gap,
                           code_fp, blocking_count, addressed_findings, review_head_sha,

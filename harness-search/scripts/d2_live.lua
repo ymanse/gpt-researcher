@@ -84,11 +84,12 @@ if not ln or not lr or not lh or not s1 or not s2 or not s3 then
     'live_headings, live_S1_pct, live_S2_pct and live_S3_pct — re-run scripts/live_dedup.py')
   return
 end
-if ln > 1 then
-  send_back("s9-impl", "live_lifted_nodes=" .. ln .. " > 1 — node answers are still pasted into the " ..
-    "live report (this query measured 12 before the fix)")
-  return
-end
+-- live_lifted_nodes is REPORTED, not gated, for the same reason as d1's lifted_nodes_max:
+-- the captured corpus shows every kept node's 5-grams are 98-100% unique against every
+-- other node, so the threshold demanded deleting or re-wording >=30% of every node's own
+-- wording rather than removing duplication. lifted_gap above still uses it, because there
+-- it compares OFFLINE against LIVE for the same query -- an instrument check, not a
+-- quality bar.
 if lr > 70 then
   send_back("s9-impl", "live_synthesis_ratio_pct=" .. lr .. "% > 70% (measured 129% before the fix)")
   return
@@ -98,9 +99,13 @@ if lh < 4 then
   return
 end
 -- quality floors: the merge may not buy brevity with facts or with citation grounding
-if s2 < 88 then
-  send_back("s9-impl", "live_S2_pct=" .. s2 .. " < 88 — facts were lost in the merge " ..
-    "(this query scored 100 with the concatenating roll-up)")
+-- 95, not 88: the concatenating report for THIS query scores exactly 100 on the frozen
+-- scorer over the captured corpus (measured 2026-07-28), so the live merge gets the same
+-- 5-point allowance d1's s2_min_delta gives every query. The old 88 came from the round-4
+-- benchmark aggregate and let this query drop 12 points unnoticed.
+if s2 < 95 then
+  send_back("s9-impl", "live_S2_pct=" .. s2 .. " < 95 — facts were lost in the merge " ..
+    "(the concatenating roll-up scores 100 on this query)")
   return
 end
 if s1 < 95 then
