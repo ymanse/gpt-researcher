@@ -68,12 +68,15 @@ end
 
 -- commit convention: both repos on feature/search-quality, clean tracked trees, and a
 -- [sq][sN] commit in gpt-researcher.
-function L.check_commit(stage)
-  local out = L.popen("python scripts/check_commit.py --stage " .. stage, "check_commit.py")
+-- prefix defaults to "s" (search-quality lanes); dedup.yaml passes "d" -> [sq][d0].
+function L.check_commit(stage, prefix)
+  prefix = prefix or "s"
+  local out = L.popen("python scripts/check_commit.py --stage " .. stage ..
+    " --prefix " .. prefix, "check_commit.py")
   if not out then return false end
   if not out:find("commits_ok=1", 1, true) then
     local why = out:match("reason=(.+)$") or "no verdict"
-    gralph.fail("[sq][s" .. stage .. "] commit gate: " .. why ..
+    gralph.fail("[sq][" .. prefix .. stage .. "] commit gate: " .. why ..
       " — commit ALL tracked changes on feature/search-quality with that message prefix, then resubmit")
     return false
   end

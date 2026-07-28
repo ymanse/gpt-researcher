@@ -23,11 +23,12 @@ def main() -> int:
     ap.add_argument("--node", required=True)
     ap.add_argument("--expect", required=True, choices=["pass", "fail"])
     ap.add_argument("--report", required=True)
+    ap.add_argument("--profile", default="search-quality.yaml")
     ap.add_argument("rest", nargs="*")
     a = ap.parse_args()
 
     r = subprocess.run(
-        ["gralph", "try", a.node, "--profile", "search-quality.yaml", *a.rest],
+        ["gralph", "try", a.node, "--profile", a.profile, *a.rest],
         capture_output=True, text=True, errors="replace", cwd=str(hconf.HARNESS),
         timeout=3600,
     )

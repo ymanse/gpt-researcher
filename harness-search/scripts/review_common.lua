@@ -5,7 +5,10 @@
 -- (max 3 rounds, counted in the store on the success path), clean -> sN-measure.
 -- NOTE deliberate law-2 deviation: the verdict itself is LLM judgment (user-specified
 -- reviewer lane); what stays deterministic is freshness, shape, and the round cap.
-return function(stage)
+-- next_node defaults to sN-measure (search-quality); dedup.yaml passes "d1-offline".
+return function(stage, next_node, instance)
+  next_node = next_node or ("s" .. stage .. "-measure")
+  instance = instance or "search-quality"   -- journal dir: .gralph/<instance>/
   local L = dofile(gralph.profile_dir .. "/scripts/lib.lua")
   local rel = "no_read/evidence/s" .. stage .. "_review.json"
   local blob = L.slurp(rel)
@@ -40,7 +43,7 @@ return function(stage)
     -- rev:s2 3->0 and rewound the cursor after hitting this cap). Extra rounds must be
     -- granted explicitly by a human in no_read/audit/grants.json, where harness-audit
     -- surfaces them.
-    local out = L.popen("python scripts/loop_audit.py", "loop_audit.py")
+    local out = L.popen("python scripts/loop_audit.py --instance " .. instance, "loop_audit.py")
     if not out then return end
     local spent = L.num(out, "rev_journal_s" .. stage .. "=(%d+)")
     local granted = L.num(out, "grant_rev_s" .. stage .. "=(%d+)") or 0
@@ -59,6 +62,6 @@ return function(stage)
     gralph.store.set("rev:s" .. stage, effective + 1)   -- informational mirror only
     gralph.route("s" .. stage .. "-impl")
   else
-    gralph.route("s" .. stage .. "-measure")
+    gralph.route(next_node)
   end
 end

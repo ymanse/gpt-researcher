@@ -40,9 +40,10 @@ def sha256(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def store_get(key: str, default: int | str = 0):
+def store_get(key: str, default: int | str = 0, instance: str = "search-quality"):
+    path = HARNESS / ".gralph" / instance / "store.json"
     try:
-        return json.loads(STORE.read_text(encoding="utf-8")).get(key, default)
+        return json.loads(path.read_text(encoding="utf-8")).get(key, default)
     except (OSError, json.JSONDecodeError):
         return default
 

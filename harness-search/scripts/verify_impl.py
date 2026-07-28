@@ -88,7 +88,9 @@ def review_addressed(stage: int) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", type=int, required=True, choices=range(1, 6))
+    # 1-5 = search-quality lanes; 9 = the dedup harness's roll-up lane (dedup.yaml).
+    # Widened, never re-pointed: stages 1-5 resolve to exactly the same paths as before.
+    ap.add_argument("--stage", type=int, required=True, choices=range(1, 10))
     a = ap.parse_args()
     n = a.stage
 

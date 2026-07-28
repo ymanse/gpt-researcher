@@ -17,7 +17,7 @@ import hconf
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", type=int, required=True, choices=range(1, 6))
+    ap.add_argument("--stage", type=int, required=True, choices=range(1, 10))
     a = ap.parse_args()
 
     red_path = hconf.EVID / f"s{a.stage}_red.json"

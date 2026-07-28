@@ -1,0 +1,340 @@
+# dedup.yaml — gralph profile: make the deep_tree_research roll-up SYNTHESIZE the tree.
+#
+# Graph: d0-resynth -> s9-red -> s9-impl -> s9-review -> d1-offline -> d2-live
+#        -> dedup-audit -> DONE
+#   d0    = offline re-synthesis runner + artifact contract, proven by BYTE-IDENTICAL
+#           reproduction of a live report (everything downstream measures this runner)
+#   s9    = the merge itself: red (failing tests) -> impl (GREEN, recomputed in-gate)
+#           -> review (separate adversarial lane; blocking findings route back to impl)
+#   d1    = offline measure over the frozen corpus: zero credits, minutes per iteration.
+#           A metric miss routes back to s9-impl (max 3 rounds, journal-counted).
+#   d2    = one live golden: does it hold end to end, and did offline tell the truth?
+#           Disagreement routes to d0 (the instrument is wrong), a miss to s9-impl.
+#   audit = audits these gates (law 6 try matrix, law 8 3-way sync, law 10 regen)
+#
+# Reuses the frozen search-quality instrument unchanged: bench/golden/* (5),
+# bench/baseline_firecrawl.json, bench/score_report.py, and scripts/rollup_scan.py, so
+# the numbers here are comparable with the s7 measurements that motivated the work.
+#
+# Stop hierarchy: gate-pass > journal-counted refit rounds (off_journal_d1 /
+# live_journal_d2 / rev_journal_s9, each capped at 3 and extended only by a human in
+# no_read/audit/grants.json) > fail_threshold session rotation > `--max-iterations`
+# (./run-dedup.sh). Usage limits are absorbed OUTSIDE gralph, never by a GALP launcher.
+# Models: d0/red/impl/audit = default tier; review/offline/live = sonnet.
+
+agent:
+  command: ["claude", "-p", "{{prompt}}", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
+  timeout: 75m
+
+fail_threshold: 3
+lua_timeout: 90s
+
+commands:
+  # ════════ d0 — the offline re-synthesis runner (everything depends on this) ════════
+  - name: d0-resynth
+    lua_timeout: 3600s
+    guidance: |
+      [dedup loop] Repos D:/dev_ext/gpt-researcher + D:/dev_ext/gptr-mcp (both on
+      feature/search-quality). CWD = harness-search/. Test python: ../venv/Scripts/python.
+      Read FIRST: spec/dedup-harness-prompt.md and DEDUP-HARNESS.md.
+      HARD RULES: bench/golden/*, bench/baseline_firecrawl.json and bench/score_report.py
+      are READ-ONLY (frozen_ok + a git check in the audit); never delete/skip/weaken a
+      test; never hand-edit no_read/evidence/*; timeout every shell command; commit only
+      to feature/search-quality.
+
+      GOAL: re-run the roll-up over CACHED node answers so a merge strategy costs minutes
+      and zero Firecrawl credits instead of 2.6 hours and ~5,800. This is possible because
+      the assembly path performs no retrieval: create_chat_completion appears exactly
+      twice in gpt_researcher/skills/tree_research.py and both sites are upstream of the
+      roll-up. Three deliverables:
+
+      1. ARTIFACT CONTRACT (additive only — do NOT change tree.json, the frozen scorer
+         reads it): TreeResearchSkill._persist also writes <stem>.resynth.json =
+         {"schema":1,"query":...,"read_docs":{url:text},"nodes":[...]} where nodes are in
+         self.nodes INSERTION ORDER (citation ids are assigned in that order) and each
+         carries id, parent_id, children, depth, status, question, answer_md,
+         answer_digest, learnings, sources, novelty, priority.
+      2. SHARED ASSEMBLY: extract the citation-map + roll-up + report-assembly block out
+         of TreeResearchSkill.run() into a method `assemble_report`, and call it from
+         run(). Both the live path and the offline runner MUST go through it — a private
+         copy in the runner passes fidelity today and diverges silently the moment s9
+         edits the real one (the gate checks shares_assembly).
+      3. scripts/resynth.py --resynth <x.resynth.json> --tree <x.tree.json> --out <dir>
+         --as <golden_id>: restore self.nodes / self._read_docs from the sidecar, call
+         assemble_report, write <golden_id>.report.md into <dir>. Creating THIS ONE FILE
+         under scripts/ is the only exception to the no-hand-edits rule; touch no other
+         script and no gate.
+
+      ORDER OF WORK — this is how you avoid burning credits:
+        a. make ALL gpt_researcher changes first (any later edit moves code_fp and
+           invalidates the capture)
+        b. docker compose -f D:/docker/gptr-mcp/docker-compose.yml up -d --force-recreate
+           gptr-mcp   then confirm http://127.0.0.1:8123/health returns 200
+        c. PROBE ON ONE QUERY (~330 credits, ~12 min, FOREGROUND):
+           python scripts/capture.py --only outbox-failure-modes
+           python scripts/resynth_check.py      -> iterate until bytes_identical=1
+        d. only when it reproduces byte for byte, capture the rest (~5,500 credits,
+           ~2 h, FOREGROUND): python scripts/capture.py
+        e. python scripts/resynth_check.py
+
+      GATE (resynth_check.py is re-run IN-GATE; the fields are recomputed, not read from
+      your claim): corpus_queries == golden count (5), corpus_fresh=1, shares_assembly=1,
+      bytes_identical == corpus_queries, netblocked=0, read_docs_min>=10,
+      suite_collected>=83 with failed/errors/skipped all 0 (tests/search_quality +
+      tests/tier_a), frozen_ok=1, and a [sq][d0] commit with both tracked trees clean.
+      bytes_identical is the decisive one: if offline re-synthesis does not reproduce the
+      live report EXACTLY, every later stage optimises a fiction. netblocked counts
+      outbound connections from inside the probed process (scripts/netguard) — the
+      roll-up may not retrieve.
+      RUN EVERY LIVE COMMAND IN THE FOREGROUND and wait for it. A backgrounded run is
+      orphaned when your session ends (measured: 8 iterations lost that way).
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering (store_untampered). Blocked by a cap? Stop and
+      say so.
+      Submit: gralph do d0-resynth --report no_read/evidence/d0_resynth.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to d0_resynth.json" }
+    lua: scripts/d0_resynth.lua
+    next: [s9-red]
+
+  # ════════ s9 — the merge ════════
+  - name: s9-red
+    guidance: |
+      [dedup loop] CWD = harness-search/. Test python: ../venv/Scripts/python.
+      Read FIRST: DEDUP-HARNESS.md ("what s9 must achieve") and the synthesize_node
+      docstring in gpt_researcher/skills/tree_research.py.
+      HARD RULES: bench/* READ-ONLY (frozen_ok); no hand-edits under harness-search/;
+      never delete/skip/weaken tests; timeout every shell command; commit only to
+      feature/search-quality.
+
+      Write FAILING (RED) pytest tests in ../tests/search_quality/s9/ — do NOT implement.
+      Deterministic: no network, no real LLM, no embeddings service (mock
+      create_chat_completion the way tests/search_quality/s8 does). Pin the merge contract:
+        (a) two node answers stating the SAME claim produce that claim ONCE in the report
+        (b) two node answers stating DIFFERENT claims both survive (no silent deletion)
+        (c) citation [id] markers stay attached to the claim they support — the frozen
+            scorer's S1 depends on the marker regex \[(\d{1,3})\](?!\() in
+            bench/score_report.py; read it before you assert anything about markers
+        (d) no node answer appears in the report >=70% verbatim (the lifted_nodes measure)
+        (e) the report carries titled sections, not one undivided wall
+      MEASURED HISTORY, do not re-tread blindly: three "LLM rewrites the merge, then
+      re-derive [id] markers by fuzzy matching" designs were each measured live to LOSE
+      citations, one all the way to citations_total=0 on a 33-node tree. Whatever you pin
+      here must let the implementation keep grounding, not just shorten text.
+      Then RUN: python scripts/pytest_evidence.py --stage 9 --phase red
+      Confirm collected>=1, errors=0, passed=0, failed>=1 (base_sha is recorded so the
+      review lane can diff exactly your change).
+      LOOP STATE IS OFF LIMITS: .gralph/** belongs to the framework. Never edit it, never
+      rewind the cursor, never reset a round counter — caps are counted from the
+      append-only journal (store_untampered), so a store edit only leaves evidence of
+      tampering. Blocked by a cap? Stop and say so.
+      Submit: gralph do s9-red --report no_read/evidence/s9_red.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s9_red.json" }
+    lua: scripts/s9_red.lua
+    next: [s9-impl]
+
+  - name: s9-impl
+    lua_timeout: 900s
+    guidance: |
+      [dedup loop] CWD = harness-search/. Test python: ../venv/Scripts/python.
+      HARD RULES: bench/* READ-ONLY; no hand-edits under harness-search/scripts or
+      no_read/evidence; NEVER modify the s9 RED test files (their sha256 is compared);
+      timeout every shell command; commit only to feature/search-quality.
+
+      Make the s9 RED tests pass by changing ONLY the implementation. The roll-up must
+      MERGE overlapping node findings into one statement per claim and lay them out in
+      titled sections — today it concatenates: every kept node answer is carried into the
+      report >=70% verbatim (12 of 12 on the worst golden), and the report runs 120-133%
+      of the answers it is allowed to use.
+
+      RETURNING FROM A REFIT? Read no_read/evidence/d1_offline.json (or d2_live.json)
+      first — the numbers say which threshold missed and by how much; the store key
+      d1_miss / d2_reason names it.
+
+      TWO CONSTRAINTS THAT KILL NAIVE FIXES:
+        - Deleting content satisfies every redundancy metric. s2_aggregate_pct>=80 from
+          the FROZEN scorer is what stops that, and it is not negotiable: facts the
+          concatenating report carried must survive the merge.
+        - Rewriting text erases citation grounding. Read the synthesize_node docstring:
+          three widening rewrite designs each lost citations, one reaching
+          citations_total=0. If you rewrite, you own re-attributing [id] markers against
+          self._read_docs, and d2 checks live_S1_pct>=95.
+      If a previous review round left blocking findings, fix every one, then write
+      no_read/evidence/s9_impl_ack.json = {"addressed_findings":[<every blocking id>],
+      "review_head_sha":"<the head_sha from s9_review.json>"} — the ack is bound to that
+      review, so a stale ack does not clear a new finding.
+      Preflight until ok=1: python scripts/verify_impl.py --stage 9
+      (hash_match=1, stage/suite failed=errors=skipped=0, ruff_errors=0, frozen_ok=1,
+      review_addressed_ok=1). The gate re-runs it IN-GATE.
+      LOOP STATE IS OFF LIMITS: .gralph/** belongs to the framework. Never edit it, never
+      rewind the cursor, never reset a round counter — caps are journal-counted
+      (store_untampered). Blocked by a cap? Stop and say so.
+      Submit: gralph do s9-impl --report no_read/evidence/s9_impl.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s9_impl.json" }
+    lua: scripts/s9_impl.lua
+    next: [s9-review]
+
+  - name: s9-review
+    fail_threshold: 2
+    guidance: |
+      [dedup loop] CWD = harness-search/. You are the REVIEW lane: you did not write this
+      code and you do not fix it. Read ONLY the diff and the completion conditions.
+
+      RUN: python scripts/review_diff.py --stage 9
+      Completion conditions: DEDUP-HARNESS.md "what s9 must achieve" + the s9-red
+      contract (same claim once / distinct claims survive / citations stay attached /
+      no node answer >=70% verbatim / titled sections).
+      ASSUME THE CODE IS WRONG AND SAY WHY. Hunt specifically for: content deleted rather
+      than merged; claims silently dropped when two answers disagree; [id] markers moved
+      to a sentence they no longer support; a merge that only reflows the same text; a
+      heading count reached by splitting one wall into arbitrary pieces; anything that
+      would pass the offline metrics while a reader learns less.
+      DO NOT EDIT CODE, DO NOT RUN THE IMPLEMENTATION. Write
+      no_read/evidence/s9_review.json =
+        {"stage":9,"head_sha":"<python scripts/head_sha.py>","findings":[
+          {"id":"R1","severity":"blocking"|"minor","file":"...","why":"..."}],
+         "blocking_count":<count of severity blocking>}
+      head_sha is recomputed in-gate: a review of older code is rejected. blocking_count>0
+      routes back to s9-impl (max 3 rounds, counted from journal.jsonl); 0 goes on to the
+      offline measure. A cap hands the decision to a HUMAN — it is recorded in
+      no_read/audit/grants.json, never reset.
+      LOOP STATE IS OFF LIMITS: .gralph/** belongs to the framework. Never edit it, never
+      rewind the cursor, never reset a round counter (store_untampered). Blocked by a cap?
+      Stop and say so.
+      Submit: gralph do s9-review --report no_read/evidence/s9_review.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s9_review.json" }
+    lua: scripts/s9_review.lua
+    next: [s9-impl, d1-offline]
+
+  # ════════ d1 — offline measure over the frozen corpus (zero credits) ════════
+  - name: d1-offline
+    fail_threshold: 2
+    lua_timeout: 900s
+    guidance: |
+      [dedup loop] CWD = harness-search/. HARD RULES: bench/* READ-ONLY (frozen_ok); no
+      hand-edits under harness-search/scripts or no_read/evidence; timeout every shell
+      command; commit only to feature/search-quality.
+
+      Re-synthesise all 5 goldens from the frozen corpus with the implementation on disk
+      and measure the roll-up:
+        RUN (FOREGROUND, minutes, zero credits): python scripts/offline_dedup.py
+      It re-runs scripts/resynth.py per golden into no_read/dedup/offline/, then scans
+      with scripts/rollup_scan.py (the same scanner the s7 gate used, so the numbers are
+      comparable) and re-scores with the FROZEN bench/score_report.py.
+
+      GATE: resynth_failed=0, credits_delta=0, queries_scanned=5,
+      node_answers_scanned_total>=20, lifted_nodes_max<=1, synthesis_ratio_pct_max<=70
+      (denominator = KEPT nodes only), headings_min>=4, s2_aggregate_pct>=80, code_fp
+      recomputed in-gate, frozen_ok, and a [sq][s9] commit with both tracked trees clean.
+      Baseline for scale: lifted == kept EXACTLY on all five goldens (12/12 on the worst),
+      ratio 120-133%, headings 2-6.
+      A metric miss is NOT your failure to fix — the gate routes back to s9-impl with the
+      reason (max 3 rounds, counted from journal.jsonl as off_journal_d1). Your job is an
+      honest measurement: never edit reports or evidence to move a number.
+      TRAP: a lexical near-duplicate scan reports ~0% on these files (repeated 5-grams
+      0-2%). The pasted answers are each internally unique prose and the overlap between
+      siblings is topical. What is measured here is the PASTE, not word similarity.
+      LOOP STATE IS OFF LIMITS: .gralph/** belongs to the framework. Never edit it, never
+      rewind the cursor, never reset a round counter (store_untampered). Blocked by a cap?
+      Stop and say so.
+      Submit: gralph do d1-offline --report no_read/evidence/d1_offline.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to d1_offline.json" }
+    lua: scripts/d1_offline.lua
+    next: [s9-impl, d2-live]
+
+  # ════════ d2 — one live golden: does it hold, and did offline tell the truth? ════════
+  - name: d2-live
+    fail_threshold: 2
+    lua_timeout: 900s
+    guidance: |
+      [dedup loop] CWD = harness-search/. HARD RULES: bench/* READ-ONLY; no hand-edits
+      under harness-search/scripts or no_read/evidence; timeout every shell command;
+      commit only to feature/search-quality.
+
+      Deploy the current code and run ONE golden end to end:
+        docker compose -f D:/docker/gptr-mcp/docker-compose.yml up -d --force-recreate
+        gptr-mcp   then confirm http://127.0.0.1:8123/health returns 200
+        RUN IN THE FOREGROUND AND WAIT (~12 min, ~330 credits):
+        python scripts/live_dedup.py
+      (live_dedup.py force-recreates and health-checks itself; it caches on code_fp, so
+      re-running after a gate failure does not buy a second run.)
+
+      GATE, in this order: ratio_gap<=10 and lifted_gap<=2 FIRST — that is the
+      offline<->live agreement check, and a gap means d0's fidelity proof stopped holding,
+      so the gate routes back to d0-resynth rather than blaming the merge. Then
+      live_lifted_nodes<=1, live_synthesis_ratio_pct<=70, live_headings>=4,
+      live_S2_pct>=88, live_S1_pct>=95, live_S3_pct<=0, plus recreated/health 200, code_fp
+      recomputed in-gate, frozen_ok and a [sq][s9] commit with both tracked trees clean
+      (the code under test is s9's). Measured on this query before
+      the fix: 12 lifted nodes, 129% ratio, 2 headings, S1 99, S2 100, S3 0.
+      A miss routes back to s9-impl; three re-routes (live_journal_d2) hand the decision
+      to a HUMAN.
+      NEVER BACKGROUND THE RUN. A `claude -p` session ends when it stops emitting and the
+      run is orphaned (measured: 8 iterations lost that way).
+      LOOP STATE IS OFF LIMITS: .gralph/** belongs to the framework. Never edit it, never
+      rewind the cursor, never reset a round counter (store_untampered). Blocked by a cap?
+      Stop and say so.
+      Submit: gralph do d2-live --report no_read/evidence/d2_live.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to d2_live.json" }
+    lua: scripts/d2_live.lua
+    next: [d0-resynth, s9-impl, dedup-audit]
+
+  # ════════ dedup-audit — audit the gates themselves (DONE on pass) ════════
+  - name: dedup-audit
+    fail_threshold: 2
+    lua_timeout: 3600s
+    guidance: |
+      [dedup loop] CWD = harness-search/. You audit the HARNESS, not the build.
+
+      Produce the law-6 try matrix: for EVERY node in dedup.yaml (d0-resynth, s9-red,
+      s9-impl, s9-review, d1-offline, d2-live, dedup-audit) run
+        python scripts/try_probe.py --profile dedup.yaml --node <node> --expect pass \
+          --report no_read/audit/try/<node>_pass.json
+      against KNOWN-GOOD evidence and the same with --expect fail against KNOWN-BAD
+      evidence. `gralph try` is a dry-run: no store writes, no cursor change, safe against
+      live state. BACK UP every real evidence file BY FULL PATH before probing and restore
+      it with a regenerator (python scripts/resynth_check.py, python scripts/verify_impl.py
+      --stage 9), NEVER by hand.
+      Then RUN: python scripts/audit_check.py --profile dedup.yaml — it verifies IN-GATE:
+        try_ok            every dedup.yaml node has pass+fail reports with right verdicts
+        git_ok            no commit after the [sq][s0] freeze touches bench/golden/*,
+                          bench/baseline_firecrawl.json or bench/score_report.py
+        frozen_ok         manifest hashes still match
+        regen_ok          law 10: regenerators re-run twice -> byte-identical evidence
+        sync_ok           law 8: every gate threshold token (corpus_queries, corpus_fresh,
+                          bytes_identical, netblocked, shares_assembly, read_docs_min,
+                          suite_collected, credits_delta, resynth_failed, queries_scanned,
+                          node_answers_scanned_total, lifted_nodes_max,
+                          synthesis_ratio_pct_max, headings_min, s2_aggregate_pct,
+                          live_lifted_nodes, live_synthesis_ratio_pct, live_headings,
+                          live_S1_pct, live_S2_pct, live_S3_pct, ratio_gap, lifted_gap,
+                          code_fp, blocking_count, addressed_findings, review_head_sha,
+                          frozen_ok, store_untampered) appears in this profile's guidance
+                          AND in DEDUP-HARNESS.md
+        store_untampered  a .gralph/dedup/store.json counter BELOW the journal count minus
+                          the human grants in no_read/audit/grants.json means someone reset
+                          it to escape a cap
+      Fix what it reports — in the harness ONLY when the harness itself is wrong, and then
+      gate + guidance + DEDUP-HARNESS.md move in the SAME commit (law 8).
+      LOOP STATE IS OFF LIMITS: .gralph/** belongs to the framework. Never edit it, never
+      rewind the cursor, never reset a round counter. Blocked by a cap? Stop and say so.
+      Submit: gralph do dedup-audit --report no_read/evidence/dedup_audit.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to dedup_audit.json" }
+    lua: scripts/dedup_audit.lua
+    # no next -> pass = DONE

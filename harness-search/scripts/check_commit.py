@@ -15,8 +15,8 @@ import argparse
 import hconf
 
 
-def check(stage: int) -> tuple[bool, str]:
-    tag = f"{hconf.TAG}[s{stage}]"
+def check(stage: int, prefix: str = "s") -> tuple[bool, str]:
+    tag = f"{hconf.TAG}[{prefix}{stage}]"
     for label, repo, need_tag in (("gpt-researcher", hconf.REPO, True),
                                   ("gptr-mcp", hconf.MCP_REPO, False)):
         branch = hconf.git(repo, "rev-parse", "--abbrev-ref", "HEAD")
@@ -35,9 +35,12 @@ def check(stage: int) -> tuple[bool, str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", type=int, required=True, choices=range(0, 7))
+    ap.add_argument("--stage", type=int, required=True, choices=range(0, 10))
+    # dedup.yaml commits are tagged [sq][d0]/[sq][d1]/[sq][d2]; the search-quality
+    # lanes keep [sq][sN]. Same check, different literal.
+    ap.add_argument("--prefix", default="s", choices=["s", "d"])
     a = ap.parse_args()
-    ok, reason = check(a.stage)
+    ok, reason = check(a.stage, a.prefix)
     print(f"commits_ok={1 if ok else 0} reason={reason}")
     return 0
 
