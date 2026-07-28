@@ -194,7 +194,12 @@ Widened, never re-pointed — stages 1–5 and `search-quality.yaml` behave exac
 - `verify_impl.py`, `review_diff.py`: `--stage` accepts 1–9 (9 = the dedup lane)
 - `check_commit.py`: `--stage` 0–9 and a `--prefix s|d` so `[sq][d0]`/`[sq][d2]` are checkable
 - `lib.lua`: `L.check_commit(stage, prefix)`, prefix defaults to `s`
-- `review_common.lua`: optional `next_node` and `instance` arguments, defaults unchanged
+- `review_common.lua`: optional `next_node` and `instance` arguments, defaults unchanged.
+  Also a real bug fix the law-6 probe matrix surfaced: the stage check demanded
+  `"stage":N,` **with** a trailing comma, but `stage` is the last key of that schema, so
+  any reviewer emitting sorted-key JSON wrote `"stage":N}` and could never satisfy the
+  gate — the broken-referee case law 6 exists to catch. Both terminators are accepted now
+  (`measure_common.lua` already carried the same fix)
 - `loop_audit.py`: `--instance`, stages 1–9, plus `off_journal_d1` / `live_journal_d2`
 - `hconf.store_get(key, default, instance)`
 - `try_probe.py`, `audit_check.py`: `--profile`; the audit's node list is now parsed from

@@ -18,8 +18,16 @@ return function(stage, next_node, instance)
       "(assume the code is WRONG and say why), then write the review JSON")
     return
   end
-  if not L.must(blob, '"stage":' .. stage .. ',',
-      "review evidence is for the wrong stage") then return end
+  -- Accept both terminators. With sorted keys "stage" is the LAST key of this schema, so
+  -- it serializes as `"stage":9}` with no trailing comma — demanding the comma made the
+  -- gate unsatisfiable for any reviewer that happened to sort its JSON (found by the
+  -- law-6 probe matrix; measure_common already carried this fix).
+  if not (blob:find('"stage":' .. stage .. ',', 1, true)
+          or blob:find('"stage":' .. stage .. '}', 1, true)) then
+    gralph.fail('gate FAIL: missing/!= "stage":' .. stage ..
+      ' — review evidence is for the wrong stage')
+    return
+  end
 
   local head = L.popen("python scripts/head_sha.py", "head_sha.py")
   if not head then return end
