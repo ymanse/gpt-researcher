@@ -110,6 +110,13 @@ def write_json(path: pathlib.Path, obj: dict) -> None:
 
 
 def git(repo: pathlib.Path, *args: str) -> str:
+    # encoding is explicit: with text=True alone Python decodes with the LOCALE codec,
+    # which on Korean Windows is cp949. A commit message containing an em dash then raises
+    # UnicodeDecodeError inside subprocess's reader thread, r.stdout comes back None, and
+    # every caller dies on .strip() — the gate sees "no output" and reports a flaky popen
+    # instead of the real cause. Measured 2026-07-28: check_commit.py failed on EVERY
+    # dedup gate because `git log --grep=[sq][s9]` matched commits whose own messages
+    # carried non-ASCII punctuation.
     r = subprocess.run(["git", *args], capture_output=True, text=True, cwd=str(repo),
-                       timeout=120)
-    return r.stdout.strip()
+                       encoding="utf-8", errors="replace", timeout=120)
+    return (r.stdout or "").strip()
