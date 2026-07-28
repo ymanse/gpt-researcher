@@ -23,7 +23,7 @@ import hconf
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--what", required=True, choices=["s0", "impl", "measure", "benchmark"])
-    ap.add_argument("--stage", type=int, choices=range(1, 6))
+    ap.add_argument("--stage", type=int, choices=range(1, 10))
     a = ap.parse_args()
     if a.what in ("impl", "measure") and a.stage is None:
         print("--stage required for impl/measure")

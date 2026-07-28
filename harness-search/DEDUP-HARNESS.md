@@ -191,7 +191,10 @@ re-invoked on exit, or swap `notify()`'s body for a `telegram`/`ntfy` curl.
 
 Widened, never re-pointed — stages 1–5 and `search-quality.yaml` behave exactly as before:
 
-- `verify_impl.py`, `review_diff.py`: `--stage` accepts 1–9 (9 = the dedup lane)
+- `verify_impl.py`, `review_diff.py`, `pytest_evidence.py`, `regen_evidence.py`:
+  `--stage` accepts 1–9 (9 = the dedup lane). `pytest_evidence.py` was the second
+  unsatisfiable-gate find of the pre-run pass: `s9-red` tells the agent to run it, and it
+  rejected stage 9
 - `check_commit.py`: `--stage` 0–9 and a `--prefix s|d` so `[sq][d0]`/`[sq][d2]` are checkable
 - `lib.lua`: `L.check_commit(stage, prefix)`, prefix defaults to `s`
 - `review_common.lua`: optional `next_node` and `instance` arguments, defaults unchanged.

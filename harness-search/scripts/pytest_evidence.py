@@ -17,7 +17,8 @@ import hconf
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", type=int, required=True, choices=range(1, 6))
+    # 1-5 = search-quality lanes; 9 = the dedup harness's roll-up lane
+    ap.add_argument("--stage", type=int, required=True, choices=range(1, 10))
     ap.add_argument("--phase", required=True, choices=["red"])
     a = ap.parse_args()
 
