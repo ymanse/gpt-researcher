@@ -112,8 +112,16 @@ commands:
       feature/search-quality.
 
       Write FAILING (RED) pytest tests in ../tests/search_quality/s9/ — do NOT implement.
-      Deterministic: no network, no real LLM, no embeddings service (mock
-      create_chat_completion the way tests/search_quality/s8 does). Pin the merge contract:
+      Deterministic: no network, no real LLM, no embeddings service.
+      DETERMINISTIC MEANS MOCKED, NOT FORBIDDEN — this distinction cost the first s9 cut.
+      Patch the seams the way tests/search_quality/s8 does (`skill.embed_question =
+      _embed`, `mock.patch.object(tr, "create_chat_completion", ...)`), so the
+      implementation is FREE to use a model or an embedding while the test stays offline.
+      A fixture that simply supplies node answers and calls the assembly with no patched
+      seam does not "keep the test deterministic": it forbids semantic comparison in the
+      implementation forever, and the measured redundancy is topical, not lexical, so
+      that forecloses the only approach that can reach the d1 thresholds. Pin OUTCOMES
+      (what the report must contain), never the mechanism. Pin the merge contract:
         (a) two node answers stating the SAME claim produce that claim ONCE in the report
         (b) two node answers stating DIFFERENT claims both survive (no silent deletion)
         (c) citation [id] markers stay attached to the claim they support — the frozen
@@ -165,6 +173,44 @@ commands:
           three widening rewrite designs each lost citations, one reaching
           citations_total=0. If you rewrite, you own re-attributing [id] markers against
           self._read_docs, and d2 checks live_S1_pct>=95.
+
+      DESIGN DIRECTION (researched 2026-07-28; sources in DEDUP-HARNESS.md "How the
+      literature says to do this"). Three findings, in the order they matter:
+        1. STRUCTURE, not similarity. The report's outline must be DERIVED from the
+           findings, not inherited from the tree. STORM (arXiv:2402.14207) generates an
+           outline from the collected references and expands it section by section;
+           Egnyte's production deep-research writer runs a thematic meta-analysis over
+           ALL question analyses and makes the emergent themes the sections, writing one
+           section per theme. Today a node's answer can only ever appear under its own
+           node, so two siblings restating one finding are never in the same place and no
+           threshold can merge them. Themes cut ACROSS nodes; that is what makes the
+           merge structural instead of a similarity guess.
+        2. MERGE BY SELECTION, NOT BY REWRITING. Pick one cluster member's ORIGINAL
+           wording as canonical and migrate the other members' [id]s onto it. Nothing is
+           re-worded, so nothing loses its grounding — which is the failure mode that
+           killed all three previous designs. The RED contract already blesses this: its
+           note (d) says the one node allowed to stay >=70% present is "whichever node's
+           wording is chosen as canonical".
+        3. CLUSTER CLAIMS, NOT SENTENCES. The unit is the atomic claim (Claimify,
+           FActScore, NuggetIndex: "indexing atomic facts reduces redundancy"), and the
+           comparison must be SEMANTIC. The measured redundancy is topical, not lexical
+           (repeated 5-grams 0-2%), so any word-overlap bar high enough to be safe is too
+           high to fire — that is the R5 ceiling, not a tuning problem.
+
+      KNOWN BLOCKER, READ BEFORE YOU START. The s9 RED tests are hash-locked and their
+      fixture calls assemble_report with NO model: cfg.strategic_llm_provider is the
+      literal string "mock", create_chat_completion is not patched, and no embedding seam
+      is patched either (tests/search_quality/s9/test_s9_merge_contract.py, _tree() and
+      the module docstring). So point 3 CANNOT be implemented inside assemble_report
+      without breaking a frozen test. Note also that rollup_scan's lift is a SET
+      intersection of 5-grams, so re-ordering text under themes does not lower
+      lifted_nodes_max — only removing or re-wording content does.
+      If you conclude the thresholds are unreachable under that contract, SAY SO and
+      stop: report it in your submission with the evidence (which test, which line,
+      what you measured). Do NOT delete findings to force the numbers down — a smaller
+      report that lost facts is the one outcome this harness exists to prevent, and
+      s2_aggregate_pct>=80 will catch it anyway. A human decides whether the RED
+      contract gets re-cut; you do not, and you must not touch the test files.
       If a previous review round left blocking findings, fix every one, then write
       no_read/evidence/s9_impl_ack.json = {"addressed_findings":[<every blocking id>],
       "review_head_sha":"<the head_sha from s9_review.json>"} — the ack is bound to that

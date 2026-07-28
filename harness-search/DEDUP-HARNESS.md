@@ -103,6 +103,48 @@ stale ack cannot satisfy a new finding by id collision. Three blocking rounds
    `citations_total=0` on a 33-node tree. A rewrite must own re-attribution against
    `self._read_docs`; `d2` checks `live_S1_pct ≥ 95`.
 
+### How the literature says to do this
+
+Researched 2026-07-28 after the first s9 cut merged 35 of ~1085 sentences (one golden:
+0 of 241) and the review lane showed that what it *did* merge was disproportionately
+distinct content. Three findings, in the order they matter:
+
+1. **Derive the outline; do not inherit the tree's.** STORM (arXiv:2402.14207, NAACL
+   2024) generates an outline from the collected references and expands it section by
+   section. Egnyte's production deep-research agent does the same in its writer stage:
+   a thematic meta-analysis over *all* question analyses produces "emergent, overarching
+   themes" that become the report's sections, and it dispatches one writing task per
+   theme. Today a node's answer can only appear beneath its own node, so two siblings
+   restating one finding are never in the same place — no threshold can merge them.
+   Themes cut across nodes, which makes the merge structural rather than a similarity
+   guess.
+2. **Merge by selection, not by rewriting.** Keep one cluster member's original wording
+   and migrate the other members' `[id]`s onto it. Nothing is re-worded, so nothing loses
+   grounding — the failure mode that killed all three prior designs. The evidence on
+   citation timing points the same way: arXiv:2509.21557v2 (four datasets, human eval
+   κ=0.873) finds post-hoc attribution beats generation-time on coverage with competitive
+   correctness (human-rated answer correctness 78% vs 69%, citation hallucination 37% vs
+   41%) and recommends "P-Cite-first … reserving G-Cite for precision-critical settings".
+   Contradicting evidence exists (arXiv:2410.11217: post-hoc only helps models that lack
+   attribution ability), which is why `live_S1_pct ≥ 95` may not be relaxed either way.
+3. **Cluster atomic claims, semantically.** Claim/nugget decomposition is the standard
+   unit (Claimify, FActScore, DnDScore; NuggetIndex: "indexing atomic facts … reducing
+   redundancy"). The measured redundancy here is topical, not lexical, so any word-overlap
+   bar high enough to be safe is too high to fire. That is a ceiling, not a tuning problem.
+
+**Blocker, recorded 2026-07-28.** Point 3 cannot be implemented under the current s9 RED
+contract. The hash-locked fixture builds nodes with answers and `_read_docs` only, sets
+`cfg.strategic_llm_provider` to the literal string `"mock"`, and patches **no** seam —
+neither `create_chat_completion` nor an embedding — while its docstring states the
+assembly "makes no LLM call". Any model or embedding call inside `assemble_report`
+therefore breaks a frozen test, and `verify_impl.py --stage 9` will not accept that.
+Note also that `rollup_scan`'s lift is a **set** intersection of 5-grams, so re-ordering
+content under themes does not lower `lifted_nodes_max` — only removing or re-wording it
+does. With semantics forbidden and deletion caught by `s2_aggregate_pct ≥ 80`, the two
+gates form a vise. Re-cutting the RED contract (patched seams, outcomes pinned instead of
+mechanism — the `tests/search_quality/s8` pattern) is a **human** decision and is recorded
+in `no_read/audit/grants.json` when taken.
+
 ### d1-offline — measure for free
 
 `scripts/offline_dedup.py` re-synthesises all five goldens with the code on disk and scans
