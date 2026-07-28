@@ -203,20 +203,29 @@ commands:
            (repeated 5-grams 0-2%), so any word-overlap bar high enough to be safe is too
            high to fire — that is the R5 ceiling, not a tuning problem.
 
-      KNOWN BLOCKER, READ BEFORE YOU START. The s9 RED tests are hash-locked and their
-      fixture calls assemble_report with NO model: cfg.strategic_llm_provider is the
-      literal string "mock", create_chat_completion is not patched, and no embedding seam
-      is patched either (tests/search_quality/s9/test_s9_merge_contract.py, _tree() and
-      the module docstring). So point 3 CANNOT be implemented inside assemble_report
-      without breaking a frozen test. Note also that rollup_scan's lift is a SET
-      intersection of 5-grams, so re-ordering text under themes does not lower
-      lifted_nodes_max — only removing or re-wording content does.
-      If you conclude the thresholds are unreachable under that contract, SAY SO and
-      stop: report it in your submission with the evidence (which test, which line,
-      what you measured). Do NOT delete findings to force the numbers down — a smaller
-      report that lost facts is the one outcome this harness exists to prevent, and
-      s2_aggregate_pct>=80 will catch it anyway. A human decides whether the RED
-      contract gets re-cut; you do not, and you must not touch the test files.
+      USE THE SEAMS — THEY ARE PATCHED FOR YOU. The s9 RED fixture replaces
+      `skill.embed_question` with an offline stand-in and patches
+      `tr.create_chat_completion` with a mock, precisely so the implementation MAY call a
+      real embedding or a real model in production while the test stays deterministic.
+      An earlier contract forbade both and was re-cut for exactly this reason (see
+      DEDUP-HARNESS.md "Intervention log"). Do NOT build another token/LSA/word-overlap
+      similarity rule to avoid the model: two cuts have now measured that ceiling — the
+      first merged 35 of ~1085 sentences, the second 0-4 units per golden out of 139-267,
+      i.e. a no-op that only ADDS heading lines and so RAISES the ratio.
+      Note that rollup_scan's lift is a SET intersection of 5-grams, so re-ordering text
+      under themes does not lower lifted_nodes_max on its own — only removing or
+      re-wording content does. Headings alone move one metric of four.
+
+      MEASURE BEFORE YOU SUBMIT — IT IS FREE. Run `python scripts/offline_dedup.py`
+      (minutes, zero Firecrawl credits) and read the per-query lines it prints. The impl
+      gate cannot tell a merge that found nothing from a merge that worked, so a no-op
+      passes verify_impl and only fails four stages later. Report in your submission, for
+      the captured corpus: claim units merged away, characters removed, and per-node lift.
+      A threshold you did not measure against this corpus is a guess.
+      Do NOT delete findings to force the numbers down — a smaller report that lost facts
+      is the one outcome this harness exists to prevent, and s2_aggregate_pct>=80 catches
+      it anyway. You must not touch the test files; if you believe the contract itself is
+      wrong, say so in your submission and stop — that decision is a human's.
       If a previous review round left blocking findings, fix every one, then write
       no_read/evidence/s9_impl_ack.json = {"addressed_findings":[<every blocking id>],
       "review_head_sha":"<the head_sha from s9_review.json>"} — the ack is bound to that

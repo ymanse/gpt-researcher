@@ -132,18 +132,25 @@ distinct content. Three findings, in the order they matter:
    redundancy"). The measured redundancy here is topical, not lexical, so any word-overlap
    bar high enough to be safe is too high to fire. That is a ceiling, not a tuning problem.
 
-**Blocker, recorded 2026-07-28.** Point 3 cannot be implemented under the current s9 RED
-contract. The hash-locked fixture builds nodes with answers and `_read_docs` only, sets
-`cfg.strategic_llm_provider` to the literal string `"mock"`, and patches **no** seam —
-neither `create_chat_completion` nor an embedding — while its docstring states the
-assembly "makes no LLM call". Any model or embedding call inside `assemble_report`
-therefore breaks a frozen test, and `verify_impl.py --stage 9` will not accept that.
-Note also that `rollup_scan`'s lift is a **set** intersection of 5-grams, so re-ordering
-content under themes does not lower `lifted_nodes_max` — only removing or re-wording it
-does. With semantics forbidden and deletion caught by `s2_aggregate_pct ≥ 80`, the two
-gates form a vise. Re-cutting the RED contract (patched seams, outcomes pinned instead of
-mechanism — the `tests/search_quality/s8` pattern) is a **human** decision and is recorded
-in `no_read/audit/grants.json` when taken.
+**The seams are open (since the 2026-07-28 re-cut).** The s9 RED fixture replaces
+`skill.embed_question` with an offline stand-in and patches `tr.create_chat_completion`,
+so the implementation may call a real embedding or model in production while the test
+stays deterministic. The previous contract forbade both, which is why it was re-cut.
+
+**Two measured ceilings — do not build a third lexical rule.** Cut 1 (word overlap +
+significant figures) merged 35 of ~1085 sentences, one golden 0 of 241. Cut 2 (LSA token
+cosine at 0.75) merged 0–4 units per golden out of 139–267, keeping 98–100% of characters
+— a no-op that only *added* heading lines and therefore **raised** the ratio. Note also
+that `rollup_scan`'s lift is a **set** intersection of 5-grams, so re-ordering content
+under themes does not lower `lifted_nodes_max` on its own; only removing or re-wording it
+does. Headings alone move one metric of four.
+
+**A no-op merge passes `s9-impl`.** `verify_impl.py --stage 9` checks tests, ruff and the
+frozen bench — nothing there distinguishes a merge that worked from one that found
+nothing, so the failure surfaces four stages later at `d1-offline`. The impl guidance
+therefore requires running `scripts/offline_dedup.py` as a preflight (minutes, zero
+credits) and reporting units merged, characters removed and per-node lift over the
+captured corpus before submitting.
 
 ### d1-offline — measure for free
 
