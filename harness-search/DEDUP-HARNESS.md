@@ -206,6 +206,42 @@ The law-8 token set for this profile: `corpus_queries`, `corpus_fresh`,
 `live_S2_pct`, `live_S3_pct`, `ratio_gap`, `lifted_gap`, `code_fp`, `blocking_count`,
 `addressed_findings`, `review_head_sha`, `frozen_ok`, `store_untampered`.
 
+## Intervention log
+
+**2026-07-28 — the s9 RED contract was re-cut, by a human.** Rewinding the cursor is the
+one act every node's guidance forbids, so it is recorded here and in
+`no_read/audit/grants.json` (`rev:s9` = 3) rather than done quietly.
+
+*What happened.* Three s9 implementation rounds merged 35 of ~1085 sentences (one golden:
+0 of 241) and the review lane demonstrated, by replaying the rule over this harness's own
+corpus, that what they *did* merge was disproportionately distinct content — two product
+variants collapsed into one, a third source's disagreement deleted, a bold heading kept
+while the finding under it was dropped. That is a ceiling, not a threshold to tune.
+
+*Why the contract had to go.* The frozen fixture built nodes with answers and
+`_read_docs`, set `cfg.strategic_llm_provider` to the literal string `"mock"`, and patched
+**no** seam, while its docstring asserted the assembly "makes no LLM call". Any model or
+embedding call inside `assemble_report` therefore broke a hash-locked test. Since the
+redundancy is topical and `rollup_scan`'s lift is a set intersection (re-ordering cannot
+lower it), that left only deletion — which `s2_aggregate_pct ≥ 80` correctly refuses. The
+referee made the right answer unreachable, which is exactly the law-6 failure, one level
+up from a gate bug.
+
+*What was reverted.* `9132f2b0` (RED), `517a44d1`, `da524005`, `0269421a` (impl). Kept:
+`65f0db34` (d0 — `assemble_report`, the resynth sidecar) and the captured corpus. The
+three spent review rounds are forgiven by the grant because they were spent against the
+discarded contract; without that the cap would fire on the first review of the new one.
+
+*Trap found while reverting — do not use `git checkout` to restore a file here.*
+`code_fp` hashes raw bytes, and `git checkout` writes CRLF while the working copy the
+corpus was captured against was LF. Restoring an otherwise-identical file that way moved
+the fingerprint (`9a587656fc9c992d` → `9fcbf516c2f2e5f3`) and would have read as "the
+implementation changed", demanding a ~5,800-credit re-capture for a file whose content had
+not changed at all. Restore with `git cat-file blob <sha>:<path>` written verbatim, then
+confirm `python scripts/code_fp.py` matches `no_read/dedup/corpus/corpus.json`. The
+fingerprint is deliberately left byte-exact (normalising it would invalidate the recorded
+manifest for no present gain), so this is a documented handling rule, not a defect to fix.
+
 ## Loop policy
 
 Stop hierarchy: **gate-pass** > **journal-counted refit rounds** (`rev_journal_s9`,

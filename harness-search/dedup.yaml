@@ -126,7 +126,13 @@ commands:
         (b) two node answers stating DIFFERENT claims both survive (no silent deletion)
         (c) citation [id] markers stay attached to the claim they support — the frozen
             scorer's S1 depends on the marker regex \[(\d{1,3})\](?!\() in
-            bench/score_report.py; read it before you assert anything about markers
+            bench/score_report.py; read it before you assert anything about markers.
+            THE FIRST CUT MADE THIS TEST VACUOUS: its fixture appended every shared
+            finding to EVERY source page, so a migrated marker was grounded no matter
+            which node's wording survived — a property that cannot hold on real pages,
+            where node B's page carries node B's phrasing. Give each source page only
+            what that source actually says, so the test fails when a marker is moved
+            onto wording its own page does not support
         (d) no node answer appears in the report >=70% verbatim (the lifted_nodes measure)
         (e) the report carries titled sections, not one undivided wall
       MEASURED HISTORY, do not re-tread blindly: three "LLM rewrites the merge, then
