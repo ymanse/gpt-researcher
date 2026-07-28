@@ -542,6 +542,7 @@ class TreeResearchSkill:
                      "Ground this research tree has ALREADY covered — each question "
                      "and what researching it found:\n"
                      + "\n".join(self._covered_ground())
+                     + self._queued_ground()
                      + f"\n\nGenerate up to {self._max_breadth} follow-up questions that carry "
                        "the root research query into ground the list above does NOT yet cover. "
                        "Target what is missing, not variations of what was already found. Each "
@@ -622,6 +623,48 @@ class TreeResearchSkill:
                       default=0.0)
         self._covered_embeddings.append(own)
         return max(0.0, min(1.0, 1.0 - nearest))
+
+    def _queued_ground(self) -> str:
+        """Questions already sitting in the frontier, shown to the expander as QUEUED.
+
+        The expansion prompt used to see only _covered_ground(), which excludes
+        PENDING, so the model could not tell that the question it was about to
+        invent was already waiting in the queue. Siblings therefore researched
+        near-identical questions by construction — measured round 4: 8-20 pending
+        nodes per query while the report carried every kept answer verbatim, the
+        upstream source of the roll-up's redundancy.
+
+        Deliberately NOT folded into _covered_ground(): a queued question is not
+        covered ground. Most pending nodes are never researched, and presenting
+        them as covered would fence expansion away from ground nobody filled —
+        the same mistake the FAILED exclusion exists to avoid. "Do not restate"
+        is a different instruction from "already answered, steer elsewhere".
+        """
+        queued = [n.question for n in self.nodes.values()
+                  if n.status == NodeStatus.PENDING and n.question]
+        if not queued:
+            return ""
+        return ("\n\nQuestions ALREADY QUEUED for research (not answered yet — they WILL be "
+                "covered, so do NOT restate or reword any of them):\n"
+                + "\n".join(f"- {q}" for q in queued))
+
+    def unregister_covered(self, node: ResearchNode) -> None:
+        """Undo a node's covered-ground registration.
+
+        Novelty is now scored BEFORE research (so a node destined for PRUNED never
+        costs a search), and scoring is what registers the question. A node that
+        then FAILS researched nothing, and the original code deliberately skipped
+        registration for exactly that case: presenting a starved question as
+        covered ground lets the hole it left prune a later child that would have
+        filled it. Scoring first means the entry is already in, so it comes back out.
+        """
+        own = list(node.question_embedding or [])
+        if not own:
+            return
+        for i in range(len(self._covered_embeddings) - 1, -1, -1):
+            if self._covered_embeddings[i] == own:
+                del self._covered_embeddings[i]
+                return
 
     def _prune_ungrounded_markers(self, body: str, citation_map: Dict[str, str]) -> str:
         """Second fail-closed pass, after find_uncited_ids strips markers with NO
@@ -887,12 +930,34 @@ class TreeResearchSkill:
                 headroom = (token_budget - self.tokens_spent) // worst_node_tokens
                 batch_size = min(batch_size, max(1, headroom))
             batch = [frontier.pop() for _ in range(batch_size)]
+
+            # Prune BEFORE researching, not after. compute_novelty reads only the
+            # node's QUESTION embedding, so a node destined for PRUNED can be
+            # identified without spending a search, its scrapes and an answer LLM
+            # call on it first. Measured on round 4, 23-62% of everything researched
+            # was pruned afterwards — that work was bought and thrown away.
+            # The node is still CREATED and still lands as PRUNED with pruned_count
+            # incremented (the s4 contract), it just costs nothing now. Nodes pruned
+            # here never entered research, so they do not count towards `researched`.
+            survivors = []
+            for node in batch:
+                node.novelty = self.compute_novelty(node)
+                if node.novelty < novelty_threshold:
+                    node.status = NodeStatus.PRUNED
+                    pruned += 1
+                    continue  # pruned nodes are never researched and never expanded
+                survivors.append(node)
+            batch = survivors
+            if not batch:
+                continue
+
             outcomes = await asyncio.gather(
                 *(self.research_node(node) for node in batch), return_exceptions=True)
             for node, outcome in zip(batch, outcomes):
                 if isinstance(outcome, BaseException):
                     logger.error(f"tree node {node.id} research failed: {outcome}")
                     node.status = NodeStatus.FAILED
+                    self.unregister_covered(node)
                     continue
                 researched += 1
                 self.tokens_spent += node.tokens_spent
@@ -900,17 +965,17 @@ class TreeResearchSkill:
                 worst_node_tokens = max(worst_node_tokens, node.tokens_spent)
 
                 if node.status == NodeStatus.FAILED:
+                    self.unregister_covered(node)
                     # defect 3: nothing to expand from and nothing to roll up. Skipping
                     # compute_novelty matters too — registering a starved node's
                     # question as covered ground would let the hole it left prune a
                     # later child that would have filled it.
                     continue
 
-                node.novelty = self.compute_novelty(node)
-                if node.novelty < novelty_threshold:
-                    node.status = NodeStatus.PRUNED
-                    pruned += 1
-                    continue  # pruned nodes are never expanded
+                # novelty was scored (and the question registered) before research,
+                # see the batch loop above. A node that FAILED researched nothing, so
+                # its registration is withdrawn here — presenting a starved question
+                # as covered ground would prune the later child that could fill it.
 
                 if node.depth >= max_depth:
                     continue
