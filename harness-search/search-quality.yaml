@@ -748,7 +748,52 @@ commands:
     args:
       - { name: report, required: true, desc: "path to benchmark.json" }
     lua: scripts/s6_benchmark.lua
-    next: [s1-impl, s2-impl, s3-impl, s4-impl, s5-impl, harness-audit]
+    next: [s1-impl, s2-impl, s3-impl, s4-impl, s5-impl, s7-dedup]
+
+  # ════════ s7 — roll-up de-duplication (report must synthesize, not concatenate) ════════
+  - name: s7-dedup
+    fail_threshold: 2
+    lua_timeout: 900s
+    guidance: |
+      [search-quality loop] CWD = harness-search/. Spec: spec/search-quality.md s7.
+      HARD RULES: bench/ frozen; no hand-edits under harness-search/scripts or
+      no_read/evidence; never delete/skip/weaken tests; timeout every command.
+
+      DEFECT: the roll-up concatenates the tree instead of synthesizing it. Measured on
+      round 4, all 5 goldens: 35 of 62 scanned node answers appear in the final report
+      >=70% VERBATIM (max lift 100% on every query), and the report runs 47-89% as long
+      as the sum of its node answers. outbox-failure-modes is the extreme: 10 lifted
+      nodes, 89% ratio, 69k chars under 3 headings. A reader sees the same theme restated
+      section after section ("duplicate delivery", "duplicate messages under multiple
+      instances", "at-least-once, not exactly-once" are one finding written three times).
+      Note a sentence-level dedup scan reports ~0% on these files — the overlap is
+      TOPICAL, not lexical — so do not chase near-identical wording.
+
+      FIX: make synthesize_node / the final roll-up in
+      ../gpt_researcher/skills/tree_research.py merge overlapping node findings into one
+      statement per claim, under organised headings, instead of appending each node's
+      answer. Keep every fact: the gate re-scores S2 with the FROZEN scorer and refuses a
+      report that got shorter by dropping content.
+
+      Regenerate the reports for all 5 goldens, then RUN:
+        python scripts/rollup_scan.py --dir <the directory holding the new
+        <id>.report.md + <id>.tree.json>
+      Gate thresholds: queries_scanned=5, node_answers_scanned_total>=20,
+      lifted_nodes_max<=1, synthesis_ratio_pct_max<=45, headings_min>=4,
+      s2_aggregate_pct>=80.
+      FRESHNESS: the evidence records code_fp and the gate recomputes it — regenerate the
+      reports after every implementation change, never re-scan stale ones.
+      LOOP STATE IS OFF LIMITS: .gralph/** (state.json cursor, store.json counters,
+      journal.jsonl) belongs to the framework. Never edit it, never rewind the cursor,
+      never reset a round counter — round caps exist to hand a decision to a HUMAN, and
+      they are counted from the append-only journal, so a store edit changes nothing
+      except leaving evidence of tampering. Blocked by a cap? Stop and say so.
+      Submit: gralph do s7-dedup --report no_read/evidence/s7_dedup.json
+      {{usage}}
+    args:
+      - { name: report, required: true, desc: "path to s7_dedup.json" }
+    lua: scripts/s7_dedup.lua
+    next: [harness-audit]
 
   # ════════ harness-audit — audit the gates themselves (DONE on pass) ════════
   - name: harness-audit

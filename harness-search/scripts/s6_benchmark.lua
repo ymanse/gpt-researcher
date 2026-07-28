@@ -38,7 +38,7 @@ end
 if not L.check_frozen() then return end
 
 if blob:find('"all_pass":1', 1, true) then
-  gralph.route("harness-audit")
+  gralph.route("s7-dedup")
   return
 end
 local weakest = blob:match('"weakest_metric":"(S%d)"')

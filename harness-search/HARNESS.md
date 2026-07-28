@@ -4,7 +4,7 @@ gralph 하네스: `deep_tree_research`를 frozen firecrawl 베이스라인 대�
 끌어올린다. 스펙: [`spec/search-quality.md`](spec/search-quality.md), 인덱스: [`PRD.md`](PRD.md).
 
 ```
-s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → harness-audit → DONE
+s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → s7-dedup → harness-audit → DONE
                          ↑____review blocking____|        |
               ↑______________s6 weakest-metric refit______|
 ```
@@ -22,6 +22,7 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
 | **sN-review** | 분리 레인 적대 리뷰: 입력은 `review_diff.py`의 diff + 스펙 완료조건뿐. head_sha가 현재 HEAD와 일치(stale 리뷰 재활용 차단, in-gate 재계산), findings 배열 + blocking_count 숫자. blocking_count>0 → `sN-impl`로 라우트, **3라운드 초과 시 hard fail**(라운드 수는 store가 아니라 **append-only journal.jsonl에서 유도** — 막힌 당사자가 카운터를 고쳐 캡을 빠져나가는 일이 실제로 발생했다. 추가 라운드는 `no_read/audit/grants.json`에 사람이 명시적으로 기록), 0 → `sN-measure` | 판정 자체는 LLM(의도된 law 2 예외, 아래 잔존 리스크) — 신선도·형식·라운드 캡은 결정적 |
 | **sN-measure** | 실컨테이너 측정: recreated:true + health:200(bind-mount 반영), bench_round가 store와 일치(stale evidence 차단), **code_fp가 현재 구현 바이트와 일치**(게이트가 재계산 — 측정 후 구현을 고치면 그 evidence는 거부된다), 스테이지 임계값(아래), frozen_ok, `[sq][sN]` 커밋 + 양 repo 클린. refit 라운드면 s6-benchmark로 직행 라우트(bench_refit 클리어) | `measure.py`만이 evidence를 쓴다; 캐시 키가 (라운드, 골든, **코드 지문**)이라 멱등이면서도 코드가 바뀌면 live 재실행 |
 | **s6-benchmark** | 최종 대결: queries_scored==golden_count>=5(미만은 hollow zero — law 4), S1,S2,S4,S5,S6 aggregate가 baseline **초과** AND S3 **이하** → all_pass=1 → audit. 미달 → weakest_metric(부족분 최대)의 담당 스테이지 impl로 라우트(S1→s2,S2→s1,S3→s3,S4→s4,S5→s4,S6→s5), bench_round 증가, **3라운드 캡** | `benchmark.py` + frozen 채점기 + frozen baseline |
+| **s7-dedup** | 취합이 트리를 **종합**하는지(연결이 아닌지): lifted_nodes_max<=1(노드 답변이 70% 이상 그대로 옮겨진 개수 — 실측 baseline 10), synthesis_ratio_pct_max<=45(리포트/노드답변합 — baseline 47~89%), headings_min>=4, queries_scanned=5 + node_answers_scanned_total>=20(양의 결속), **s2_aggregate_pct>=80(안티치트 — 내용을 지워 중복을 없애는 길을 막는다)**, code_fp 신선도 | in-gate `rollup_scan.py` (오프라인·크레딧 0) + 동결 채점기의 S2 |
 | **harness-audit** | 게이트 자체 감사: try_ok(law 6 — 전 노드 known-good/bad `try_probe.py` 리포트 쌍), git_ok(**점수 조작 탐지** — `[sq][s0]` freeze 커밋 이후 bench/golden/*·baseline_firecrawl.json을 건드린 커밋 0), frozen_ok, regen_ok(law 10 — 재생성기 2회 실행 바이트 동일), sync_ok(law 8 — 게이트 토큰이 profile guidance와 이 문서에 존재) | in-gate `audit_check.py` |
 
 측정 임계값 (실측 결함에서 도출):
@@ -94,6 +95,10 @@ s0-bench → (s1..s5: red → impl → review → measure) → s6-benchmark → 
 - s6-benchmark: PASS→harness-audit / PASS→s1-impl(weakest=S2, store bench_round=1·
   bench_refit="s1") / FAIL(queries_scored=4 hollow zero) / FAIL(stale bench_round) ✓
 - harness-audit: FAIL(try_reports_missing) ✓
+- s7-dedup(2026-07-28 추가): FAIL(실측 baseline evidence → lifted_nodes_max=10>1 처방) /
+  PASS(lifted 1·ratio 38%·headings 7·S2 82 → harness-audit 로 진행) /
+  **안티치트 FAIL**(같은 evidence에서 s2_aggregate_pct만 71로 낮추면 "facts were LOST while
+  removing redundancy" 로 거부 — 내용을 지워 중복을 없애는 경로 차단) ✓
 - code_fp 신선도(2026-07-26 추가): FAIL(code_fp 없는 evidence → "DIFFERENT implementation
   bytes" 처방) / PASS-통과확인(올바른 code_fp를 넣으면 신선도 검사를 지나 실제 임계값
   S1_min_pct=33<80 에서 멈춤 — 검사 통과가 증명됨) ✓. code_fp 자체: 2회 연속 동일(멱등),

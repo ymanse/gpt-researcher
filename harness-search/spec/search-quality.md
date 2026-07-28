@@ -188,6 +188,33 @@ python bench/score_report.py --golden bench/golden/<id>.json \
 - 단위테스트: 모순 검출, 무근거 주장 검출/제거.
 - live measure (measure_pair 2쿼리): `contradictions_total == 0`, `unsupported_claims_total == 0`.
 
+### s7 — 취합 중복 제거 (리포트는 종합이지 연결이 아니다)
+
+실측된 결함(round 4, 골든 5개 전부): 스캔한 노드 답변 62개 중 **35개가 리포트에 70% 이상
+그대로 복사**돼 있고(모든 쿼리에서 최대 lift 100%), 리포트 길이가 노드 답변 총합의 47~89%다.
+outbox 가 극단으로 lifted 10개 / 89% / 69,747자에 헤딩 3개다. 독자에게는 같은 주제가
+섹션마다 반복돼 보인다("duplicate delivery" / "duplicate messages under multiple instances"
+/ "at-least-once, not exactly-once" 는 한 발견을 세 번 쓴 것).
+
+**주의 — 문장 단위 중복 스캔은 이 결함을 못 잡는다.** 같은 파일에서 반복 5-gram 0~2%,
+섹션 쌍 최대 겹침 0.22 로 "중복 없음"이 나온다. 붙여넣은 노드 답변은 각각 고유한 산문이고
+형제 노드 간 겹침은 **주제 차원**이기 때문이다. 그래서 측정 대상은 어휘 중복이 아니라
+**붙여넣기 그 자체**다.
+
+측정(`scripts/rollup_scan.py`, 결정적·오프라인·크레딧 0):
+- `lifted_nodes` — 5-gram 이 리포트에 70% 이상 존재하는 노드 답변 수
+- `synthesis_ratio_pct` — len(report) / sum(len(node answers)) × 100
+- `headings` — 조직화 신호
+- `s2_aggregate_pct` — **동결 채점기**의 사실 재현율을 그대로 실어 온다
+
+게이트: `queries_scanned=5`, `node_answers_scanned_total>=20`(양의 결속),
+`lifted_nodes_max<=1`, `synthesis_ratio_pct_max<=45`, `headings_min>=4`,
+**`s2_aggregate_pct>=80`**.
+
+마지막 조건이 안티치트다 — 어떤 중복 지표든 **내용을 지우면 가장 싸게 통과**하므로,
+사실 재현율이 연결(concatenation) 버전이 이미 달성한 수준 아래로 떨어지면 실패시킨다.
+"짧아졌다"가 "비어졌다"가 되어선 안 된다.
+
 ### s6-benchmark — 최종 대결
 - 골든 5쿼리 전부 deep_tree_research 실행(라운드별 캐시), score_report 채점, baseline 과
   aggregate 비교. 게이트: S1,S2,S4,S5,S6 각각 baseline aggregate **초과** AND S3 는 baseline
