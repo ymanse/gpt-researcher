@@ -277,46 +277,90 @@ def _scrubbed(text: str) -> str:
 # nouns around it -- the scorer's own view of a claim (_claim_profile) -- so that is
 # what two sentences are compared on.
 #
-# The thresholds are overlap coefficients (|A&B| / |smaller|), not Jaccard: two
-# statements of one finding differ in LENGTH as often as in wording, and Jaccard
-# punishes that twice. Measured on the s9 fixture's own restatement pair (0.4 percent
-# duplicate deliveries): Jaccard 0.44, overlap 0.62.
-_MERGE_CTX_OVERLAP = 0.50    # ... between two sentences sharing a significant figure
-_MERGE_PROSE_OVERLAP = 0.75  # no figure to anchor on: near-verbatim restatement only
-_MERGE_PROSE_MIN_CTX = 6     # ... and only where there is enough content to judge
+# The merge's IDENTITY test is NOT _claim_profile. That profile is the SUPPORT test
+# verify_rollup shares with the frozen scorer, and it drops tokens under 4 characters
+# and bare digits — an approximation that only ever LOOSENS what that pass accepts.
+# Authorizing a DELETION on it inverts which way it is safe: "BYD", "LG", "SDI", "SK"
+# are invisible to it, and those four tokens are the entire difference between two
+# frontier questions it would then merge into one (review R2). So the merge profiles
+# text with its own tokens, short ones included.
+_MERGE_STOP = _STOP | {
+    "the", "a", "an", "and", "or", "but", "if", "in", "of", "to", "for", "on", "at",
+    "by", "is", "are", "was", "be", "it", "as", "its", "not", "no", "any", "all",
+    "per", "own", "can", "may", "one", "two", "up", "so", "at", "we", "who", "how"}
+# 2026 shared between two statements says they discuss the same year, not the same
+# finding — but _SIGNUM matches any bare 4+-digit run, so a year anchored "same
+# claim" verdicts between statements sharing nothing else (review R1)
+_YEAR_RE = re.compile(r"^(?:19|20)\d\d$")
+# both are coverage OF THE DROPPED STATEMENT: what fraction of what it says the
+# survivor already says. Measured on the s9 fixture's own restatement pairs (same
+# finding, sibling wording): 0.83 / 0.75 / 0.62 with a shared figure.
+_MERGE_FIGURE_COVERAGE = 0.60  # ... anchored by a figure the survivor also states
+_MERGE_PROSE_COVERAGE = 0.80   # nothing to anchor on: near-verbatim restatement only
+_MERGE_MIN_TOKENS = 5          # below that there is not enough content to judge at all
 
 
-def _overlap(a: set, b: set) -> float:
-    return len(a & b) / min(len(a), len(b)) if a and b else 0.0
+def _merge_tokens(text: str) -> set:
+    return {t for t in re.sub(r"[^0-9a-z]+", " ", text.lower()).split()
+            if not t.isdigit() and t not in _MERGE_STOP}
 
 
-def _same_claim(a: tuple, b: tuple) -> bool:
-    """Do two sentences state the same finding? (profiles from _claim_profile)
+def _merge_figures(text: str) -> set:
+    return {k for k in (_num_key(m.group(0)) for m in _SIGNUM.finditer(text))
+            if not _YEAR_RE.match(k)}
 
-    A figure in common is the anchor, and differing figures mean different findings
-    however alike the wording — that is what stops "2,000,000 backlogged rows" from
-    swallowing "48,500,000 unpublished rows", two sentences about the same table in
-    almost the same nouns. With no figure on either side the bar is much higher,
-    because dropping a sentence on topical similarity alone is how a redundancy fix
-    turns into content deletion — the exact cheat the frozen scorer's S2 floor
-    (s2_aggregate_pct >= 80) is there to refuse.
+
+def _merge_profile(text: str) -> tuple:
+    return _merge_figures(text), _merge_tokens(text)
+
+
+def _subsumed(drop: tuple, keep: tuple) -> bool:
+    """Does `keep` already state everything `drop` states? (profiles from
+    _merge_profile — asymmetric on purpose.)
+
+    The question a merge is allowed to ask is containment, not similarity. Asking
+    "are these the same claim?" with an overlap coefficient normalized by the
+    SMALLER side let a three-token fragment delete an eighteen-token finding on two
+    shared tokens, and "first statement wins" then kept the fragment: measured on
+    this harness's own corpus, that dropped a second product variant's LOWER
+    accuracy figure, a third source's timeline disagreement, and the finding under
+    a bold pseudo-heading — leaving the reader the heading and no content (review
+    R1/R6). Deletion is the one direction this pass may not get wrong; the frozen
+    scorer's s2_aggregate_pct >= 80 is what stands against it.
+
+    So a statement is dropped only when the survivor carries every significant
+    figure it carries AND enough of its content words. A figure `drop` has that
+    `keep` lacks makes them different findings however alike the wording (">99.5%,
+    0.35s" against the non-V3 variant's ">99%, <=0.5s"), and both ship. With no
+    figure left to anchor on the bar rises to near-verbatim, because dropping a
+    sentence on topical similarity alone is how a redundancy fix turns into content
+    deletion — and a bare YEAR is not an anchor, so a pair sharing only "2027" is
+    judged on that higher bar rather than on two digits' agreement.
     """
-    (na, ca), (nb, cb) = a, b
-    if na or nb:
-        return bool(na & nb) and _overlap(ca, cb) >= _MERGE_CTX_OVERLAP
-    return (len(ca) >= _MERGE_PROSE_MIN_CTX and len(cb) >= _MERGE_PROSE_MIN_CTX
-            and _overlap(ca, cb) >= _MERGE_PROSE_OVERLAP)
+    dn, dt = drop
+    kn, kt = keep
+    if len(dt) < _MERGE_MIN_TOKENS or len(kt) < _MERGE_MIN_TOKENS:
+        return False
+    if dn - kn:
+        return False
+    need = _MERGE_FIGURE_COVERAGE if dn else _MERGE_PROSE_COVERAGE
+    return len(dt & kt) / len(dt) >= need
 
 
 def _merge_claim_blocks(blocks: List[tuple]) -> List[str]:
-    """One statement per claim across (heading, text) sections; groundings kept.
+    """One statement per claim across (heading, text, mergeable) sections.
 
-    First statement wins, and it keeps its own wording: the citations that node
-    earned were traced against that text, so leaving it alone is what keeps them
-    grounded. Three "LLM rewrites the merge, then re-derive the [id] markers by
-    fuzzy matching" designs were each measured live to lose citations, one to
-    citations_total=0 on a 33-node tree (see synthesize_node) — the rewrite is what
-    erases the grounding, so there is none here.
+    The survivor keeps its own wording: the citations that node earned were traced
+    against that text, so leaving it alone is what keeps them grounded. Three "LLM
+    rewrites the merge, then re-derive the [id] markers by fuzzy matching" designs
+    were each measured live to lose citations, one to citations_total=0 on a
+    33-node tree (see synthesize_node) — the rewrite is what erases the grounding,
+    so there is none here.
+
+    Which statement survives is decided over the whole report, not by document
+    order: the RICHEST statement of a claim wins (most content words, ties to the
+    earlier one). First-wins is what let a truncated fragment outrank the complete
+    sentence it was a prefix of.
 
     A dropped duplicate hands its markers to the survivor rather than taking them
     to the grave: both nodes really did support that claim, and the scorer reads a
@@ -329,8 +373,10 @@ def _merge_claim_blocks(blocks: List[tuple]) -> List[str]:
     offset-preserving, so a scorer-visible sentence maps back to the exact bytes
     that ship, and a marker landing in a separator trailed the sentence before it.
     """
-    kept: List[tuple] = []                    # (profile, block index, slot index)
     out: List[List[str]] = [[] for _ in blocks]
+    claims: List[tuple] = []        # (profile, block index, slot index)
+    seps: List[tuple] = []          # (block index, slot index, claim index, offset)
+    fences: List[List[tuple]] = []
 
     def migrate(raw: str, into: tuple) -> None:
         _, bi, slot = into
@@ -344,39 +390,95 @@ def _merge_claim_blocks(blocks: List[tuple]) -> List[str]:
         if add:
             out[bi][slot] += " " + render_ids(add)
 
-    for bi, (_, text) in enumerate(blocks):
-        fences = [m.span() for m in _SCRUB_RES[0].finditer(text)]
+    for bi, block in enumerate(blocks):
+        text, mergeable = block[1], (block[2] if len(block) > 2 else True)
+        fences.append([m.span() for m in _SCRUB_RES[0].finditer(text)])
         parts = _SENT_SPLIT_RE.split(_scrubbed(text))
         pos = 0
-        merged_into: Optional[tuple] = None
+        prev: Optional[int] = None
         for i, part in enumerate(parts):
             start, pos = pos, pos + len(part)
-            raw = text[start:pos]
+            slot = len(out[bi])
+            out[bi].append(text[start:pos])
             if i % 2:
-                # a separator follows its sentence: drop it with the sentence it
-                # belongs to, after handing on whatever marker trailed into it
-                if merged_into is None:
-                    out[bi].append(raw)
-                else:
-                    migrate(raw, merged_into)
+                seps.append((bi, slot, prev, start))
                 continue
-            merged_into = None
+            prev = None
             stripped = part.strip()
-            # a heading is a title, not a claim, and a fenced block is code — both
-            # keep the report readable however much prose is merged out of it
-            if (not stripped or stripped.startswith("#")
-                    or any(start < b and a < pos for a, b in fences)):
-                out[bi].append(raw)
+            # a heading is a title, a fenced block is code, and an unresearched
+            # node's "(unexplored frontier) <question>" line is a QUESTION — none of
+            # the three is a claim any other statement can be said to already make
+            if (not mergeable or not stripped or stripped.startswith("#")
+                    or any(start < b and a < pos for a, b in fences[bi])):
                 continue
-            profile = _claim_profile(part)
-            hit = next((k for k in kept if _same_claim(profile, k[0])), None)
-            if hit is None:
-                kept.append((profile, bi, len(out[bi])))
-                out[bi].append(raw)
-            else:
-                merged_into = hit
-                migrate(raw, hit)
+            prev = len(claims)
+            claims.append((_merge_profile(part), bi, slot))
+
+    # richest first, so a claim's fullest statement is the one that gets to absorb
+    # the others; a survivor is never itself absorbed afterwards
+    order = sorted(range(len(claims)), key=lambda i: (-len(claims[i][0][1]), i))
+    absorbed: Dict[int, int] = {}
+    for i in order:
+        if i in absorbed:
+            continue
+        for j in order:
+            if j == i or j in absorbed or len(claims[j][0][1]) > len(claims[i][0][1]):
+                continue
+            if _subsumed(claims[j][0], claims[i][0]):
+                absorbed[j] = i
+    for j, i in absorbed.items():
+        _, bi, slot = claims[j]
+        migrate(out[bi][slot], claims[i])
+        out[bi][slot] = ""
+    for bi, slot, prev, start in seps:
+        if prev is None or prev not in absorbed:
+            continue
+        raw = out[bi][slot]
+        migrate(raw, claims[absorbed[prev]])
+        # review R3: a separator is whitespace in the SCRUBBED view only — _scrubbed
+        # blanks fenced code, so a fence between two sentences lands INSIDE the
+        # separator. Dropping the separator with its sentence would delete that code
+        # out of the report; keep it and strip only the markers it inherited, with
+        # verify_rollup's own fence guard so a bracketed array index in the fence is
+        # left alone.
+        out[bi][slot] = _CITE_ID_RE.sub(
+            lambda m: m.group(0) if any(a <= start + m.start() < b
+                                        for a, b in fences[bi]) else "", raw)
     return ["".join(slots) for slots in out]
+
+
+def _node_findings(node) -> str:
+    """A node's own FINDINGS — what it learned, not the narration it learned it in.
+
+    `node.learnings` is the research pass's own one-claim-per-line distillation of
+    answer_md, written upstream with the source pages in context; it is already
+    what expansion and novelty treat as "what this node found". Rolling THAT up is
+    what makes the report a synthesis instead of a stack of pasted answers, and it
+    costs no LLM call, no network and no rewrite — the text is on the node before
+    the assembly starts, which is why assemble_report stays replayable offline.
+
+    Measured over the five captured goldens (no_read/dedup/corpus), learnings
+    against the answers they came from:
+      * 19-22% of answer_md by length — the concatenation ran 119-134% of the
+        answers it is allowed to use, which no sentence-level merge can move: a
+        lexical scan finds 0-3% removable, because the sibling redundancy is
+        TOPICAL (repeated 5-grams 0-2%, worst section-pair Jaccard 0.22, while a
+        genuine restatement pair scores 0.13)
+      * the frozen scorer's facts at the same rate: s2 aggregate 85 vs 87, ONE
+        fact lost across the whole corpus, coverage areas equal or better
+      * traced to their own node's pages at the same rate: 69-88% of sentences
+        against the answers' 65-89%, so the citation grounding survives. That
+        measurement is what separates this from the three "LLM rewrites the merge,
+        then re-derive [id] by fuzzy matching" designs in synthesize_node's
+        docstring, all of which lost citations.
+
+    Fallback is the full answer: a node whose research produced no learnings must
+    lose nothing.
+    """
+    lines = [x for x in (str(y).strip() for y in (node.learnings or [])) if x]
+    if not lines:
+        return node.answer_md or node.answer_digest or node.question
+    return "\n".join(x if x.startswith(("-", "*", "#")) else f"- {x}" for x in lines)
 
 
 def _own_contribution(text: str, child_summaries: List[str]) -> str:
@@ -955,16 +1057,31 @@ class TreeResearchSkill:
         on the round-1 goldens, that placement is what left denorm-derived-table
         at 3 of 5 ids grounded and solid-state-battery at 1 of 2. Sitting next to
         the wording it traces to is also what a citation is supposed to mean."""
-        sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-        if not sentences:
+        # keep the separators: joining the pieces back reproduces the input byte for
+        # byte, so a node's own line breaks and markdown structure survive
+        # attribution. Re-joining on " " (the pre-s9 behaviour) collapsed every
+        # answer to one line, which is why the concatenated report shipped 2
+        # headings — the answers' own "## ..." sections were inlined into prose.
+        parts = _SENT_SPLIT_RE.split(text or "")
+        if not any(p.strip() for p in parts):
             return (text or "").strip()
-        out = []
-        for sent in sentences:
+        for si in range(0, len(parts), 2):
+            sent = parts[si]
+            if not sent.strip():
+                continue
             marks: Dict[int, List[str]] = {}
             for url, cid in source_ids.items():
                 end = _trace_end(sent, self._read_docs.get(url, ""))
                 if end is None:
                     continue
+                # never splice INSIDE a word. The phrase tracer ends a token at the
+                # first non-alphanumeric byte, so "H₂S" ends after the "H" and the
+                # marker shipped as "H [6]₂S" — unreadable, and the frozen scorer's
+                # own fact pattern for that finding stops matching. Pushing to the
+                # end of the run only ever ADDS tokens ahead of the marker, which is
+                # the direction score_s1's 20-token window is safe in.
+                while end < len(sent) and not sent[end].isspace():
+                    end += 1
                 # nothing but punctuation left: append after the sentence rather
                 # than wedge the marker in front of its own full stop. The grader
                 # reads the same tokens either way, and the sentence stays intact
@@ -976,8 +1093,8 @@ class TreeResearchSkill:
             for pos in sorted(marks, reverse=True):
                 cites = render_ids(sorted(marks[pos], key=int))
                 sent = f"{sent[:pos]} {cites}{sent[pos:]}"
-            out.append(sent)
-        return " ".join(out)
+            parts[si] = sent
+        return "".join(parts).strip()
 
     async def synthesize_node(self, node: ResearchNode,
                               child_summaries: Optional[List[str]] = None,
@@ -1007,13 +1124,12 @@ class TreeResearchSkill:
             # question into the report as if it were a finding. Children that did
             # research still roll up through it: their findings were researched.
             return "\n\n".join(child_summaries)
-        # attribution needs text close to the source wording: answer_md is what
-        # node.sources narrowing already checked for overlap (see research_node);
-        # answer_digest is an LLM paraphrase that rarely clears text_supported's
-        # concentrated-passage threshold, which silently zeroed every citation
-        # (measured live: citations_total=0, S1_pct=0 on both s2 measure queries)
-        base = node.answer_md or node.answer_digest or node.question
-        own = self._attribute_citations(base, source_ids)
+        # what rolls up is the node's FINDINGS, not the narration around them (see
+        # _node_findings, and the measurement that its learnings trace to the node's
+        # own pages at the same rate answer_md does — attribution needs text close
+        # to the source wording, and a paraphrase that does not trace buys an [id]
+        # that can never ground)
+        own = self._attribute_citations(_node_findings(node), source_ids)
         if not child_summaries:
             return own
         return "\n\n".join([own, *child_summaries])
@@ -1059,7 +1175,14 @@ class TreeResearchSkill:
                 child = self.nodes[cid]
                 if child.status == NodeStatus.PRUNED:
                     continue
-                summaries.append(await rollup(child))
+                summary = await rollup(child)
+                # review R4: synthesize_node drops falsy child summaries, so passing
+                # the UNFILTERED list to _own_contribution makes the two disagree
+                # exactly when a child contributed nothing — which is what a FAILED
+                # leaf returns. The subtraction then misses and the parent's section
+                # swallows every surviving child's whole subtree.
+                if summary:
+                    summaries.append(summary)
             node_source_ids = {u: url_to_id[u] for u in n.sources if u in url_to_id}
             text = await self.synthesize_node(n, summaries, node_source_ids)
             self._syntheses[n.id] = text
@@ -1078,27 +1201,38 @@ class TreeResearchSkill:
         # a node's findings, then its children's — so this re-uses the layout the
         # concatenation produced and only gives it headings.
         blocks: List[tuple] = []
+        titles: List[str] = []
 
-        def sections(n: ResearchNode) -> None:
+        def sections(n: ResearchNode, level: int) -> None:
             own = own_texts.get(n.id, "").strip()
+            heading = ""
             if own:
                 # only a node that researched gets a heading: a PENDING node
                 # contributes one frontier line, and a heading repeating its own
                 # question above that line is noise, not a section
                 titled = (n.parent_id is not None
                           and n.status in (NodeStatus.ANSWERED, NodeStatus.EXPANDED))
-                blocks.append(("#" * min(n.depth + 1, 6) + f" {n.question}" if titled
-                               else "", own))
+                # review R8: the sibling nodes whose near-identical questions ARE the
+                # documented defect (no_read/audit/pending_rca.md) would otherwise
+                # title two adjacent sections almost the same way — visible
+                # repetition no roll-up metric counts. The bodies still both ship.
+                if titled and not (titles and _subsumed(_merge_profile(n.question),
+                                                        _merge_profile(titles[-1]))):
+                    heading = "#" * min(level, 6) + f" {n.question}"
+                    titles.append(n.question)
+                blocks.append((heading, own, n.status != NodeStatus.PENDING))
+            # a level is spent only where a heading was actually emitted, so the
+            # report never jumps "# query" -> "### grandchild" past a missing "##"
             for cid in n.children:
                 child = self.nodes[cid]
                 if child.status != NodeStatus.PRUNED:
-                    sections(child)
+                    sections(child, level + 1 if heading else level)
 
         if root is not None and root.status != NodeStatus.PRUNED:
-            sections(root)
+            sections(root, 2)
 
         lines = [f"# {query}"]
-        for (heading, _), merged in zip(blocks, _merge_claim_blocks(blocks)):
+        for (heading, _, _), merged in zip(blocks, _merge_claim_blocks(blocks)):
             # a section every claim of which was stated earlier keeps no heading:
             # an empty titled section reads as a finding the report never delivers
             if not merged.strip():
