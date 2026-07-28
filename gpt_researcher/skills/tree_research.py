@@ -835,7 +835,7 @@ class TreeResearchSkill:
     # -------------------------------------------------------------------- run
 
     async def run(self, query: Optional[str] = None, max_depth: int = 3,
-                  max_breadth: int = 4, max_nodes: int = 40,
+                  max_breadth: int = 4, max_nodes: int = 20,
                   token_budget: int = 300_000, credit_budget: float = 150.0,
                   novelty_threshold: float = 0.30, expansion_policy: str = "best_first",
                   stream: bool = False, outputs_dir: Optional[str] = None,

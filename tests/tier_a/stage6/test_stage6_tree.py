@@ -367,8 +367,21 @@ class TestResearchNodeWiring:
     def test_research_node_uses_mocked_gpt_researcher(self):
         tr = _tr()
         inst = mock.MagicMock()
-        inst.conduct_research = mock.AsyncMock(return_value=["context"])
+        # Enough context to clear MIN_CONTEXT_CHARS: since the search-quality s3 work a
+        # node whose research came back empty-handed fails closed (FAILED, not ANSWERED)
+        # instead of answering from the model's prior knowledge. This test is about
+        # GPTResearcher WIRING, so it must hand back what a real research pass would.
+        inst.conduct_research = mock.AsyncMock(
+            return_value=["context sentence about solid-state battery supply chains. " * 200]
+        )
         inst.write_report = mock.AsyncMock(return_value="node report body")
+        # A node's sources are the documents it actually READ and quoted (search-quality
+        # s2), not whatever the retriever returned, so the mock has to hand back a real
+        # research_sources entry; visited_urls alone now leaves the node evidence-less
+        # and it fails closed before the answer LLM ever runs.
+        inst.get_research_sources.return_value = [
+            {"url": URL_A, "raw_content": "digest text " * 60 + "solid-state supply notes."}
+        ]
         inst.visited_urls = {URL_A}
         inst.get_costs.return_value = 0.0
         cls = mock.MagicMock(return_value=inst)
