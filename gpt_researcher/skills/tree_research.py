@@ -648,6 +648,19 @@ class TreeResearchSkill:
                 "covered, so do NOT restate or reword any of them):\n"
                 + "\n".join(f"- {q}" for q in queued))
 
+    def register_covered(self, node: ResearchNode) -> None:
+        """Record a node's question as ground the tree now covers.
+
+        Needed because the batch scores its nodes against a throwaway copy of the
+        covered list (so siblings cannot prune each other), which discards the
+        registration compute_novelty performs as a side effect. Registering here
+        puts each question in exactly once, pruned nodes included — the same set
+        that was covered when scoring and registration were a single call.
+        """
+        own = list(node.question_embedding or [])
+        if own:
+            self._covered_embeddings.append(own)
+
     def unregister_covered(self, node: ResearchNode) -> None:
         """Undo a node's covered-ground registration.
 
@@ -945,6 +958,7 @@ class TreeResearchSkill:
                 if node.novelty < novelty_threshold:
                     node.status = NodeStatus.PRUNED
                     pruned += 1
+
                     continue  # pruned nodes are never researched and never expanded
                 survivors.append(node)
             batch = survivors

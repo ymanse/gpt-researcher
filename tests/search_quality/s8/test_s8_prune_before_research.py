@@ -133,6 +133,54 @@ def test_failed_node_registration_is_withdrawn():
 
 
 @pytest.mark.asyncio
+async def test_mutually_similar_siblings_are_both_pruned_without_being_researched(tmp_path):
+    """Mutual pruning is pre-existing; what changes is that it is now free.
+
+    Novelty is symmetric and every candidate is registered when it is CREATED, so two
+    same-batch siblings that are near-duplicates of each other each see the other and
+    both fall under the floor. That was already true when scoring ran after research —
+    the tree simply paid for both research passes first and discarded both.
+
+    This also rules out the window it would be natural to fear here: a node pruned
+    against a sibling that then FAILS. It cannot happen, because a blocker similar
+    enough to prune B is by symmetry pruned by B, so it is never researched and never
+    reaches FAILED. (A blocker that failed in an EARLIER batch is filtered out by
+    _other_covered_embeddings' FAILED exclusion.)
+    """
+    skill = _skill()
+    researched: list[str] = []
+    sib = {"SIB_A": [0.0, 1.0, 0.0], "SIB_B": [0.0, 0.8, 0.6]}  # cos == 0.8
+
+    async def _research(node):
+        researched.append(node.question)
+        node.status = tr.NodeStatus.ANSWERED
+        node.answer_md = node.answer_digest = "answer body"
+        node.learnings = ["answer body"]
+
+    async def _embed(text):
+        return list({**EMB, **sib}.get(text, [0.0, 0.0, 0.1]))
+
+    async def _children(node):
+        return ["SIB_A", "SIB_B"] if node.depth == 0 else []
+
+    skill.embed_question = _embed
+    with mock.patch.object(skill, "research_node", side_effect=_research), \
+         mock.patch.object(skill, "generate_child_questions", side_effect=_children), \
+         mock.patch.object(tr, "create_chat_completion",
+                           new=mock.AsyncMock(return_value="ANSWER: x\nDIGEST: x\nLEARNINGS:\n- x\n")):
+        result = await skill.run(query=ROOT_Q, max_depth=1, max_breadth=2, max_nodes=10,
+                                 outputs_dir=str(tmp_path))
+
+    assert researched == [ROOT_Q], (
+        "neither near-duplicate sibling may be researched — identifying them as "
+        f"duplicates costs nothing now. researched={researched}"
+    )
+    statuses = {n["question"]: n["status"] for n in result["tree"]["nodes"].values()}
+    assert statuses.get("SIB_A") == "pruned" and statuses.get("SIB_B") == "pruned"
+    assert result["tree"]["meta"]["pruned_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_run_prunes_without_researching_the_duplicate(tmp_path):
     """End to end through run(): the near-duplicate lands as PRUNED and counts towards
     pruned_count, but research_node is never invoked for it."""
