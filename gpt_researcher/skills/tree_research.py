@@ -267,6 +267,136 @@ def _scrubbed(text: str) -> str:
     return text
 
 
+# --- s9 (dedup harness): the roll-up states each finding ONCE.
+# Sibling nodes that researched near-identical questions restate the same finding in
+# their own prose, so the redundancy is not lexical: measured across the round-4
+# reports, repeated 5-grams run 0-2% and the worst section-pair Jaccard is 0.22, while
+# every kept node answer is >=70% present in the report (lifted 12/12, max lift 100%).
+# A word-similarity scan therefore returns a confident "no redundancy" on a report a
+# reader plainly sees repeating itself. What survives rewording is the figure and the
+# nouns around it -- the scorer's own view of a claim (_claim_profile) -- so that is
+# what two sentences are compared on.
+#
+# The thresholds are overlap coefficients (|A&B| / |smaller|), not Jaccard: two
+# statements of one finding differ in LENGTH as often as in wording, and Jaccard
+# punishes that twice. Measured on the s9 fixture's own restatement pair (0.4 percent
+# duplicate deliveries): Jaccard 0.44, overlap 0.62.
+_MERGE_CTX_OVERLAP = 0.50    # ... between two sentences sharing a significant figure
+_MERGE_PROSE_OVERLAP = 0.75  # no figure to anchor on: near-verbatim restatement only
+_MERGE_PROSE_MIN_CTX = 6     # ... and only where there is enough content to judge
+
+
+def _overlap(a: set, b: set) -> float:
+    return len(a & b) / min(len(a), len(b)) if a and b else 0.0
+
+
+def _same_claim(a: tuple, b: tuple) -> bool:
+    """Do two sentences state the same finding? (profiles from _claim_profile)
+
+    A figure in common is the anchor, and differing figures mean different findings
+    however alike the wording — that is what stops "2,000,000 backlogged rows" from
+    swallowing "48,500,000 unpublished rows", two sentences about the same table in
+    almost the same nouns. With no figure on either side the bar is much higher,
+    because dropping a sentence on topical similarity alone is how a redundancy fix
+    turns into content deletion — the exact cheat the frozen scorer's S2 floor
+    (s2_aggregate_pct >= 80) is there to refuse.
+    """
+    (na, ca), (nb, cb) = a, b
+    if na or nb:
+        return bool(na & nb) and _overlap(ca, cb) >= _MERGE_CTX_OVERLAP
+    return (len(ca) >= _MERGE_PROSE_MIN_CTX and len(cb) >= _MERGE_PROSE_MIN_CTX
+            and _overlap(ca, cb) >= _MERGE_PROSE_OVERLAP)
+
+
+def _merge_claim_blocks(blocks: List[tuple]) -> List[str]:
+    """One statement per claim across (heading, text) sections; groundings kept.
+
+    First statement wins, and it keeps its own wording: the citations that node
+    earned were traced against that text, so leaving it alone is what keeps them
+    grounded. Three "LLM rewrites the merge, then re-derive the [id] markers by
+    fuzzy matching" designs were each measured live to lose citations, one to
+    citations_total=0 on a 33-node tree (see synthesize_node) — the rewrite is what
+    erases the grounding, so there is none here.
+
+    A dropped duplicate hands its markers to the survivor rather than taking them
+    to the grave: both nodes really did support that claim, and the scorer reads a
+    marker off the 240 characters before it, which the survivor's sentence now
+    occupies. Nothing is trusted about that hand-off — this runs BEFORE the
+    fail-closed marker passes, so a migrated [id] that no longer traces to its own
+    page is stripped there like any other.
+
+    Segmentation is verify_rollup's, for the same reason: _scrubbed() is
+    offset-preserving, so a scorer-visible sentence maps back to the exact bytes
+    that ship, and a marker landing in a separator trailed the sentence before it.
+    """
+    kept: List[tuple] = []                    # (profile, block index, slot index)
+    out: List[List[str]] = [[] for _ in blocks]
+
+    def migrate(raw: str, into: tuple) -> None:
+        _, bi, slot = into
+        # the survivor's own trailing marker sits in the separator after it, so both
+        # slots are read before deciding an id is new
+        have = {c for m in _CITE_ID_RE.finditer("".join(out[bi][slot:slot + 2]))
+                for c in _bracket_ids(m.group(1))}
+        add = [c for c in dict.fromkeys(
+            cid for m in _CITE_ID_RE.finditer(raw) for cid in _bracket_ids(m.group(1)))
+            if c not in have]
+        if add:
+            out[bi][slot] += " " + render_ids(add)
+
+    for bi, (_, text) in enumerate(blocks):
+        fences = [m.span() for m in _SCRUB_RES[0].finditer(text)]
+        parts = _SENT_SPLIT_RE.split(_scrubbed(text))
+        pos = 0
+        merged_into: Optional[tuple] = None
+        for i, part in enumerate(parts):
+            start, pos = pos, pos + len(part)
+            raw = text[start:pos]
+            if i % 2:
+                # a separator follows its sentence: drop it with the sentence it
+                # belongs to, after handing on whatever marker trailed into it
+                if merged_into is None:
+                    out[bi].append(raw)
+                else:
+                    migrate(raw, merged_into)
+                continue
+            merged_into = None
+            stripped = part.strip()
+            # a heading is a title, not a claim, and a fenced block is code — both
+            # keep the report readable however much prose is merged out of it
+            if (not stripped or stripped.startswith("#")
+                    or any(start < b and a < pos for a, b in fences)):
+                out[bi].append(raw)
+                continue
+            profile = _claim_profile(part)
+            hit = next((k for k in kept if _same_claim(profile, k[0])), None)
+            if hit is None:
+                kept.append((profile, bi, len(out[bi])))
+                out[bi].append(raw)
+            else:
+                merged_into = hit
+                migrate(raw, hit)
+    return ["".join(slots) for slots in out]
+
+
+def _own_contribution(text: str, child_summaries: List[str]) -> str:
+    """What a node added AHEAD of the child summaries it was handed.
+
+    The report is laid out as one titled section per node, so the assembly needs
+    each node's own findings separately — but synthesize_node must still be called
+    exactly once per node and its return is what the report is built from (the
+    stage-6 contract test replaces it with a seam and asserts both). Subtracting
+    the summaries it was given satisfies both: a seam that ignores them returns
+    text that does not end with them, and keeps its whole output.
+    """
+    tail = "\n\n".join(child_summaries)
+    if not tail:
+        return text
+    if text == tail:  # a FAILED node contributes nothing; its children rolled through
+        return ""
+    return text[:-len(tail) - 2] if text.endswith("\n\n" + tail) else text
+
+
 # defect 4, bench round 1: expansion ALREADY names the primary source when it knows
 # one — measured, "What does Debezium's own documentation and issue tracker report..."
 # is the single outbox node whose sources landed debezium.io. What those questions do
@@ -921,6 +1051,8 @@ class TreeResearchSkill:
                     citation_map[cid] = url
 
         # post-order roll-up: children before parent, root synthesized last
+        own_texts: Dict[str, str] = {}
+
         async def rollup(n: ResearchNode) -> str:
             summaries = []
             for cid in n.children:
@@ -931,15 +1063,52 @@ class TreeResearchSkill:
             node_source_ids = {u: url_to_id[u] for u in n.sources if u in url_to_id}
             text = await self.synthesize_node(n, summaries, node_source_ids)
             self._syntheses[n.id] = text
+            own_texts[n.id] = _own_contribution(text, summaries)
             return text
 
         # the root is the first node inserted (run() seeds it before the frontier
         # loop), which is also the order the resynth sidecar preserves
         root = next(iter(self.nodes.values()), None)
-        root_text = ("" if root is None or root.status == NodeStatus.PRUNED
-                     else await rollup(root))
+        if root is not None and root.status != NodeStatus.PRUNED:
+            await rollup(root)
 
-        body = "\n".join([f"# {query}", "", root_text or "_(no synthesis)_", ""])
+        # s9: titled sections instead of one undivided wall. The tree already knows
+        # what each section is about, so the split needs no model and cannot invent a
+        # title the section does not deliver. Document order is the roll-up's own —
+        # a node's findings, then its children's — so this re-uses the layout the
+        # concatenation produced and only gives it headings.
+        blocks: List[tuple] = []
+
+        def sections(n: ResearchNode) -> None:
+            own = own_texts.get(n.id, "").strip()
+            if own:
+                # only a node that researched gets a heading: a PENDING node
+                # contributes one frontier line, and a heading repeating its own
+                # question above that line is noise, not a section
+                titled = (n.parent_id is not None
+                          and n.status in (NodeStatus.ANSWERED, NodeStatus.EXPANDED))
+                blocks.append(("#" * min(n.depth + 1, 6) + f" {n.question}" if titled
+                               else "", own))
+            for cid in n.children:
+                child = self.nodes[cid]
+                if child.status != NodeStatus.PRUNED:
+                    sections(child)
+
+        if root is not None and root.status != NodeStatus.PRUNED:
+            sections(root)
+
+        lines = [f"# {query}"]
+        for (heading, _), merged in zip(blocks, _merge_claim_blocks(blocks)):
+            # a section every claim of which was stated earlier keeps no heading:
+            # an empty titled section reads as a finding the report never delivers
+            if not merged.strip():
+                continue
+            if heading:
+                lines += ["", heading]
+            lines += ["", merged.strip()]
+        if len(lines) == 1:
+            lines += ["", "_(no synthesis)_"]
+        body = "\n".join(lines) + "\n"
 
         # defect 6a fail-closed: an [id] with no citations entry never reaches
         # the caller — detect, then strip the unbacked markers. Body only: the
