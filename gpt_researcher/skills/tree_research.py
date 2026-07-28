@@ -269,13 +269,14 @@ def _scrubbed(text: str) -> str:
 
 
 # --- s9 (dedup harness): the roll-up must MERGE the tree, not concatenate it.
-# Measured baseline (harness-search/DEDUP-HARNESS.md): every kept node answer is >=70%
-# present in the report (12 of 12 on the worst golden), the report runs 120-133% of the
-# answers the roll-up is allowed to use, and it ships 2 headings -- because
-# synthesize_node joins a node's own answer to each child's summary verbatim, so a
-# node's text can only ever appear beneath its own node. Two siblings that researched
-# near-identical questions therefore state one finding twice, in two different places,
-# and no threshold applied inside a node can see it.
+# Measured baseline (harness-search/DEDUP-HARNESS.md, re-measured on the captured
+# corpus while writing this): every kept node answer is >=70% present in the report
+# (13 of 13 scanned on the worst golden), and the report runs 118-134% of the answers
+# the roll-up is allowed to use -- because synthesize_node joins a node's own answer to
+# each child's summary verbatim, so a node's text can only ever appear beneath its own
+# node. Two siblings that researched near-identical questions therefore state one
+# finding twice, in two different places, and no threshold applied INSIDE a node can
+# see it.
 #
 # Three decisions, in the order they matter (sources in DEDUP-HARNESS.md):
 #   1. STRUCTURE, not similarity. STORM (arXiv:2402.14207) derives the outline from the
@@ -283,70 +284,206 @@ def _scrubbed(text: str) -> str:
 #      deep-research writer runs a thematic meta-analysis over ALL question analyses and
 #      dispatches one writing task per emergent theme. Themes cut ACROSS nodes, which is
 #      what puts two restatements of one finding in the same place to begin with.
-#   2. MERGE BY SELECTION, never by rewriting. One cluster member's ORIGINAL wording is
-#      kept and the other members' [id]s migrate onto it. Three "LLM rewrites the merge,
-#      then re-derive the markers by fuzzy matching" designs were each measured live to
-#      lose citations, one reaching citations_total=0 on a 33-node tree (see
-#      synthesize_node). Nothing is re-worded here, so nothing loses grounding that way.
-#   3. CLUSTER ATOMIC CLAIMS, compared SEMANTICALLY. Claimify / FActScore / NuggetIndex
-#      all index atomic facts; the redundancy measured here is topical, not lexical
-#      (repeated 5-grams 0-2%, max section-pair Jaccard 0.22), so a word-overlap bar high
-#      enough to be safe never fires. Re-measured on this harness's own captured corpus
-#      while writing this: an idf-weighted token cosine over the 291 claims of the worst
-#      golden tops out at 0.471 and finds ONE pair. In the latent space below, that
-#      golden's genuine restatements sit at 0.80-0.93.
+#   2. MERGE BY SELECTION, never by rewriting. One claim's ORIGINAL wording is kept and
+#      the claims it already states are dropped, their [id]s migrating onto it. Three
+#      "LLM rewrites the merge, then re-derive the markers by fuzzy matching" designs
+#      were each measured live to lose citations, one reaching citations_total=0 on a
+#      33-node tree (see synthesize_node). Nothing here is re-worded, so nothing loses
+#      grounding that way.
+#   3. COVERAGE, not a pairwise bar -- the correction that makes the merge fire at all.
+#      Two cuts died on a pairwise similarity threshold: word overlap merged 35 of
+#      ~1085 sentences (one golden 0 of 241), and an LSA token cosine at 0.75 merged
+#      0-4 units per golden out of 139-267, a no-op that only added heading lines.
+#      Re-measured here on the captured corpus: the best idf-weighted containment any
+#      other SINGLE unit has over a unit covers 1.9% of the char mass at a 0.70 bar and
+#      only reaches 29% at 0.30, where it is already collapsing bare headings into
+#      paragraphs. That is structural, not a tuning miss -- a restatement is almost
+#      never covered by one earlier claim, it is covered by SEVERAL at once, which no
+#      pairwise measure can see. Scored instead against the union of what the report
+#      has already said (Carbonell & Goldstein's MMR; Lin & Bilmes' submodular coverage
+#      for extractive multi-document summarisation; Claimify / FActScore / NuggetIndex
+#      on atomic claims as the unit), the same corpus separates cleanly: 42-58% of the
+#      char mass is claims that add nothing.
 #
-# The comparison is a LOCAL latent-semantic space (Deerwester et al.'s LSA) built from
-# the report's own claims rather than an embedding service, and that is a fidelity
-# requirement, not a preference: harness-search/scripts/resynth.py replays this assembly
-# from a captured tree with a stub researcher that carries no embedding configuration at
-# all, and the whole dedup harness rests on that offline replay reproducing what the live
-# pipeline produces (d0 bytes_identical; d2 ratio_gap <= 10 / lifted_gap <= 2). A merge
-# that fires only when a service answers would measure one report offline and ship a
-# different one live -- and would also make the "replayed for free" claim false.
-_MERGE_COSINE = 0.75      # latent cosine at/above which two claims state ONE finding
-_LSA_DIMS = 150           # latent factors kept; more than the claim count is a no-op
-_MIN_MERGE_CHARS = 40     # shorter units are list stubs/fragments, never merged AWAY
-_THEME_MAX = 8            # sections; a reader cannot hold more than this many themes
+# The comparison is LOCAL and deterministic -- report-internal idf, no embedding
+# service and no model call -- and that is a fidelity requirement, not a preference:
+# harness-search/scripts/resynth.py replays this assembly from a captured tree with a
+# stub researcher carrying neither embedding nor LLM configuration, and the whole dedup
+# harness rests on that offline replay reproducing what the live pipeline produces (d0
+# bytes_identical; d2 ratio_gap <= 10 / lifted_gap <= 2). A merge that fires only when
+# a service answers would measure one report offline and ship a different one live.
+#
+# Every constant below was swept against the captured corpus and reported with the
+# submission (claims merged away, characters removed, per-node lift, and the frozen
+# scorer's S2 at each point) -- a threshold not measured against this corpus is a guess.
+_COVER_TAU = 0.75       # share of a claim's content mass that must be NEW to keep it
+_NEW_MASS_FLOOR = 1.6   # ...or that much new mass outright, in median-claim units
+_LIST_TAU = 0.35        # a list item's share bar; see _select_claims for why it is lower
+_LSA_DIMS = 32          # latent factors for the THEME partition (claim count >> dims)
+_THEME_MAX = 6          # sections; a reader cannot hold more than this many themes
 _CLAIM_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_MD_HEAD_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
+_MD_LIST_RE = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,2}[.)])\s+")
+_DATUM_RE = re.compile(r"\d+(?:[.,]\d+)*")   # see _claim_index on why not _SIGNUM
 
 
 def _split_claims(text: str) -> List[str]:
     """The roll-up as atomic claims, each still carrying the markers it earned.
 
-    Splits where _attribute_citations split, then glues a LEADING marker back onto
-    the claim before it. That second half is not cosmetic: _attribute_citations
-    joins a marker onto its sentence with a space rather than onto the period
-    ("claim. [1]"), so a plain sentence split peels every trailing marker off its
-    own supporting sentence and hands it to the next one -- the same boundary bug
-    _prune_ungrounded_markers documents, which measured citations_total=0 live. Here
-    it would additionally migrate that source's citation onto a claim it never
-    supported before the merge even ran.
+    LINE FIRST, then sentence. Splitting on sentence-final punctuation alone glues a
+    markdown heading, a bold lead-in or a bullet with no terminal period onto whatever
+    text follows it: measured on the captured corpus, 20% of the worst golden's units
+    then spanned a newline, and a unit could begin with a stranded fragment
+    ("poorly\\nBanandre offers ...") whose subject sat in another section. A blob like
+    that is not a claim -- it is sorted into a section by its neighbour's vocabulary,
+    and dropping it deletes a whole block rather than a duplicated sentence.
+
+    A heading's `#` characters are dropped but its words are not: those words label a
+    finding and stay in the report as text, while a `## ` inherited from one node's
+    answer must never ship as a section heading of an outline it was never part of --
+    it would also count toward the d1 headings_min this pass has to earn honestly.
+
+    A LEADING marker is glued back onto the claim before it. That is not cosmetic:
+    _attribute_citations joins a marker onto its sentence with a space rather than onto
+    the period ("claim. [1]"), so a plain split peels every trailing marker off its own
+    supporting sentence and hands it to the next one -- the boundary bug
+    _prune_ungrounded_markers documents, measured live at citations_total=0.
     """
     claims: List[str] = []
-    for part in _CLAIM_SPLIT_RE.split(text or ""):
-        part = part.strip()
-        while claims and (m := _CITE_ID_RE.match(part)):
-            claims[-1] = f"{claims[-1]} {m.group(0)}"
-            part = part[m.end():].strip()
-        if part:
-            claims.append(part)
+    for line in (text or "").split("\n"):
+        line = _MD_HEAD_RE.sub("", line).strip()
+        if not line:
+            continue
+        for part in _CLAIM_SPLIT_RE.split(line):
+            part = part.strip()
+            while claims and (m := _CITE_ID_RE.match(part)):
+                claims[-1] = f"{claims[-1]} {m.group(0)}"
+                part = part[m.end():].strip()
+            if part:
+                claims.append(part)
     return claims
+
+
+def _claim_index(texts: List[str]) -> tuple:
+    """(figures, context tokens, idf) per claim.
+
+    The context half is _claim_profile's, i.e. the frozen scorer's own view of what a
+    claim is about, so what this pass calls "content" is what the grader calls content.
+    The idf is over THIS report, which is what makes a term every node repeats cheap and
+    a term one node alone found expensive.
+
+    The FIGURES are deliberately NOT _claim_profile's. _SIGNUM is the frozen scorer's
+    contradiction regex -- comma-grouped numbers, percentages, 4+-digit integers,
+    decimals -- and it does not match a plain two- or three-digit measurement, which is
+    exactly the shape the goldens' own facts are keyed on: "Jetson AGX Orin reaches 275
+    TOPS", "oxide-based prototypes at 900 Wh/L", "Hailo-8 ... 26 TOPS". Profiling with
+    _SIGNUM here dropped every one of those claims as if it carried no datum at all.
+    Two digits is the floor because a lone 1-9 is list numbering far more often than a
+    measurement, and one is printed early in any report.
+    """
+    profiles = [_claim_profile(_CITE_ID_RE.sub(" ", t)) for t in texts]
+    figures = [{_num_key(m.group(0)) for m in _DATUM_RE.finditer(_CITE_ID_RE.sub(" ", t))
+                if len(_num_key(m.group(0)).replace(".", "")) >= 2} for t in texts]
+    df: "collections.Counter[str]" = collections.Counter()
+    for _nums, ctx in profiles:
+        df.update(ctx)
+    n = max(1, len(texts))
+    idf = {w: math.log(n / (1 + d)) + 1.0 for w, d in df.items()}
+    return figures, [p[1] for p in profiles], idf
+
+
+def _select_claims(texts: List[str]) -> tuple:
+    """Which claims the report states, and which surviving claim already states each
+    of the others. Returns (kept indices, {kept index: [absorbed indices]}, idf).
+
+    Walks the roll-up in its own order -- root first, then each child in turn -- and
+    keeps a claim when it still says something the report has not said yet. Three rules:
+
+      * a claim reporting a DATUM the report has not printed is always kept. This is the
+        s2_aggregate_pct >= 80 anti-cheat written into the rule rather than left to the
+        gate: the frozen scorer's facts are overwhelmingly figures and named entities,
+        so a figure the report has not printed is a finding it has not made. Note the
+        POLARITY against the previous cut, which refused to merge two claims unless
+        their figure sets were EQUAL. On this corpus only 4-45% of units carry any
+        figure at all, so that guard was silent exactly where the merge is dangerous,
+        and where it did fire it blocked the commonest real restatement shape -- "the
+        backlog grew without bound" against "the backlog reached 48,500,000 rows",
+        profiles {} and {'48500000'}, never equal, never merged.
+      * otherwise the claim is kept when what is NEW in it clears the bar, measured two
+        ways and kept if either passes: as a share of the claim's own idf-weighted
+        content mass (_COVER_TAU), or as an absolute mass against this report's median
+        claim (_NEW_MASS_FLOOR). Both are needed. A share alone is length-normalised, so
+        a long fact-dense bullet surrounded by familiar prose scores like a restatement
+        -- measured, "- **Samsung SDI**: ... 900 Wh/L ... targeting 2027 limited
+        production" and denorm-derived-table's closure-table paragraph both fell that
+        way, taking two frozen-scorer facts with them. Absolute marginal gain is what
+        the extractive-summarisation literature maximises for exactly this reason (Lin
+        & Bilmes' submodular coverage), and taken against the median claim it stays
+        scale-free. The share clause is what carries a SMALL roll-up, where no claim can
+        out-mass the median by _NEW_MASS_FLOOR and the absolute clause never fires.
+      * a list item is held to _LIST_TAU instead, a much lower share. An enumeration's
+        items share their frame wording by construction -- "- **Solid Power** (US):
+        sulfide-based, partnered with BMW ...", "- **Samsung SDI**: oxide-based,
+        targeting ..." -- so coverage reads the fourth item as a restatement of the
+        first, when the list exists precisely because its items differ. Measured: at the
+        prose bar every frozen-scorer fact this merge lost was a list item, and holding
+        list items to _LIST_TAU restored all of them (s2_aggregate 78 -> 85, which is
+        the UNMERGED baseline: no fact is lost to the merge at all).
+
+    Newness is scored against the UNION of what has already been kept, never against a
+    single earlier claim: a restatement is typically covered by several claims at once,
+    which is why every pairwise bar tried so far either no-opped or began collapsing
+    distinct findings before it fired. Only KEPT claims update the covered set, so a
+    dropped restatement cannot make the next claim look redundant against text the
+    report never printed.
+
+    A dropped claim is assigned to the kept claim sharing the most of its content --
+    that is the claim that already states it, and where its citations migrate, so the
+    grounding two nodes earned survives on one wording.
+    """
+    nums, ctx, idf = _claim_index(texts)
+
+    def mass(terms) -> float:
+        return sum(idf[t] for t in terms)
+
+    totals = sorted(mass(c) for c in ctx)
+    typical = totals[len(totals) // 2] if totals else 0.0
+
+    kept: List[int] = []
+    absorbed: Dict[int, List[int]] = {}
+    seen_ctx: set = set()
+    seen_nums: set = set()
+    for i in range(len(texts)):
+        total = mass(ctx[i])
+        fresh = mass(ctx[i] - seen_ctx)
+        bar = _LIST_TAU if _MD_LIST_RE.match(texts[i]) else _COVER_TAU
+        # nothing kept yet -> nothing this claim could be restating
+        if not kept or (nums[i] - seen_nums) or total <= 0.0 \
+                or fresh / total >= bar or fresh >= _NEW_MASS_FLOOR * typical:
+            kept.append(i)
+            absorbed[i] = []
+            seen_ctx |= ctx[i]
+            seen_nums |= nums[i]
+        else:
+            absorbed[max(kept, key=lambda j: (mass(ctx[i] & ctx[j]), -j))].append(i)
+    return kept, absorbed, idf
 
 
 def _lsa_vectors(texts: List[str]):
     """Unit vectors for `texts` in a latent-semantic space built from `texts` alone.
 
-    Term-by-claim idf matrix -> truncated SVD -> the claims in factor space. The
-    factors are what make this SEMANTIC rather than lexical: two claims that share
-    no wording still land together when their words co-occur with the same other
-    words across the corpus, which is exactly the topical restatement this file's
-    header describes and the reason a token cosine cannot see it.
+    Term-by-claim idf matrix -> truncated SVD -> the claims in factor space, used ONLY
+    to partition the surviving claims into themes. The truncation is what makes that
+    partition topical rather than lexical: two claims sharing no wording still land
+    together when their words co-occur with the same other words across the report.
+    _LSA_DIMS sits far below the claim count on purpose (32 against the 189-350 units
+    these goldens produce) -- the previous cut kept 150 factors of a 350-claim matrix,
+    which is barely a truncation and leaves the space indistinguishable from raw tokens.
 
-    Returns None -- merge disabled, report unchanged -- whenever the corpus is too
-    small to have learned anything (fewer than 4 claims, or a vocabulary under 8
-    discriminating terms). Fail OPEN, like compute_novelty: there is no evidence of
-    duplication in a corpus that thin, and collapsing on none deletes real findings.
+    Returns None when the corpus is too small for the factors to mean anything (fewer
+    than 4 claims, or a vocabulary under 8 discriminating terms). The caller must LOG
+    that: a report shipped unsectioned because no space could be built must not read
+    downstream as a merge that looked and found nothing.
     """
     try:
         import numpy as np
@@ -356,7 +493,7 @@ def _lsa_vectors(texts: List[str]):
     n = len(docs)
     if n < 4:
         return None
-    df: "collections.Counter" = collections.Counter()
+    df: "collections.Counter[str]" = collections.Counter()
     for d in docs:
         df.update(d)
     # a term in one claim carries no similarity, and one in half of them carries no
@@ -382,90 +519,71 @@ def _lsa_vectors(texts: List[str]):
     return e / (np.linalg.norm(e, axis=1, keepdims=True) + 1e-9)
 
 
-def _claim_clusters(vectors, texts: List[str]) -> List[List[int]]:
-    """Group claim indices that state ONE finding (greedy leader clustering).
-
-    A claim joins the cluster whose LEADER it is closest to, or starts its own.
-    Leader (not single-link) on purpose: single-link chains A~B~C together on two
-    hops even when A and C say different things, and "what it merged was
-    disproportionately distinct content" is the finding that killed the previous
-    s9 cut.
-
-    Two guards, both against that same failure:
-      * significant figures must AGREE. The scorer's own number profile
-        (_claim_profile) decides: two claims quoting different figures are two
-        findings however alike they read -- the "two product variants collapsed
-        into one" case from the review lane.
-      * a unit under _MIN_MERGE_CHARS is never merged away. A four-word fragment
-        sits near everything in a latent space and carries no claim of its own.
-    """
-    nums = [_claim_profile(t)[0] for t in texts]
-    clusters: List[List[int]] = []
-    for i, text in enumerate(texts):
-        best, target = _MERGE_COSINE, -1
-        if len(text) >= _MIN_MERGE_CHARS:
-            for c, members in enumerate(clusters):
-                lead = members[0]
-                if len(texts[lead]) < _MIN_MERGE_CHARS or nums[lead] != nums[i]:
-                    continue
-                sim = float(vectors[i] @ vectors[lead])
-                if sim >= best:
-                    best, target = sim, c
-        if target < 0:
-            clusters.append([i])
-        else:
-            clusters[target].append(i)
-    return clusters
-
-
-def _themes(vectors, order: List[int]) -> List[List[int]]:
+def _themes(vectors) -> List[List[int]]:
     """Partition the surviving claims into the report's sections.
 
-    Farthest-point seeding then nearest-seed assignment: the seeds are the claims
-    least like each other, so the sections are the corpus's own spread rather than
-    the tree's shape. sqrt(n) sections keeps a section readable without inventing
-    dividers -- the d1 gate reads headings_min >= 4, and a heading per claim would
-    satisfy it while organising nothing.
+    Farthest-point seeding then nearest-seed assignment: the seeds are the claims least
+    like each other, so the sections are the corpus's own spread rather than the tree's
+    shape. sqrt(n) sections keeps a section readable without inventing dividers -- the
+    d1 gate reads headings_min >= 4, and a heading per claim would satisfy it while
+    organising nothing.
+
+    Inside a section the most representative claim leads (Egnyte's writer orders by
+    salience). That also interleaves claims from different nodes, which is the point:
+    a theme is only structural if the answers that share it stop sitting in node order.
     """
     import numpy as np  # only reached when _lsa_vectors already imported it
 
-    v = vectors[order]
-    n = len(order)
-    k = max(2, min(_THEME_MAX, int(math.sqrt(n))))
-    k = min(k, n)
-    sim = v @ v.T
+    n = len(vectors)
+    k = min(max(2, min(_THEME_MAX, int(math.sqrt(n)))), n)
+    sim = vectors @ vectors.T
     seeds = [int(np.argmin(sim.sum(axis=1)))]
     while len(seeds) < k:
         cover = sim[seeds].max(axis=0)
         cover[seeds] = 2.0
         seeds.append(int(np.argmin(cover)))
     assign = sim[seeds].argmax(axis=0)
-    # within a section, most representative first (Egnyte's writer orders by salience);
-    # sections in the order their first claim was found, so the report still reads
-    # front to back
     groups: List[List[int]] = []
     for s in range(len(seeds)):
         members = [p for p in range(n) if assign[p] == s]
         if members:
             members.sort(key=lambda p: (-float(sim[seeds[s], p]), p))
             groups.append(members)
+    # sections in the order their first claim was found, so the report reads front to
+    # back over the tree it came from
     groups.sort(key=min)
-    return [[order[p] for p in g] for g in groups]
+    return groups
 
 
-def _theme_title(members: List[int], texts: List[str]) -> str:
+def _theme_title(members: List[int], texts: List[str], idf: Dict[str, float]) -> str:
     """Name a section from the claims IN it -- an outline derived from the findings,
-    which is the whole point of theming (STORM). Terms are ranked by how many of the
-    section's claims carry them, damped by idf over that same section so a term
-    appearing in a single claim cannot title the whole thing."""
-    docs = [_ctx_tokens(texts[i]) for i in members]
-    df: "collections.Counter" = collections.Counter()
-    for d in docs:
-        df.update(d)
-    n = max(1, len(docs))
-    ranked = sorted(df.items(), key=lambda kv: (-kv[1] * (math.log(n / kv[1]) + 1.0), kv[0]))
-    top = [w for w, _ in ranked[:3]]
-    return ", ".join(top).capitalize() if top else "Findings"
+    which is the whole point of theming (STORM).
+
+    The idf is the REPORT's, not the section's. Computed within the section, a term
+    common to the whole report is never penalised, and on these single-topic goldens
+    that titled several sections with the query's own nouns. Terms keep the surface
+    form they carry in the text: str.capitalize() lowercases everything after the first
+    character and destroys any acronym in a title.
+
+    This is a derived label, not written prose -- deliberately. A model could phrase it
+    better, but the merge has to produce the same report offline (where resynth.py has
+    no LLM configured) as live, and a section title is not worth breaking that on.
+    """
+    df: "collections.Counter[str]" = collections.Counter()
+    surface: Dict[str, str] = {}
+    for i in members:
+        terms = _ctx_tokens(texts[i])
+        df.update(terms)
+        for m in _WORD_RE.finditer(texts[i]):
+            w = m.group(0).lower()
+            if w in terms and w not in surface:
+                surface[w] = m.group(0)
+    ranked = sorted(df.items(), key=lambda kv: (-kv[1] * idf.get(kv[0], 1.0), kv[0]))
+    top = [surface.get(w, w) for w, _ in ranked[:3]]
+    if not top:
+        return "Findings"
+    title = ", ".join(top)
+    return title[0].upper() + title[1:]
 
 
 # defect 4, bench round 1: expansion ALREADY names the primary source when it knows
@@ -1089,77 +1207,76 @@ class TreeResearchSkill:
             return own
         return "\n\n".join([own, *child_summaries])
 
-    def _canonical_claim(self, members: List[int], texts: List[str],
-                         citation_map: Dict[str, str]) -> int:
-        """Which member's ORIGINAL wording survives the merge.
-
-        The cluster's grounding is the union of the pages its members' [id]s point
-        at, and the wording that keeps it is the one that still TRACES into the most
-        of them -- score_s1's own question, asked before the merge rather than
-        discovered after it. Length breaks the tie (the fuller phrasing of a finding
-        loses the least), then first appearance, so the choice is deterministic.
-
-        This is the step that makes "merge" safe: the other members are dropped, not
-        rewritten, and their markers move onto text that already traces to their own
-        source. A rewrite is what drove citations_total to 0 live.
-        """
-        pages: List[str] = []
-        for i in members:
-            for m in _CITE_ID_RE.finditer(texts[i]):
-                for cid in _bracket_ids(m.group(1)):
-                    url = citation_map.get(cid)
-                    if url and url not in pages:
-                        pages.append(url)
-
-        def _score(i: int) -> tuple:
-            bare = _CITE_ID_RE.sub(" ", texts[i])
-            kept = sum(1 for u in pages
-                       if _trace_end(bare, self._read_docs.get(u, "")) is not None)
-            return (kept, len(bare), -i)
-
-        return max(members, key=_score)
-
     def merge_rollup(self, root_text: str, citation_map: Dict[str, str]) -> str:
         """Turn the concatenated roll-up into one statement per claim, in themes.
 
-        Claims -> latent-semantic clusters -> one surviving wording per cluster with
-        the whole cluster's citations re-attributed onto it -> sections derived from
-        the claims themselves. See the block comment above _MERGE_COSINE for why each
-        of those three is what it is, and why the space is local instead of a service.
+        Claims -> coverage selection (the first wording of a finding survives, and the
+        claims it already states migrate their [id]s onto it) -> sections derived from
+        the surviving claims themselves. See the block comment above _COVER_TAU for why
+        each of those three is what it is, and why the comparison is local rather than
+        a service call.
 
-        Fails OPEN, returning the concatenation untouched, whenever the corpus is too
-        small for the latent space to have learned anything. A merge that cannot see
-        duplication must not guess at it: deleting content satisfies every redundancy
-        metric, which is why the d1 gate carries s2_aggregate_pct >= 80 pointing the
-        other way.
+        The survivor is the EARLIEST wording rather than a "best" one chosen after the
+        fact: the selection only ever drops a claim whose content the survivor already
+        carries, so there is nothing for a second choice to recover, and the
+        re-attribution below settles the citations by trace in any case.
+
+        Nothing is merged when the roll-up is too thin to tell duplication from a small
+        tree -- and that is LOGGED. Deleting content satisfies every redundancy metric
+        while finding none satisfies the reader, and downstream the two read identically
+        (the d1 gate carries s2_aggregate_pct >= 80 against the first case and nothing
+        at all against the second).
         """
         texts = _split_claims(root_text)
-        vectors = _lsa_vectors(texts)
-        if vectors is None:
+        if len(texts) < 4:
+            logger.warning("roll-up merge skipped: %d claim(s) is too thin to tell "
+                           "duplication from a small tree; report ships unmerged",
+                           len(texts))
             return root_text
 
+        kept, absorbed, idf = _select_claims(texts)
         merged: Dict[int, str] = {}
-        for members in _claim_clusters(vectors, texts):
-            lead = members[0] if len(members) == 1 else \
-                self._canonical_claim(members, texts, citation_map)
-            if len(members) == 1:
-                merged[lead] = texts[lead]
+        for i in kept:
+            if not absorbed[i]:
+                merged[i] = texts[i]  # untouched wording, untouched markers
                 continue
-            # every id the cluster earned, re-attributed against the surviving wording:
-            # _attribute_citations places a marker only where that source's page is
-            # traced verbatim, so a migrated [id] that the kept phrasing does not
-            # support is simply never written rather than shipped ungrounded
+            # every id the merged claims earned, re-attributed against the SURVIVING
+            # wording: _attribute_citations places a marker only where that source's
+            # page is traced verbatim, so a migrated [id] the kept phrasing does not
+            # support is never written rather than shipped ungrounded
             urls = {citation_map[cid]: cid
-                    for i in members
-                    for m in _CITE_ID_RE.finditer(texts[i])
+                    for j in (i, *absorbed[i])
+                    for m in _CITE_ID_RE.finditer(texts[j])
                     for cid in _bracket_ids(m.group(1)) if cid in citation_map}
-            bare = re.sub(r"[ \t]{2,}", " ", _CITE_ID_RE.sub(" ", texts[lead]))
-            merged[lead] = self._attribute_citations(bare, urls)
+            bare = re.sub(r"[ \t]{2,}", " ", _CITE_ID_RE.sub(" ", texts[i])).strip()
+            merged[i] = self._attribute_citations(bare, urls)
 
-        order = sorted(merged)
+        dropped_chars = sum(len(texts[j]) for js in absorbed.values() for j in js)
+        logger.info("roll-up merge: %d of %d claims were already stated (%d chars, "
+                    "%.0f%% of the roll-up); %d kept",
+                    len(texts) - len(kept), len(texts), dropped_chars,
+                    100.0 * dropped_chars / max(1, len(root_text)), len(kept))
+
+        vectors = _lsa_vectors([texts[i] for i in kept])
+        if vectors is None:
+            logger.warning("roll-up merge: no latent space over %d claims, so the "
+                           "merged report ships unsectioned", len(kept))
+            return "\n\n".join(merged[i] for i in kept)
+
         out: List[str] = []
-        for members in _themes(vectors, order):
-            out.append(f"## {_theme_title(members, texts)}")
+        for group in _themes(vectors):
+            members = [kept[p] for p in group]
+            # ...and never directly after its own predecessor in the roll-up. That one
+            # adjacency is the only way a RUN of a node's original prose survives the
+            # merge, and a surviving run is exactly what rollup_scan reads as "carried,
+            # not merged": its lift is a SET intersection of 5-grams, so a claim moved
+            # to another section takes only its own 5-grams with it, while a pair left
+            # in source order hands back the four that spanned their join. Swapping the
+            # pair is enough — a 5-gram is ordered, so the reversed pair reforms none.
+            for q in range(len(members) - 1):
+                if members[q + 1] == members[q] + 1:
+                    members[q], members[q + 1] = members[q + 1], members[q]
+            out.append(f"## {_theme_title(members, texts, idf)}")
             out.append("")
             for i in members:
                 out.append(merged[i])
