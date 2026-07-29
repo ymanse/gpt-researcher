@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .. import GPTResearcher
 from ..utils.llm import create_chat_completion
@@ -2328,28 +2328,40 @@ class TreeResearchSkill:
         # siblings, and a PENDING node's placeholder is not a finding. Joining the
         # segments back reproduces root_text exactly — synthesize_node's own join is
         # own-then-children with the empties dropped, which is what this walk does.
-        segments: List[Any] = []
-
-        async def rollup(n: ResearchNode) -> str:
-            node_source_ids = {u: url_to_id[u] for u in n.sources if u in url_to_id}
-            own = await self.synthesize_node(n, [], node_source_ids)
-            if own:
-                segments.append((n.id, own))
-            parts = [own] if own else []
+        # synthesize_node runs LEAF->ROOT, root last (tests/tier_a/stage6
+        # test_rollup_is_post_order_root_last). The s9 rewrite moved the call above the
+        # child recursion and turned the walk pre-order while this comment still claimed
+        # post-order; nothing in the harness's own suite covers that contract, so it went
+        # unnoticed. Call order and TEXT order are independent: children are synthesized
+        # first, and the text is still assembled own-then-children.
+        async def rollup(n: ResearchNode) -> Tuple[str, List[Any]]:
+            child_parts: List[str] = []
+            child_segments: List[Any] = []
             for cid in n.children:
                 child = self.nodes[cid]
                 if child.status == NodeStatus.PRUNED:
                     continue
-                parts.append(await rollup(child))
+                ctext, csegs = await rollup(child)
+                if ctext:
+                    child_parts.append(ctext)
+                child_segments.extend(csegs)
+
+            node_source_ids = {u: url_to_id[u] for u in n.sources if u in url_to_id}
+            own = await self.synthesize_node(n, [], node_source_ids)
+
+            own_seg = [(n.id, own)] if own else []
+            parts = ([own] if own else []) + child_parts
             text = "\n\n".join(p for p in parts if p)
             self._syntheses[n.id] = text
-            return text
+            return text, own_seg + child_segments
 
         # the root is the first node inserted (run() seeds it before the frontier
         # loop), which is also the order the resynth sidecar preserves
         root = next(iter(self.nodes.values()), None)
-        root_text = ("" if root is None or root.status == NodeStatus.PRUNED
-                     else await rollup(root))
+        if root is None or root.status == NodeStatus.PRUNED:
+            root_text, segments = "", []
+        else:
+            root_text, segments = await rollup(root)
 
         # s9: one statement per finding, in titled sections. Runs BEFORE the two marker
         # passes below on purpose — a marker that lands next to different neighbours

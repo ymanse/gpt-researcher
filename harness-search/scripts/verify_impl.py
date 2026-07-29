@@ -125,7 +125,17 @@ def main() -> int:
         vals["hash_match"] = 1 if ok else 0
 
         stage_counts = hconf.run_pytest(hconf.TESTS / f"s{n}", hconf.EVID / f"s{n}_impl_stage.xml")
+        # The full suite is search_quality AND tier_a. Both harnesses edit the same file
+        # (gpt_researcher/skills/tree_research.py), so a change made for one can break the
+        # other's contracts — and this gate was the only thing standing between an impl
+        # round and the next stage. Measured 2026-07-29: an s9 round turned the roll-up
+        # walk pre-order and broke tests/tier_a/stage6's post-order contract; every gate
+        # passed anyway because nothing here ran tier_a. d0's gate already checked both.
         suite_counts = hconf.run_pytest(hconf.TESTS, hconf.EVID / f"s{n}_impl_suite.xml")
+        tier_a = hconf.REPO / "tests" / "tier_a"
+        if tier_a.exists():
+            tier_counts = hconf.run_pytest(tier_a, hconf.EVID / f"s{n}_impl_tier_a.xml")
+            suite_counts = {k: suite_counts[k] + tier_counts[k] for k in suite_counts}
         for k, v in stage_counts.items():
             vals[f"stage_{k}"] = v
         for k, v in suite_counts.items():
