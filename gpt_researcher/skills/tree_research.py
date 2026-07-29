@@ -348,15 +348,18 @@ _UNIQUE_ALT_RE = re.compile(r"^(.*?)\bunique\s*[:=]\s*(.*)$", re.I)
 # would hand back only the words before the inner quote
 _QUOTED_RE = re.compile(r"[\"“”'‘’](.+)[\"“”'‘’]", re.S)
 _MD_NOISE_RE = re.compile(r"[*_`~]+")
-# candidate pairs per unit. Its only job is to put the equivalent pairs in front of
-# the judge; a higher k costs verdict calls, never accuracy.
-MERGE_NEIGHBOURS = 3
-# Low on purpose: the similarity here only RANKS, and the redundancy this harness
-# measures is topical, not lexical (repeated 5-grams 0-2%), so a bar high enough to
-# be "safe" is too high to fire. A weak candidate costs one verdict call; a missed
-# one costs report length. The floor exists only to skip pairs with nothing in
-# common at all.
-MERGE_FLOOR = 0.08
+# How alike a unit must be to a screening group before it is worth putting in the same
+# prompt. This is NOT a merge threshold — nothing here decides anything, the judge does
+# (and the fixture measures that no threshold CAN decide). It is the grouping floor, and
+# it was the no-op's first cause: at 0.08 with a top-3 neighbour rule the candidate graph
+# over denorm-derived-table's 212 units is one connected component, so the screening
+# groups were arbitrary slices of a chain through it — LISTEN/NOTIFY next to hierarchyid
+# next to a Cosmos DB session token. Asked whether any of those 16 says nothing the
+# others do not, the honest answer is no, and 195 screened units produced 5 covered.
+# 0.30 is the corpus's own top ~1% of pair scores (measured 2026-07-29: 22,366 pairs,
+# q0.99 = 0.291, q0.999 = 0.468, max 0.613), i.e. the band where the top pairs really are
+# restatements of one another.
+MERGE_CLUSTER_FLOOR = 0.30
 # A screening call carries a whole group, so it is the long one: measured on this
 # deployment (claude_agent) a 2-unit verdict answers in 17-34s and a 11-unit screen in
 # 127s, which the previous 120s ceiling would have thrown away as a timeout.
@@ -365,14 +368,14 @@ MERGE_JUDGE_FAILURES = 3    # transient errors happen; a dead judge answers none
 MERGE_CONCURRENCY = 4       # verdicts in flight at once
 EMBED_CONCURRENCY = 16      # embeddings in flight at once — an HTTP call, not a process
 # Units per SCREENING call. One judge call is a whole model round trip — measured on
-# this deployment (claude_agent) at ~90s — and the captured goldens offer 111-294
-# candidate pairs each, which is hours per query and, at 175 sequential CLI spawns,
-# the 0xC0000142 that killed four of five re-syntheses on 2026-07-29. So the pairs are
-# SCREENED in groups first: a unit the screen says has content of its own can never be
-# merged away, so none of its pairs is ever asked. Sized to hold a whole topic (the s9
-# fixture's 13 claim units are one group) while keeping a prompt small enough to read —
-# a pair split across two groups is never screened together and so never reaches a
-# verdict, which costs report length.
+# this deployment (claude_agent) at 142-320s for a group of 16 — and the captured
+# goldens offer 111-294 candidate pairs each, which is hours per query and, at 175
+# sequential CLI spawns, the 0xC0000142 that killed four of five re-syntheses on
+# 2026-07-29. So the pairs are SCREENED in groups first: a unit the screen says has
+# content of its own can never be merged away, so none of its pairs is ever asked.
+# A whole tree smaller than one group is screened in a single call — that is the s9
+# fixture (13 claim units), and it is also the only size at which "one group" is not a
+# grouping choice. On a real tree the growth rule below stops long before this cap.
 MERGE_GROUP = 16
 _MERGE_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 MAX_THEMES = 8
@@ -392,14 +395,27 @@ def _claim_units(text: str) -> List[str]:
     out: List[str] = []
     for block in _UNIT_SPLIT_RE.split(text or ""):
         prev = 0
+        pieces: List[str] = []
         for m in _SENT_BREAK_RE.finditer(block):
             piece = block[prev:m.end()].strip()
             if piece:
-                out.append(piece)
+                pieces.append(piece)
             prev = m.end()
         tail = block[prev:].strip()
         if tail:
-            out.append(tail)
+            pieces.append(tail)
+        # A COLON-TERMINATED CLAUSE IS NOT A CLAIM, it is the lead-in to the next one,
+        # and once every unit is its own block laid out by theme it ends up severed from
+        # the material it introduces and sometimes filed under a different heading —
+        # measured on the shipped denorm report as 6 stranded lines ("Per the docs:",
+        # "Three defensible patterns:"). It travels with the unit it governs.
+        merged: List[str] = []
+        for piece in pieces:
+            if merged and merged[-1].endswith(":"):
+                merged[-1] = f"{merged[-1]} {piece}"
+            else:
+                merged.append(piece)
+        out += merged
     return out
 
 
@@ -716,10 +732,27 @@ class TreeResearchSkill:
         memory = getattr(self.researcher, "memory", None)
         if memory is None:
             from ..memory.embeddings import Memory
-            cfg = self.researcher.cfg
+            cfg = self._embedding_cfg()
             memory = Memory(cfg.embedding_provider, cfg.embedding_model,
                             **getattr(cfg, "embedding_kwargs", {}))
         return list(await memory.get_embeddings().aembed_query(text))
+
+    def _embedding_cfg(self):
+        """The config that names the embedding provider, live-resolved when the
+        researcher's own has none.
+
+        Same reason as `_strategic_model`: the offline re-synthesis runner rebuilds the
+        skill from a sidecar and hands it a stub with no embedding settings, so
+        `cfg.embedding_provider` raised AttributeError and the merge silently fell back
+        to word overlap for candidate selection — measured 2026-07-29, and word overlap
+        is the ceiling this stage exists to get off. The replay must select candidates
+        with the same encoder the live run does or it is measuring something else.
+        """
+        cfg = getattr(self.researcher, "cfg", None)
+        if getattr(cfg, "embedding_provider", None):
+            return cfg
+        from ..config import Config
+        return Config()
 
     def _other_covered_embeddings(self, own: List[float]):
         """Every question embedding the tree already holds — accepted candidates,
@@ -1072,16 +1105,40 @@ class TreeResearchSkill:
                     llm_provider=provider, model=model, temperature=0),
                 timeout=MERGE_VERDICT_TIMEOUT_S)
         except Exception as exc:
-            # a transient error is worth another call; a dead judge is not worth the
-            # rest of the run, so stop asking after a few
+            # CONSECUTIVE failures, not cumulative. A slow judge times out here and
+            # there — measured 2026-07-29, 3 of 13 screens on one query — and a
+            # cumulative count reads that as "the judge is dead" and abandons the four
+            # screens still queued. Only an unbroken run of failures means nobody is
+            # answering; one success is proof the judge is alive and resets the count.
             self._merge_judge_fails += 1
             logger.warning(f"claim-equivalence judge failed ({type(exc).__name__}: "
-                           f"{exc}) — {self._merge_judge_fails} of "
+                           f"{exc}) — {self._merge_judge_fails} in a row of "
                            f"{MERGE_JUDGE_FAILURES} before the merge gives up")
             if self._merge_judge_fails >= MERGE_JUDGE_FAILURES:
                 self._merge_judge_ok = False
             return {}
+        self._merge_judge_fails = 0
         return self._reads_as_covered(str(reply or ""), flats)
+
+    @staticmethod
+    def _droppable_side(verdict: Dict[int, bool]) -> Optional[int]:
+        """Which side of a JUDGED PAIR may be deleted — 0, 1, or None (fail closed).
+
+        BOTH statements must be named before either may be dropped. The parser only
+        reports a statement the reply actually named, and a partial reply is the norm
+        (measured 2026-07-29: 10 of 16 lines in one screen, 5 of 8 in another). With a
+        one-sided verdict `{0: True}` the old rule deleted statement 0 — even though
+        that "nothing of its own" may have been the judge's line about the OTHER one,
+        mis-attributed by a fragment that is a substring of both keys. Similar
+        statements are exactly what gets here, so that is the normal case, not a corner,
+        and the side it deletes is the detailed one. A pair the judge only half answered
+        is not an answer.
+        """
+        if 0 not in verdict or 1 not in verdict:
+            return None
+        if verdict[1]:
+            return 1
+        return 0 if verdict[0] else None
 
     async def _droppable(self, a: str, b: str) -> Optional[int]:
         """Which of the two units can be deleted without losing a fact — 0, 1, or None.
@@ -1101,10 +1158,7 @@ class TreeResearchSkill:
         Mutual coverage keeps the first-stated wording, which is what the RED contract
         means by "whichever node's wording is chosen as canonical".
         """
-        verdict = await self._covered([a, b])
-        if verdict.get(1, False):
-            return 1
-        return 0 if verdict.get(0, False) else None
+        return self._droppable_side(await self._covered([a, b]))
 
     def _strategic_model(self) -> tuple:
         """(provider, model) for the merge judge, resolved once per assembly.
@@ -1201,9 +1255,14 @@ class TreeResearchSkill:
             head, unique = m.group(1), m.group(2).strip().strip(".;,").lower()
             quoted = _QUOTED_RE.search(head)
             frag = _quote_key(quoted.group(1) if quoted else "")
-            # long enough that a shared stock phrase cannot claim the wrong statement
-            side = next((i for i, k in enumerate(keys)
-                         if len(frag) >= 24 and frag in k), None)
+            # long enough that a shared stock phrase cannot claim the wrong statement,
+            # and AMBIGUOUS MEANS NO VERDICT: first-match-wins hands one statement's
+            # answer to another whenever the quoted fragment is a substring of both
+            # keys, which is the normal shape here — the statements in one screen were
+            # selected for similarity, and the target case is a later unit restating an
+            # earlier one with more detail, i.e. the short key inside the long one.
+            hits = [i for i, k in enumerate(keys) if len(frag) >= 24 and frag in k]
+            side = hits[0] if len(hits) == 1 else None
             if side is None:
                 label = re.match(r"^\W*(?:statement\s*)?([A-Za-z]|\d{1,2})\b", head)
                 if not label:
@@ -1227,9 +1286,9 @@ class TreeResearchSkill:
 
         A STAR, NOT A UNION-FIND. The judge's guarantee is pairwise and mutual — both
         sides answered "nothing of my own about the other" — and it does NOT compose.
-        A union-find would unite whole roots, so with a deliberately sparse candidate
-        graph (MERGE_NEIGHBOURS = 3) A could be deleted in favour of a C it was never
-        compared with: A≡B unites at B's root, then B≡C folds both into C. If A states
+        A union-find would unite whole roots, so A could be deleted in favour of a C it
+        was never compared with: A≡B unites at B's root, then B≡C folds both into C.
+        If A states
         something C does not — the same-topic-different-claim case that cost this corpus
         golden facts 2 and 8 — it is gone and the log still reports one clean cluster.
         So every absorbed unit is judged DIRECTLY against the unit that survives it: a
@@ -1245,13 +1304,6 @@ class TreeResearchSkill:
         if n < 2:
             return {}
 
-        pairs: Dict[tuple, float] = {}
-        for i in range(n):
-            scored = sorted(((sim(vecs[i], vecs[j]), j) for j in range(n) if j != i),
-                            key=lambda p: (-p[0], p[1]))
-            for score, j in scored[:MERGE_NEIGHBOURS]:
-                if score >= MERGE_FLOOR:
-                    pairs[(min(i, j), max(i, j))] = score
         merged: Dict[int, List[int]] = {}
         # SCREEN, then decide. A unit the screen says states something of its own can
         # never be merged away, so the pairs it sits in are not worth a round trip;
@@ -1260,12 +1312,43 @@ class TreeResearchSkill:
         # itself: with three or more units in front of it, "nothing of my own" does not
         # say WHICH of the others covers this one, and collapsing the whole answer-none
         # set is how a closure-table DEFINITION and its TRADE-OFF become one statement.
-        groups = self._merge_groups(pairs, len(texts), vecs, sim)
+        groups = self._merge_groups(n, vecs, sim)
         screened = await self._judged_in_waves(
             [[texts[i] for i in g] for g in groups], self._covered)
-        covered = {g[k] for g, verdict in zip(groups, screened)
-                   for k, nothing_of_its_own in (verdict or {}).items()
-                   if nothing_of_its_own and k < len(g)}
+        # THE VERDICT PAIRS COME FROM THE SCREEN'S OWN GROUP, not from a global
+        # candidate graph. The screen's answer means "some other member of THIS group
+        # already says everything I say", so the unit that covers it is in this group by
+        # construction — while the old global top-3 neighbour graph could perfectly well
+        # not contain that pair, in which case a correctly screened unit never reached a
+        # verdict and never merged.
+        covered: set = set()
+        scored_pairs: Dict[tuple, float] = {}
+        absorbed: set = set()
+        for g, verdict in zip(groups, screened):
+            cov = [k for k, nothing in (verdict or {}).items()
+                   if nothing and k < len(g)]
+            if not cov:
+                continue
+            covered |= {g[k] for k in cov}
+            # A TWO-UNIT SCREEN IS ALREADY THE VERDICT — it is the very call _droppable
+            # makes, with the very same two statements in it, so asking again is one
+            # model round trip spent to be told what this reply just said. Measured
+            # 2026-07-29 the grown clusters are mostly pairs (19 of denorm's 27), so
+            # this is most of the merge's cost. Both sides covered keeps the
+            # first-stated wording, exactly as _droppable does.
+            if len(g) == 2:
+                side = self._droppable_side(verdict or {})
+                if side is None:
+                    continue
+                drop, keep = (g[side], g[1 - side])
+                absorbed.add(drop)
+                merged.setdefault(keep, []).append(drop)
+                continue
+            for k in cov:
+                for other in g:
+                    if other != g[k]:
+                        p = (min(g[k], other), max(g[k], other))
+                        scored_pairs[p] = sim(vecs[p[0]], vecs[p[1]])
         # strongest candidates first, so the closest pair gets the first call on each
         # unit. A wave at a time: waves keep the ordering that matters (a stronger pair
         # is always judged before a weaker one) — the only thing concurrency loses is
@@ -1275,9 +1358,7 @@ class TreeResearchSkill:
         # content of its own cannot be deleted, but it can perfectly well be the unit
         # that COVERS its neighbour — the restated-with-more-detail shape. Requiring
         # both ends is what left ~0 pairs to judge (4 covered units in 32 screened).
-        order = [p for p, _ in sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))
-                 if p[0] in covered or p[1] in covered]
-        absorbed: set = set()
+        order = [p for p, _ in sorted(scored_pairs.items(), key=lambda kv: (-kv[1], kv[0]))]
         verdicts_asked = 0
         for w in range(0, len(order), MERGE_CONCURRENCY):
             if not self._merge_judge_ok:
@@ -1301,49 +1382,68 @@ class TreeResearchSkill:
                     continue
                 absorbed.add(drop)
                 merged.setdefault(keep, []).append(drop)
-        self._merge_calls = {"screens": len(groups), "candidate_pairs": len(pairs),
+        self._merge_calls = {"screens": len(groups),
+                             "screened_units": sum(len(g) for g in groups),
+                             "covered_units": len(covered),
                              "verdicts": verdicts_asked, "verdict_pairs": len(order),
-                             "screened_out": len(texts) - len(covered)}
+                             "screened_out": sum(len(g) for g in groups) - len(covered)}
         return {k: sorted(v) for k, v in merged.items()}
 
     @staticmethod
-    def _merge_groups(pairs: Dict[tuple, float], n: int, vecs, sim) -> List[List[int]]:
-        """The candidate graph's connected components, each cut into screening groups.
+    def _merge_groups(n: int, vecs, sim) -> List[List[int]]:
+        """The units that are worth screening together, as clusters GROWN around the
+        closest pair rather than sliced out of a chain.
 
-        A component is walked as a nearest-neighbour chain from its most central member,
-        so consecutive members are the ones most alike and a cut between groups falls
-        where the units are least related — a pair split across two groups is never
-        screened together and so never reaches a verdict, which costs report length.
-        Deterministic: the same tree screens the same groups every run.
+        The previous version walked each connected component of a top-3-neighbour graph
+        as a nearest-neighbour chain and cut it every MERGE_GROUP units. At
+        MERGE_FLOOR = 0.08 that component was the whole tree, so a "group" was a
+        16-unit slice of a walk across every topic in the report. Measured 2026-07-29 on
+        denorm-derived-table: 13 screens, 195 units, 5 covered — the honest answer,
+        because those 16 statements really did each say something the other 15 did not.
+
+        Grown instead: take the strongest unassigned pair as the seed, then repeatedly
+        add the unassigned unit most like the cluster SO FAR, stopping when the best
+        candidate's mean similarity to the cluster falls under MERGE_CLUSTER_FLOOR or
+        the group is full. A unit that joins no cluster is never screened, which is the
+        saving — the old scheme screened every unit in the tree.
+
+        A tree that fits in one group is screened in one call: at that size there is no
+        grouping decision to get wrong, and it is the shape the s9 fixture pins.
+        Deterministic — ties break on the lower index, so the same tree screens the
+        same groups every run.
         """
-        adj: Dict[int, set] = {}
-        for i, j in pairs:
-            adj.setdefault(i, set()).add(j)
-            adj.setdefault(j, set()).add(i)
+        if n <= MERGE_GROUP:
+            return [list(range(n))] if n > 1 else []
+        cache: Dict[tuple, float] = {}
+
+        def s(i: int, j: int) -> float:
+            key = (i, j) if i < j else (j, i)
+            if key not in cache:
+                cache[key] = sim(vecs[key[0]], vecs[key[1]])
+            return cache[key]
+
+        seeds = sorted(((s(i, j), i, j) for i in range(n) for j in range(i + 1, n)
+                        if s(i, j) >= MERGE_CLUSTER_FLOOR),
+                       key=lambda t: (-t[0], t[1], t[2]))
+        used: set = set()
         groups: List[List[int]] = []
-        seen: set = set()
-        for start in range(n):
-            if start in seen or start not in adj:
+        for _, i, j in seeds:
+            if i in used or j in used:
                 continue
-            comp, stack = [], [start]
-            seen.add(start)
-            while stack:                       # component
-                cur = stack.pop()
-                comp.append(cur)
-                for nb in sorted(adj[cur]):
-                    if nb not in seen:
-                        seen.add(nb)
-                        stack.append(nb)
-            if len(comp) < 2:
-                continue
-            centre = max(comp, key=lambda i: (sum(sim(vecs[i], vecs[j]) for j in comp), -i))
-            chain, left = [centre], [i for i in comp if i != centre]
-            while left:                        # nearest-neighbour chain
-                nxt = max(left, key=lambda i: (sim(vecs[i], vecs[chain[-1]]), -i))
-                chain.append(nxt)
-                left.remove(nxt)
-            groups += [chain[k:k + MERGE_GROUP] for k in range(0, len(chain), MERGE_GROUP)]
-        return [g for g in groups if len(g) > 1]
+            cluster = [i, j]
+            used |= {i, j}
+            while len(cluster) < MERGE_GROUP:
+                left = [m for m in range(n) if m not in used]
+                if not left:
+                    break
+                nxt = max(left, key=lambda m: (sum(s(m, c) for c in cluster) / len(cluster),
+                                               -m))
+                if sum(s(nxt, c) for c in cluster) / len(cluster) < MERGE_CLUSTER_FLOOR:
+                    break
+                cluster.append(nxt)
+                used.add(nxt)
+            groups.append(sorted(cluster))
+        return groups
 
     @staticmethod
     async def _judged_in_waves(batches: List[list], judge,
@@ -1371,8 +1471,16 @@ class TreeResearchSkill:
         collected references; Egnyte's writer stage makes the emergent themes of a
         meta-analysis over all question analyses its sections).
 
-        Seeds are the most central unit, then repeatedly the unit least like every
-        seed so far — deterministic, so two runs of the same tree lay out the same.
+        A SEED MUST BE REPRESENTATIVE AS WELL AS DISTINCT. Taking simply "the unit least
+        like every seed so far" seeds on the OUTLIERS — the short connective lines with
+        almost no content words, which resemble nothing — and then nearly every real
+        unit's best similarity is to seed 0, or is 0 to all of them and falls to seed 0
+        on the tie-break. Measured on the shipped denorm report: sections of
+        41101 / 4485 / 8475 / 27 characters, 161 of 205 blocks in one, and the 27 was a
+        lone "Piecing these together:" with no citation in it at all. So each seed after
+        the first maximises centrality DISCOUNTED by its likeness to the seeds already
+        chosen: still deterministic, still spread out, but every seed is a unit other
+        units are actually near.
         """
         n = len(idx)
         k = max(2, min(MAX_THEMES, int(round(n ** 0.5))))
@@ -1381,8 +1489,10 @@ class TreeResearchSkill:
         total = {i: sum(sim(vecs[i], vecs[j]) for j in idx) for i in idx}
         seeds = [max(idx, key=lambda i: (total[i], -idx.index(i)))]
         while len(seeds) < k:
-            seeds.append(min((i for i in idx if i not in seeds),
-                             key=lambda i: (max(sim(vecs[i], vecs[s]) for s in seeds), i)))
+            seeds.append(max(
+                (i for i in idx if i not in seeds),
+                key=lambda i: (total[i] * (1 - max(sim(vecs[i], vecs[s]) for s in seeds)),
+                               -i)))
         groups: List[List[int]] = [[] for _ in seeds]
         for i in idx:
             best = max(range(len(seeds)), key=lambda s: (sim(vecs[i], vecs[seeds[s]]), -s))
@@ -1570,13 +1680,37 @@ class TreeResearchSkill:
             "chars_kept": sum(len(units[i]) for i in kept),
             **self._merge_calls,
         }
-        logger.info(f"roll-up merge: {len(absorbed)} of {len(units)} claim units "
-                    f"absorbed into {len(merged)} shared claims "
-                    f"({self._merge_stats.get('screens', 0)} screening calls, "
-                    f"{self._merge_stats.get('verdicts', 0)} verdicts)")
+        # WARNING, not info, when nothing merged: a roll-up that merged nothing is the
+        # concatenation this stage exists to remove, and it is invisible in every
+        # downstream number until the report is scored four stages later. The offline
+        # re-synthesis runner configures no logging, so info is swallowed and warning is
+        # the only level that reaches its stderr — the counters themselves travel out in
+        # the returned merge_stats, but only run() persists those today.
+        line = (f"roll-up merge: {len(absorbed)} of {len(units)} claim units "
+                f"absorbed into {len(merged)} shared claims "
+                f"({self._merge_stats.get('screens', 0)} screening calls, "
+                f"{self._merge_stats.get('verdicts', 0)} verdicts, "
+                f"{self._merge_stats.get('covered_units', 0)} units screened as covered)")
+        (logger.warning if not absorbed and len(units) > 1 else logger.info)(line)
 
         if kept:
             groups = self._themes(kept, vecs, sim)
+            # A SECTION WITH NO CITED FINDING IN IT IS A DIVIDER, NOT A THEME. Every
+            # finding in a healthy tree is grounded, so a group holding no [id] at all
+            # is heading-count inflation — measured on the shipped denorm report as a
+            # 27-character section whose whole content was "Piecing these together:".
+            # Folded into the group it is most like rather than dropped: the text is
+            # still a reader's lead-in to something, and deleting content is the one
+            # error this stage may not make.
+            solid = [g for g in groups if any(_CITE_ID_RE.search(units[i]) for i in g)]
+            for g in [g for g in groups if g not in solid]:
+                if not solid:
+                    solid.append(g)
+                    continue
+                host = max(solid, key=lambda t: max(sim(vecs[i], vecs[j])
+                                                    for i in g for j in t))
+                host.extend(g)
+            groups = [sorted(g) for g in solid]
             titled: set = set()
             sections = sorted(
                 (min(g), self._theme_title([units[i] for i in g],
