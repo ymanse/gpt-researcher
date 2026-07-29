@@ -336,8 +336,18 @@ _UNIT_SPLIT_RE = re.compile(r"\n\s*\n+")
 # (Claimify, FActScore, NuggetIndex: index atomic facts to reduce redundancy).
 _SENT_BREAK_RE = re.compile(r"(?<=[.!?])(?:\s*\[[^\]\n]*\])*\s+(?=[^a-z\[])")
 _BRACKETED_RE = re.compile(r"\[[^\]]*\]")
-_UNIQUE_LINE_RE = re.compile(r"^(.*?)\bunique\s*[:=]\s*(.*)$", re.I)
-_QUOTED_RE = re.compile(r"[\"“”'‘’](.+?)[\"“”'‘’]", re.S)
+# The reply's own shape is `"<fragment>" => UNIQUE: <what only this one says>`, and the
+# keyword is what a model drops first: measured 2026-07-29 on this deployment, a screen
+# answered `"The refresh method can be incremental or a complete refresh" => none`, which
+# the keyword-anchored pattern threw away — and a discarded line is no verdict, so the
+# unit could never merge. Split on the arrow, then peel the keyword if it is there.
+_UNIQUE_LINE_RE = re.compile(r"^(.*?)=>\s*(?:unique\b\s*[:=]?\s*)?(.*)$", re.I)
+_UNIQUE_ALT_RE = re.compile(r"^(.*?)\bunique\s*[:=]\s*(.*)$", re.I)
+# greedy on purpose: a quoted fragment routinely contains a nested quotation of its own
+# ("Without a materialized view log, Oracle states plainly, '...'"), and a lazy match
+# would hand back only the words before the inner quote
+_QUOTED_RE = re.compile(r"[\"“”'‘’](.+)[\"“”'‘’]", re.S)
+_MD_NOISE_RE = re.compile(r"[*_`~]+")
 # candidate pairs per unit. Its only job is to put the equivalent pairs in front of
 # the judge; a higher k costs verdict calls, never accuracy.
 MERGE_NEIGHBOURS = 3
@@ -353,6 +363,7 @@ MERGE_FLOOR = 0.08
 MERGE_VERDICT_TIMEOUT_S = 300.0
 MERGE_JUDGE_FAILURES = 3    # transient errors happen; a dead judge answers none
 MERGE_CONCURRENCY = 4       # verdicts in flight at once
+EMBED_CONCURRENCY = 16      # embeddings in flight at once — an HTTP call, not a process
 # Units per SCREENING call. One judge call is a whole model round trip — measured on
 # this deployment (claude_agent) at ~90s — and the captured goldens offer 111-294
 # candidate pairs each, which is hours per query and, at 175 sequential CLI spawns,
@@ -390,6 +401,19 @@ def _claim_units(text: str) -> List[str]:
         if tail:
             out.append(tail)
     return out
+
+
+def _quote_key(text: str) -> str:
+    """A claim's wording reduced to what a quoting model reliably reproduces.
+
+    Measured 2026-07-29: the judge quotes its fragments with the markdown stripped —
+    `**Fast Refresh using materialized view logs**` comes back bare — so a verbatim
+    `fragment in unit` test misses the line and the verdict is discarded as unreadable.
+    Emphasis, backticks, punctuation and case are not content; dropping them on BOTH
+    sides is what lets the reply be traced back to the statement it judged.
+    """
+    return re.sub(r"[^a-z0-9]+", " ",
+                  _MD_NOISE_RE.sub("", text or "").lower()).strip()
 
 
 def _flat_claim(text: str) -> str:
@@ -454,6 +478,7 @@ class TreeResearchSkill:
         self._merge_judge_fails = 0
         self._strategic_llm: Optional[tuple] = None
         self._merge_stats: Dict[str, int] = {}
+        self._merge_calls: Dict[str, int] = {}
         self.tokens_spent = 0
         self.credits_spent = 0.0
 
@@ -994,7 +1019,12 @@ class TreeResearchSkill:
         try:
             probe = await self.embed_question(texts[0])
             if probe:
-                rest = await asyncio.gather(*(self.embed_question(t) for t in texts[1:]))
+                # THROTTLED like every other model path here. A tree offers 52-350 claim
+                # units and one gather over all of them is the unbounded fan-out that
+                # produced the 0xC0000142 exits recorded in d1_offline.json errors[].
+                rest = await self._judged_in_waves([[t] for t in texts[1:]],
+                                                   lambda b: self.embed_question(b[0]),
+                                                   EMBED_CONCURRENCY)
                 vecs = [list(probe), *(list(v) for v in rest)]
                 if all(vecs):
                     return vecs, _cosine
@@ -1053,12 +1083,28 @@ class TreeResearchSkill:
             return {}
         return self._reads_as_covered(str(reply or ""), flats)
 
-    async def _equivalent(self, a: str, b: str) -> bool:
-        """Does either unit answer a question the other cannot? The two-unit call is
-        the only one that decides a merge, because only there does "nothing of my own"
-        name the statement that covers it: the other one."""
+    async def _droppable(self, a: str, b: str) -> Optional[int]:
+        """Which of the two units can be deleted without losing a fact — 0, 1, or None.
+
+        The two-unit call is the only one that decides a merge, because only there does
+        "nothing of my own" name the statement that covers it: the other one.
+
+        COVERAGE IS DIRECTIONAL, and insisting on the mutual case is what made the merge
+        a no-op. Measured 2026-07-29 on denorm-derived-table (212 claim units): only 4 of
+        32 screened units answered "nothing of my own", so pairs with BOTH ends covered
+        were ~0 and almost nothing reached a verdict. But a report restating an earlier
+        finding WITH more detail is the common shape, and there A is fully covered by B
+        while B is not covered by A. Deleting A there loses nothing — that is exactly
+        what the judge enumerated — and B stays whole. Requiring mutual coverage refuses
+        that merge for no gain in safety.
+
+        Mutual coverage keeps the first-stated wording, which is what the RED contract
+        means by "whichever node's wording is chosen as canonical".
+        """
         verdict = await self._covered([a, b])
-        return verdict.get(0, False) and verdict.get(1, False)
+        if verdict.get(1, False):
+            return 1
+        return 0 if verdict.get(0, False) else None
 
     def _strategic_model(self) -> tuple:
         """(provider, model) for the merge judge, resolved once per assembly.
@@ -1147,14 +1193,17 @@ class TreeResearchSkill:
         is absent from the result, which reads as "no verdict" everywhere above and so
         fails closed."""
         verdict: Dict[int, bool] = {}
+        keys = [_quote_key(f) for f in flats]
         for line in reply.splitlines():
-            m = _UNIQUE_LINE_RE.match(line.strip())
+            m = _UNIQUE_LINE_RE.match(line.strip()) or _UNIQUE_ALT_RE.match(line.strip())
             if not m:
                 continue
             head, unique = m.group(1), m.group(2).strip().strip(".;,").lower()
             quoted = _QUOTED_RE.search(head)
-            frag = (quoted.group(1) if quoted else "").strip()
-            side = next((i for i, f in enumerate(flats) if frag and frag in f), None)
+            frag = _quote_key(quoted.group(1) if quoted else "")
+            # long enough that a shared stock phrase cannot claim the wrong statement
+            side = next((i for i, k in enumerate(keys)
+                         if len(frag) >= 24 and frag in k), None)
             if side is None:
                 label = re.match(r"^\W*(?:statement\s*)?([A-Za-z]|\d{1,2})\b", head)
                 if not label:
@@ -1175,17 +1224,26 @@ class TreeResearchSkill:
         and the others are dropped, so nothing is re-worded and nothing loses the
         grounding its node earned. Three rewrite-then-re-attribute designs were
         measured live to lose citations, one reaching citations_total=0.
+
+        A STAR, NOT A UNION-FIND. The judge's guarantee is pairwise and mutual — both
+        sides answered "nothing of my own about the other" — and it does NOT compose.
+        A union-find would unite whole roots, so with a deliberately sparse candidate
+        graph (MERGE_NEIGHBOURS = 3) A could be deleted in favour of a C it was never
+        compared with: A≡B unites at B's root, then B≡C folds both into C. If A states
+        something C does not — the same-topic-different-claim case that cost this corpus
+        golden facts 2 and 8 — it is gone and the log still reports one clean cluster.
+        So every absorbed unit is judged DIRECTLY against the unit that survives it: a
+        canonical is never itself absorbed, and a pair whose end has already been
+        absorbed is dropped rather than re-targeted. That costs report length, which is
+        the error the gates forgive.
         """
+        # cleared FIRST: an early return used to leave the previous assembly's screen and
+        # verdict counts in place, so _merge_stats reported work this run did not do
+        self._merge_calls = {"screens": 0, "candidate_pairs": 0, "verdicts": 0,
+                             "verdict_pairs": 0, "screened_out": 0}
         n = len(texts)
         if n < 2:
             return {}
-        parent = list(range(n))
-
-        def find(i: int) -> int:
-            while parent[i] != i:
-                parent[i] = parent[parent[i]]
-                i = parent[i]
-            return i
 
         pairs: Dict[tuple, float] = {}
         for i in range(n):
@@ -1208,28 +1266,43 @@ class TreeResearchSkill:
         covered = {g[k] for g, verdict in zip(groups, screened)
                    for k, nothing_of_its_own in (verdict or {}).items()
                    if nothing_of_its_own and k < len(g)}
-        # strongest candidates first, so the canonical of a cluster is decided by the
-        # closest pair rather than by iteration order. A wave at a time: waves keep the
-        # ordering that matters (a stronger pair is always judged before a weaker one)
-        # — the only thing concurrency loses is the chance to SKIP a pair whose ends
-        # have just been united, which costs a call, never a wrong merge.
+        # strongest candidates first, so the closest pair gets the first call on each
+        # unit. A wave at a time: waves keep the ordering that matters (a stronger pair
+        # is always judged before a weaker one) — the only thing concurrency loses is
+        # the chance to SKIP a pair one of whose ends has just been absorbed, which
+        # costs a call, never a wrong merge (the same test is re-applied below).
+        # ONE end covered is enough to be worth asking. A unit the screen says has
+        # content of its own cannot be deleted, but it can perfectly well be the unit
+        # that COVERS its neighbour — the restated-with-more-detail shape. Requiring
+        # both ends is what left ~0 pairs to judge (4 covered units in 32 screened).
         order = [p for p, _ in sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))
-                 if p[0] in covered and p[1] in covered]
+                 if p[0] in covered or p[1] in covered]
+        absorbed: set = set()
+        verdicts_asked = 0
         for w in range(0, len(order), MERGE_CONCURRENCY):
             if not self._merge_judge_ok:
                 break
-            wave = [(i, j) for i, j in order[w:w + MERGE_CONCURRENCY] if find(i) != find(j)]
+            wave = [(i, j) for i, j in order[w:w + MERGE_CONCURRENCY]
+                    if i not in absorbed and j not in absorbed]
             if not wave:
                 continue
-            verdicts = await asyncio.gather(
-                *(self._equivalent(texts[i], texts[j]) for i, j in wave))
-            for (i, j), same in zip(wave, verdicts):
-                if not same or find(i) == find(j):
+            verdicts_asked += len(wave)
+            sides = await asyncio.gather(
+                *(self._droppable(texts[i], texts[j]) for i, j in wave))
+            for (i, j), side in zip(wave, sides):
+                # re-tested after the await: two pairs sharing a unit can be in one wave
+                if side is None or i in absorbed or j in absorbed:
                     continue
-                keep, drop = sorted((find(i), find(j)))
-                parent[drop] = keep
-                merged.setdefault(keep, []).extend([drop, *merged.pop(drop, [])])
-        self._merge_calls = {"screens": len(groups), "verdicts": len(order),
+                drop, keep = (i, j) if side == 0 else (j, i)
+                # a canonical is never absorbed — its members were judged against IT, not
+                # against whatever it would be folded into. Fail closed rather than swap:
+                # the judge only cleared THIS direction.
+                if drop in merged:
+                    continue
+                absorbed.add(drop)
+                merged.setdefault(keep, []).append(drop)
+        self._merge_calls = {"screens": len(groups), "candidate_pairs": len(pairs),
+                             "verdicts": verdicts_asked, "verdict_pairs": len(order),
                              "screened_out": len(texts) - len(covered)}
         return {k: sorted(v) for k, v in merged.items()}
 
@@ -1273,17 +1346,19 @@ class TreeResearchSkill:
         return [g for g in groups if len(g) > 1]
 
     @staticmethod
-    async def _judged_in_waves(batches: List[list], judge) -> List[Any]:
-        """Run `judge` over every batch, MERGE_CONCURRENCY calls in flight.
+    async def _judged_in_waves(batches: List[list], judge,
+                               width: int = MERGE_CONCURRENCY) -> List[Any]:
+        """Run `judge` over every batch, `width` calls in flight.
 
         The deployment's judge is a CLI round trip; sequentially, a query's calls run
         past any sane session budget, and all of them at once is the process-spawn
-        storm that crashed four of five re-syntheses.
+        storm that crashed four of five re-syntheses. The embedding service gets a
+        wider wave than the judge does — it is an HTTP call, not a process — but it
+        does not get an uncapped one.
         """
         out: List[Any] = []
-        for w in range(0, len(batches), MERGE_CONCURRENCY):
-            out += list(await asyncio.gather(
-                *(judge(b) for b in batches[w:w + MERGE_CONCURRENCY])))
+        for w in range(0, len(batches), width):
+            out += list(await asyncio.gather(*(judge(b) for b in batches[w:w + width])))
         return out
 
     def _themes(self, idx: List[int], vecs, sim) -> List[List[int]]:
@@ -1315,8 +1390,14 @@ class TreeResearchSkill:
         return [g for g in groups if g]
 
     @staticmethod
-    def _theme_title(members: List[str], others: List[str]) -> str:
-        """A title made of what this theme says and the others do not."""
+    def _theme_title(members: List[str], others: List[str], used: set) -> str:
+        """A title made of what this theme says and the others do not.
+
+        `used` keeps two sections from shipping the SAME heading — which the ranking
+        can produce whenever two themes share their distinctive vocabulary, and which
+        the "Findings" fallback produces for any theme with no content words at all.
+        Two identical H2s read as one section split in half.
+        """
         inside: Dict[str, int] = {}
         for t in members:
             for w in _claim_tokens(t):
@@ -1328,17 +1409,31 @@ class TreeResearchSkill:
         ranked = sorted(inside, key=lambda w: (-inside[w] / (1 + outside.get(w, 0)),
                                                -inside[w], w))
         picked: List[str] = []
+        spare: List[str] = []
         for w in ranked:
             # "table" and "tables" are one word for a title's purposes
-            if any(w[:5] == p[:5] for p in picked):
+            if any(w[:5] == p[:5] for p in picked + spare):
                 continue
-            picked.append(w)
-            if len(picked) == 4:
+            (picked if len(picked) < 4 else spare).append(w)
+        # ponytail: keyword titles, derived from the theme's own distinctive words —
+        # NOT prose. Asking the model was considered and is not free here: a title call
+        # has to quote the section's own sentences to be about it, and the s9 fixture's
+        # stand-in answers any prompt quoting two known sentences with UNIQUE lines, not
+        # an outline. Prose titles are a model call whose output nothing yet verifies;
+        # add it when a human reads these.
+        def render() -> str:
+            return ", ".join(w.capitalize() if i == 0 else w
+                             for i, w in enumerate(picked)) or "Findings"
+
+        title = render()
+        while title in used:
+            if not spare:
+                title = f"{title} ({len(used) + 1})"
                 break
-        # ponytail: keyword titles, derived from the theme's own distinctive words.
-        # Ask the model for a phrasing if a human ever reads these for prose.
-        return ", ".join(w.capitalize() if i == 0 else w
-                         for i, w in enumerate(picked)) or "Findings"
+            picked.append(spare.pop(0))
+            title = render()
+        used.add(title)
+        return title
 
     async def synthesize_node(self, node: ResearchNode,
                               child_summaries: Optional[List[str]] = None,
@@ -1465,11 +1560,15 @@ class TreeResearchSkill:
             if extra:
                 units[keep] = self._attribute_citations(units[keep], extra)
         kept = [i for i in range(len(units)) if i not in absorbed]
+        # REPORTED, not just logged: "the merge found nothing" and "the merge worked"
+        # look identical in every downstream metric until four stages later, so the
+        # counters travel with the report the caller persists (see run()/_persist).
         self._merge_stats = {
             "claim_units": len(units), "units_merged": len(absorbed),
+            "shared_claims": len(merged),
             "chars_before": sum(len(u) for u in units),
             "chars_kept": sum(len(units[i]) for i in kept),
-            **getattr(self, "_merge_calls", {}),
+            **self._merge_calls,
         }
         logger.info(f"roll-up merge: {len(absorbed)} of {len(units)} claim units "
                     f"absorbed into {len(merged)} shared claims "
@@ -1478,10 +1577,12 @@ class TreeResearchSkill:
 
         if kept:
             groups = self._themes(kept, vecs, sim)
+            titled: set = set()
             sections = sorted(
                 (min(g), self._theme_title([units[i] for i in g],
-                                           [units[i] for i in kept if i not in g]), g)
-                for g in groups)
+                                           [units[i] for i in kept if i not in g],
+                                           titled), g)
+                for g in sorted(groups, key=min))
             lines = [f"# {query}", ""]
             for _, title, g in sections:
                 lines += [f"## {title}", ""]
@@ -1548,7 +1649,7 @@ class TreeResearchSkill:
 
         return {"report_md": report_md, "citation_map": citation_map,
                 "uncited_ids": uncited_ids, "contradictions": contradictions,
-                "unsupported": unsupported}
+                "unsupported": unsupported, "merge_stats": dict(self._merge_stats)}
 
     # -------------------------------------------------------------------- run
 
@@ -1756,6 +1857,10 @@ class TreeResearchSkill:
                       "contradictions": len(contradictions),
                       "unsupported_claims": len(unsupported),
                       "rollup_dropped_ratio": self._rollup_dropped_ratio,
+                      # what the merge actually did this run. Without it a roll-up that
+                      # merged nothing and one that merged half the report are the same
+                      # number everywhere until the dedup metrics are scored.
+                      "merge": assembled["merge_stats"],
                       "tokens_spent": self.tokens_spent,
                       "credits_spent": self.credits_spent,
                       "time_budget_exhausted": time_budget_exhausted,
