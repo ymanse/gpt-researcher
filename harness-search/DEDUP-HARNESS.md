@@ -394,6 +394,85 @@ but the OpenAI key returns 429 `insufficient_quota`, so candidate selection degr
 the bag-of-content-words fallback on every offline run — the semantic half of "similarity
 selects candidates" has never actually been exercised.
 
+### The fifth cut: half the units were not claims, and half are never screened — 2026-07-29
+
+Review round 4 filed three mechanical defects against the *unit*, not the judge, and the
+last round's ack had attributed the whole residual to the judge's threshold. All three are
+fixed and the first two are measurable without a single model call, over the captured
+corpus (`no_read/scratch/s9r5_units.py`, `s9r5_groups.py`):
+
+| | before | after |
+|---|---|---|
+| claim units, 5 goldens | 984 | **863** |
+| units with an unbalanced quote / paren / code span | 46 | **0** |
+| units opening on a bare anaphor | 90 | **1** |
+| `denorm-derived-table` units | 202 | **166** |
+
+Re-synthesised (`scripts/offline_dedup.py --only denorm-derived-table`, `code_fp
+53b22255540c1f11`, zero credits):
+
+| | fourth cut | fifth cut | d1 gate |
+|---|---|---|---|
+| `synthesis_ratio_pct` | 116 | **115** | ≤ 70 |
+| `report_chars` | 60,681 | **60,119** | — |
+| `max_lift_pct` | 91 | **98** | *reported* |
+| `headings` | 10 | **10** | ≥ 4 |
+| `S2_pct` / `S2_delta` | 63 / 0 | **63 / 0** | delta ≥ −5 |
+| claim units merged away | 22 of 202 | **10 of 166** | — |
+| characters removed | 2,728 (4.3%) | **2,979 (5.7%)** | — |
+
+Fewer units absorbed, more text removed: the units are whole claims now, so each merge is
+worth more. `max_lift_pct` rose because the fourth cut's 22 absorptions were concentrated
+in one node, and some of them were not merges the judge authorised — R2 and R3 were both
+manufacturing them. **This is the answer R4 asked for: re-measured on whole claims, the
+judge's `UNIQUE: none` rate does not go up.** Equivalence-only merging at this granularity
+tops out near 6% of the characters, against a ratio that needs ~42%. The next lever is the
+instruction itself (disregard extra detail, examples, quantities), and that is exactly how
+golden facts 2 and 8 were lost, so it may not ship without a per-query `S2_delta` behind
+it — which is a d1 round, not an impl round.
+
+- **R1 — a unit was cut mid-quotation.** `_SENT_BREAK_RE` breaks after any `[.!?]`
+  followed by a non-lowercase character, with no regard for an enclosing quote, paren or
+  backtick span, so Oracle's one quoted sentence became two units filed under two
+  different headings — one opening a quotation it never closes, the other closing one it
+  never opened and starting on a "Thus" with no antecedent. The break is now skipped when
+  it would leave a delimiter open, but *only* when a later break in the same paragraph
+  closes it again, so one stray delimiter cannot swallow the rest of the block.
+- **R6 — and a unit opening on a bare anaphor** ("This is not a disagreement between
+  sources…") has its subject in the sentence before it. Same dependency as the colon
+  lead-in and now the same fix. The one survivor in the corpus is the first sentence of a
+  node answer, which has no predecessor to travel with.
+- **R2 — an empty verdict tail read as coverage.** `_reads_as_covered` counted `""` among
+  the "nothing of its own" answers, so `"<fragment>" => UNIQUE:` with the content wrapped
+  onto the next line — the continuation carries no `=>` and is skipped — deleted the very
+  statement the judge had just named content for. Fail-open in the one place the module
+  swears it fails closed. An empty tail is now no verdict at all.
+- **R3 — the label fallback read the first word of a quoted fragment.** `^\W*([A-Za-z]|
+  \d{1,2})\b` ran against a `head` that is normally the quotation itself, so any statement
+  opening with a one-letter word (`"A separate table stores…"`, `"a complete refresh…"`,
+  `"I found that…"`) was attributed to statement A or I of the screen. A label must now
+  sit at the start after nothing but list punctuation and be followed by a label
+  delimiter — a quote character disqualifies it.
+
+**The second cap is the clustering, and it is not the judge's fault.** Only units inside
+one screening group are ever compared, and on the fixed units the groups reach less than
+half the corpus: `bun-rust-port` 87 of 170 (51%), `denorm-derived-table` 64 of 166 (39%),
+`edge-ai-face-access` 59 of 132 (45%), `outbox-failure-modes` 124 of 251 (49%),
+`solid-state-battery` 84 of 144 (58%). Everything else is a singleton that cannot merge
+whatever the judge answers, so even a judge that collapsed every group to one statement
+would leave `denorm-derived-table` around 30% shorter against a ratio that needs ~42%.
+This is measured with the **bag-of-content-words fallback**, because the OpenAI key still
+answers 429 — the semantic candidate selection the design calls for has never run here,
+and `MERGE_CLUSTER_FLOOR` 0.30 is a lexical threshold standing in for it. Lowering it is
+not the fix: at 0.08 the graph was one connected component and the groups were arbitrary
+slices of a chain through every topic (see the third cut).
+
+Left undone, again: **R5, the section titles are still comma-joined keyword bags**
+("Moved, entire, contents, counts"). Prose titles are a model call whose output nothing
+in the fixture can verify — the s9 stand-in answers any prompt with UNIQUE lines, not an
+outline. R1 did remove the half of R5 that made it worse: a section no longer opens on an
+orphan quote-tail under a bag heading.
+
 ## Loop policy
 
 Stop hierarchy: **gate-pass** > **journal-counted refit rounds** (`rev_journal_s9`,

@@ -336,6 +336,45 @@ _UNIT_SPLIT_RE = re.compile(r"\n\s*\n+")
 # (Claimify, FActScore, NuggetIndex: index atomic facts to reduce redundancy).
 _SENT_BREAK_RE = re.compile(r"(?<=[.!?])(?:\s*\[[^\]\n]*\])*\s+(?=[^a-z\[])")
 _BRACKETED_RE = re.compile(r"\[[^\]]*\]")
+# A sentence break INSIDE a quotation, parenthetical or code span is not a claim
+# boundary: the full stop belongs to the quoted sentence, not to the sentence quoting
+# it. Measured on the shipped denorm report (probe d099fa7f53576633), 20 of 199 units
+# carried an unbalanced delimiter — Oracle's one quoted sentence became two units filed
+# under two different headings, one opening a quotation it never closes and the other
+# closing one it never opened. Half a quotation is not a claim, so the equivalence judge
+# was being asked what a reader would lose if a fragment were deleted.
+# Apostrophes are deliberately not counted (`Oracle's`); backticks are counted in RUNS
+# so a ```fence``` reads as one open and one close, like `code`.
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def _delims_closed(text: str) -> bool:
+    """True when every bracket, parenthesis, quotation and code span opened in `text`
+    is also closed in it. A stray CLOSER is not treated as unbalanced — its opener sat
+    in an earlier unit, which was cut only because it balanced."""
+    depth = 0
+    curly = 0
+    for ch in text:
+        if ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth = max(0, depth - 1)
+        elif ch == "“":
+            curly += 1
+        elif ch == "”":
+            curly = max(0, curly - 1)
+    return (depth == 0 and curly == 0 and text.count('"') % 2 == 0
+            and len(_BACKTICK_RUN_RE.findall(text)) % 2 == 0)
+
+
+# A unit opening on a bare anaphor states nothing on its own — its subject lives in the
+# sentence before it, and the theme layout files the two under different headings ("This
+# is not a disagreement between sources" landing in a section that mentions no
+# disagreement). Same dependency as a colon lead-in and the same fix: it travels with the
+# unit it refers back to. Review R6, and the second measured cause of an unjudgeable
+# unit — 26 of 199 shipped units opened this way.
+_ANAPHOR_RE = re.compile(
+    r"^[\s*_>-]*(?:This|That|These|Those|It|They|Such|Thus|Therefore|Hence)\b", re.I)
 # The reply's own shape is `"<fragment>" => UNIQUE: <what only this one says>`, and the
 # keyword is what a model drops first: measured 2026-07-29 on this deployment, a screen
 # answered `"The refresh method can be incremental or a complete refresh" => none`, which
@@ -343,6 +382,18 @@ _BRACKETED_RE = re.compile(r"\[[^\]]*\]")
 # unit could never merge. Split on the arrow, then peel the keyword if it is there.
 _UNIQUE_LINE_RE = re.compile(r"^(.*?)=>\s*(?:unique\b\s*[:=]?\s*)?(.*)$", re.I)
 _UNIQUE_ALT_RE = re.compile(r"^(.*?)\bunique\s*[:=]\s*(.*)$", re.I)
+# A LABEL MUST LOOK LIKE A LABEL (review R3). The fallback ran against a `head` that is
+# normally the QUOTED FRAGMENT itself, so any statement opening with a one-letter word
+# — "A separate table stores...", "a complete refresh...", "I found that..." — was read
+# as statement A or I of the screen and its verdict handed to the wrong statement. That
+# branch is reached in the two shapes the impl documents as normal (a fragment under 24
+# characters, and a fragment that is a substring of two keys), so it was not rare. A
+# label is a letter or number at the very START, after nothing but list punctuation, and
+# followed by a label delimiter — never a quote character, which is what a fragment
+# opens with. The `statement A` spelling is accepted without the delimiter because the
+# keyword already says it is a label.
+_LABEL_RE = re.compile(
+    r"^[\s\-*>#]*(?:statement\s*([A-Za-z]|\d{1,2})\b|([A-Za-z]|\d{1,2})\s*[.):\]])", re.I)
 # greedy on purpose: a quoted fragment routinely contains a nested quotation of its own
 # ("Without a materialized view log, Oracle states plainly, '...'"), and a lazy match
 # would hand back only the words before the inner quote
@@ -392,30 +443,38 @@ def _claim_units(text: str) -> List[str]:
     its own source never wrote. The lookahead keeps "e.g. foo" and "MySQL 8.0 onward"
     whole; `\\s+` already protects a decimal point.
     """
-    pieces: List[str] = []
-    for block in _UNIT_SPLIT_RE.split(text or ""):
+    pieces: List[tuple] = []
+    for bno, block in enumerate(_UNIT_SPLIT_RE.split(text or "")):
+        ends = [m.end() for m in _SENT_BREAK_RE.finditer(block)] + [len(block)]
         prev = 0
-        for m in _SENT_BREAK_RE.finditer(block):
-            piece = block[prev:m.end()].strip()
+        for k, end in enumerate(ends):
+            # skip a break that would leave a quotation, parenthetical or code span
+            # open — but only when a LATER break in this block closes it again, so a
+            # single stray delimiter cannot swallow the rest of the paragraph
+            if not _delims_closed(block[prev:end]) and any(
+                    _delims_closed(block[prev:later]) for later in ends[k + 1:]):
+                continue
+            piece = block[prev:end].strip()
             if piece:
-                pieces.append(piece)
-            prev = m.end()
-        tail = block[prev:].strip()
-        if tail:
-            pieces.append(tail)
+                pieces.append((bno, piece))
+            prev = end
     # A COLON-TERMINATED CLAUSE IS NOT A CLAIM, it is the lead-in to the next one, and
     # once every unit is its own block laid out by theme it ends up severed from the
     # material it introduces and sometimes filed under a different heading — measured on
     # the shipped denorm report as 6 stranded lines ("Per the docs:", "Three defensible
     # patterns:"). It travels with the unit it governs. Across paragraph breaks too:
     # a lead-in and its list are two BLOCKS more often than they are two sentences.
-    out: List[str] = []
-    for piece in pieces:
-        if out and out[-1].endswith(":"):
-            out[-1] = f"{out[-1]}\n\n{piece}"
+    # A unit opening on a bare anaphor depends on its predecessor the same way, and
+    # rejoins it the same way — with the author's own separator, a space inside one
+    # paragraph and a blank line across two.
+    out: List[tuple] = []
+    for bno, piece in pieces:
+        if out and (out[-1][1].endswith(":") or _ANAPHOR_RE.match(piece)):
+            sep = " " if out[-1][0] == bno else "\n\n"
+            out[-1] = (bno, f"{out[-1][1]}{sep}{piece}")
         else:
-            out.append(piece)
-    return out
+            out.append((bno, piece))
+    return [piece for _, piece in out]
 
 
 def _quote_key(text: str) -> str:
@@ -1252,6 +1311,14 @@ class TreeResearchSkill:
             if not m:
                 continue
             head, unique = m.group(1), m.group(2).strip().strip(".;,").lower()
+            # AN EMPTY TAIL IS NO VERDICT, NOT COVERAGE (review R2). `... => UNIQUE:`
+            # with the answer wrapped onto the next line is a common shape when the
+            # unique content is long, and the continuation line carries no `=>` so it
+            # is skipped — reading the empty tail as "the others say everything this
+            # one says" deletes the statement the judge just named content for. The
+            # statement is simply left unnamed, which every caller reads as no verdict.
+            if not unique:
+                continue
             quoted = _QUOTED_RE.search(head)
             frag = _quote_key(quoted.group(1) if quoted else "")
             # long enough that a shared stock phrase cannot claim the wrong statement,
@@ -1263,15 +1330,15 @@ class TreeResearchSkill:
             hits = [i for i, k in enumerate(keys) if len(frag) >= 24 and frag in k]
             side = hits[0] if len(hits) == 1 else None
             if side is None:
-                label = re.match(r"^\W*(?:statement\s*)?([A-Za-z]|\d{1,2})\b", head)
+                label = _LABEL_RE.match(head)
                 if not label:
                     continue
-                tag = label.group(1)
+                tag = label.group(1) or label.group(2)
                 side = int(tag) - 1 if tag.isdigit() else _MERGE_LABELS.find(tag.upper())
                 if not 0 <= side < len(flats):
                     continue
             # a statement named twice with different verdicts is not a clear answer
-            empty = unique in ("none", "nothing", "n a", "none.", "")
+            empty = unique in ("none", "nothing", "n a", "none.")
             verdict[side] = empty if side not in verdict else (verdict[side] and empty)
         return verdict
 
