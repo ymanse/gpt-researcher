@@ -131,6 +131,22 @@ distinct content. Three findings, in the order they matter:
    unit (Claimify, FActScore, DnDScore; NuggetIndex: "indexing atomic facts … reducing
    redundancy"). The measured redundancy here is topical, not lexical, so any word-overlap
    bar high enough to be safe is too high to fire. That is a ceiling, not a tuning problem.
+4. **Similarity selects candidates; equivalence decides.** This is the operator four
+   implementations got wrong. Cosine, LSA, word overlap and coverage all score the
+   *intersection* of two texts; the merge decision lives in the *difference*. arXiv:
+   2509.08304 ("Modeling Semantic Coverage Relations via Answerability") defines the
+   relation between two texts as the set relation between their **Answerable Question
+   Sets**: equivalence when the sets match, inclusion when one contains the other,
+   **overlap** when each has questions the other cannot answer — and overlap must never
+   be collapsed. Operationally: *merge A and B iff neither answers a question the other
+   cannot.* Two stages keep it affordable — embedding cosine generates candidates, and an
+   LLM **enumerates** what each side says that the other does not (enumeration is steadier
+   than classification, and the two lists are the explanation the review lane needs).
+   Fail closed: an unclear verdict does not merge. Not merging costs
+   `synthesis_ratio_pct_max`; wrongly merging costs facts, and `s2_min_delta ≥ −5` is the
+   tighter bound. The paper's own benchmark tops out at 61.4% accuracy for general
+   relation classification, so this is not a solved problem — but the decision needed here
+   is only the empty-difference case on candidate pairs, with the safe default available.
 
 **The seams are open (since the 2026-07-28 re-cut).** The s9 RED fixture replaces
 `skill.embed_question` with an offline stand-in and patches `tr.create_chat_completion`,
@@ -273,6 +289,22 @@ The second defect is review R1, verified in the diff: the contested path is exem
 dedup on **both** routes, so contested passages are never compared with each other and
 `solid-state-battery` states the same $10B vs $300B+ disagreement three times. Protecting
 contested content from *deletion* is not a reason to exempt it from *merging*.
+
+**2026-07-29 — third RED re-cut, by a human.** Four implementations (word overlap, LSA
+cosine, coverage/vocabulary-exhaustion, then item-budget selection) each failed at the
+same point: they merged on how much two sentences have in common and were blind to what
+only one of them said. The last one reached `synthesis_ratio_pct_max` 67 with four of
+five queries lossless — real progress — but `denorm-derived-table` lost 2 of its 8 golden
+facts (S2 63 → 38, `s2_min_delta` −25), traced to exactly two collapses: a *complete
+refresh* sentence merged away in favour of an *incremental refresh* one, and a
+closure-table *definition* merged away in favour of a closure-table *trade-off*. Same
+topic, different claim, both times.
+
+The RED contract could not express that, so it was re-cut with the real failing pairs as
+its fixture, read verbatim from the frozen corpus. `red_common` requires `passed:0`, so
+the re-cut necessarily reverted the implementation to the post-d0 state — the 67% ratio is
+lost as code and survives only in the commits and reviews. Kept: `65f0db34` (d0), today's
+arxiv scraper fix and the tier_a widening of `verify_impl`, none of which are s9 work.
 
 *Trap found while reverting — do not use `git checkout` to restore a file here.*
 `code_fp` hashes raw bytes, and `git checkout` writes CRLF while the working copy the

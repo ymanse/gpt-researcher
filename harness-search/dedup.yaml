@@ -139,6 +139,31 @@ commands:
       re-derive [id] markers by fuzzy matching" designs were each measured live to LOSE
       citations, one all the way to citations_total=0 on a 33-node tree. Whatever you pin
       here must let the implementation keep grounding, not just shorten text.
+
+      (f) THE CONTRACT THAT FOUR IMPLEMENTATIONS BROKE — this is why the RED is being
+      re-cut a third time. Two sentences on the SAME TOPIC that state DIFFERENT CLAIMS
+      must BOTH survive. Every cut so far merged on topical/lexical/embedding similarity,
+      which measures how much two texts have in common and is blind to what only one of
+      them says. Formally (arXiv:2509.08304, Answerable Question Sets): two texts are
+      EQUIVALENT only when neither answers a question the other cannot; when both sides
+      have unique answerable questions the relation is OVERLAP, and overlap must not be
+      collapsed. Similarity scores the intersection; the decision lives in the difference.
+      Build the fixture from the REAL failures, read VERBATIM out of the frozen corpus
+      (no_read/dedup/corpus/denorm-derived-table.report.md and .tree.json — read-only,
+      never edit) so the pair cannot be softened into something a word-overlap rule
+      happens to pass:
+        - node 0.0.2.0 (Oracle docs): "a complete refresh ... fully recomputes the view"
+          versus the sentence that survived in its place, "an incremental refresh
+          eliminates the need to rebuild materialized views from scratch". Same subject,
+          same vocabulary, OPPOSITE mechanisms — the first was deleted and its golden
+          fact went with it.
+        - node 0.3.1 (MySQL docs): the closure-table DEFINITION ("a separate table stores
+          all ancestor ... paths") versus the closure-table TRADE-OFF sentence that
+          survived. Definition and trade-off are different claims about one thing.
+      Both pairs must be pinned as "both survive", and the test must fail today against a
+      pure similarity rule. Measured cost of getting this wrong: denorm-derived-table
+      dropped 2 of its 8 golden facts (S2 63 -> 38, s2_min_delta -25) while every other
+      query stayed lossless.
       Then RUN: python scripts/pytest_evidence.py --stage 9 --phase red
       Confirm collected>=1, errors=0, passed=0, failed>=1 (base_sha is recorded so the
       review lane can diff exactly your change).
@@ -202,6 +227,26 @@ commands:
            comparison must be SEMANTIC. The measured redundancy is topical, not lexical
            (repeated 5-grams 0-2%), so any word-overlap bar high enough to be safe is too
            high to fire — that is the R5 ceiling, not a tuning problem.
+        4. SIMILARITY SELECTS CANDIDATES; EQUIVALENCE DECIDES. This is the operator four
+           cuts got wrong, and the reason the RED was re-cut a third time. Cosine, LSA,
+           word overlap and coverage all score the INTERSECTION of two texts. Two
+           sentences about materialized-view refresh score high and state different
+           facts. The decision lives in the DIFFERENCE. Operationally
+           (arXiv:2509.08304, Answerable Question Sets):
+             merge A and B  iff  neither answers a question the other cannot
+           Two stages, so the cost stays sane — this is retrieve-then-rerank with an
+           equivalence judge instead of a similarity scorer:
+             (a) CANDIDATES, cheap: embedding cosine. Good at finding pairs worth
+                 checking. Never a verdict on its own.
+             (b) VERDICT, on candidates only: ask the model (the seam is patched) to
+                 ENUMERATE what each side says that the other does not. Merge only when
+                 both lists are empty. Enumeration is a steadier task for an LLM than
+                 classification, and the two lists are the EXPLANATION — "B also says a
+                 complete refresh recomputes the whole view" is exactly what the review
+                 lane needs, and exactly what would have caught the very first R1.
+           FAIL CLOSED: when the verdict is unclear, DO NOT MERGE. Not merging costs
+           synthesis_ratio; wrongly merging costs facts, and s2_min_delta >= -5 is the
+           tighter bound. Prefer the error the gates forgive.
 
       USE THE SEAMS — THEY ARE PATCHED FOR YOU. The s9 RED fixture replaces
       `skill.embed_question` with an offline stand-in and patches
