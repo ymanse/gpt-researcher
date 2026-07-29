@@ -597,7 +597,15 @@ def _form_passages(node: str, rows: List[Any], weights: Dict[str, float],
         head = label if not passages or passages[-1].block != block else ""
         topic = label or (topic if passages and passages[-1].block == block else "")
         nxt = rows[i + 1] if i + 1 < len(rows) else None
-        if units[-1].rstrip().endswith(":") and nxt and nxt[0] == block and nxt[2]:
+        # the trailing `*_` come off before the colon test because these answers write
+        # most lead-ins with the colon INSIDE the emphasis -- "**Electrolyte families
+        # ... most viable:**" -- and a bare endswith(":") sees the `*` and says no.
+        # Measured over the corpus roll-ups: 11 of 52 colon lead-ins are bold-wrapped
+        # (solid-state 3 of 8, denorm 4 of 16, bun-rust 3 of 8, outbox 1 of 13), and each
+        # one orphaned its items into other sections -- the exact failure `frame` exists
+        # to fix, and _ITEM_HEAD_RE and _LEAD_LABEL_RE already knew the form (review R2).
+        if units[-1].rstrip().rstrip("*_").rstrip().endswith(":") \
+                and nxt and nxt[0] == block and nxt[2]:
             # a lead-in for the items below it: not a passage, a frame on each of them
             frame, frame_block = (head and f"**{head}**\n") + prefix + " ".join(units), block
             continue
@@ -634,6 +642,57 @@ def _lead_label(text: str) -> str:
     """
     m = _LEAD_LABEL_RE.match(text or "")
     return m.group(1).strip() if m else ""
+
+
+def _as_title(label: str) -> str:
+    """A source's heading as a section title, or "" when it does not name a subject.
+
+    Three kinds have to go. A node answer's own scaffolding -- "Answer", "Digest",
+    "Bottom line" -- says what the LLM was writing, not what the section is about, and
+    is a worse title than the term bag it would replace. A ONE-WORD label ("Toyota",
+    "CATL") names the item it introduces, not the section that item landed in. And a
+    heading's enumeration ("3. Event reordering") numbered the node's list, not this
+    report's sections, so the number is stripped and the words kept.
+
+    An [id] inside a lead-in goes with it: a marker in a HEADING grounds nothing (the
+    frozen scorer reads the 240 characters before it, which for a title is the section
+    above), so carrying it up would spend a citation to say nothing and cost S1 the
+    difference.
+    """
+    t = _CITE_ID_RE.sub(" ", re.sub(r"^\s*\d{1,2}[.)]\s*", "", label or ""))
+    t = re.sub(r"\s+", " ", t).strip().strip("*_#:.—-").strip()
+    return ("" if not t or len(t) > 60 or len(t.split()) < 2
+            or t.lower() in _SCAFFOLD_TITLES else t)
+
+
+def _drop_title_echo(block: str, title: str) -> str:
+    """Strip a bold lead-in that only reprints the `## ` title above it.
+
+    A section is titled from a heading its own material came under, and nothing used to
+    remove that heading from the material -- so the reader saw the same words twice with
+    a blank line between them, in a report whose stated purpose is to say each thing
+    once. Measured across the five shipped roll-ups: 16 of 30 sections repeated their own
+    title one to a few lines below it ("## Cost figures disagree" / "**Cost figures
+    disagree:** Bonnen Batteries states ..."), solid-state-battery on all six of its
+    sections (review R3).
+
+    The lead-in's REST is kept -- only the echoed label is dropped -- so this removes a
+    repeated heading, never a claim. A title the model wrote does not match any label and
+    nothing is stripped, which is the live path.
+    """
+    if not title:
+        return block
+    lines = block.split("\n")
+    while lines:
+        m = _LEAD_LABEL_RE.match(lines[0])
+        if not m or _as_title(m.group(1)) != title:
+            break
+        rest = lines[0][m.end():].lstrip(" :").strip()
+        if rest:
+            lines[0] = rest
+            break
+        lines.pop(0)
+    return "\n".join(lines)
 
 
 def _render_lines(label: str, lines: List[Any]) -> str:
@@ -1774,42 +1833,71 @@ class TreeResearchSkill:
             survived (S6 100 -> 33). What a coverage rule deletes first is a rebuttal,
             because a rebuttal restates its opponent by construction.
 
-        FIRST CALL IS NOT A BLANK CHEQUE (review R2). Contested passages are settled
-        before the rounds, but they are settled THROUGH the budget, not around it: their
-        characters are charged by the same `cost`, their lead-ins are marked paid so no
-        later item is billed for a frame already shipped, their content enters
-        `covered`/`stated`/`bonded` so a passage that merely restates one is not printed
-        twice, and they may claim at most `_CONTEST_SHARE` of the report. Whatever the
-        bound turns away is not deleted -- it goes back into the pool and competes in
-        the rounds like anything else, where the data round's waived floor still lets a
-        disagreement carrying an unstated datum through. Without the bound this was the
-        one unpriced path in the pass AND the only unbounded one: `_CONTEST_RE` is broad
-        ("trade-offs", "on the other hand", "vs."), so a query that argues throughout
-        could commit its whole length -- past exhaustion, since nothing tested the
-        budget -- before the coverage objective ranked a single passage, and its
-        researched findings would then be dropped for want of characters while
-        restatements of one disagreement shipped. Measured on the captured corpus, the
-        contested pre-pass takes 36% / 37% / 49% of the budget (denorm-derived-table /
-        edge-ai-face-access / solid-state-battery), so the bound is a ceiling this
-        corpus does not reach and every golden's S6 and contested_ok are unchanged by
-        it; it exists for the query that would.
+        FIRST CALL IS NOT A BLANK CHEQUE, AND IT IS NOT AN EXEMPTION FROM SAYING
+        SOMETHING. Contested passages are settled before the rounds, but they are settled
+        THROUGH the budget and AGAINST the coverage state: their characters are charged by
+        the same `cost`, their lead-ins are marked paid, their content enters
+        `covered`/`stated`/`bonded`, they may claim at most `_CONTEST_SHARE` of the
+        report, and -- `says_something_new` -- one that states neither a datum the report
+        has not printed nor `_GAIN_FLOOR` of its own mass in fresh content does not print
+        at all. Whatever the cap or that test turns away is not deleted: it goes back into
+        the pool and competes report-wide, where the data round's waived floor still lets
+        a disagreement carrying an unstated datum through.
 
-        WHAT THIS PASS CANNOT DO IS MAKE ROOM. Every golden drops 21-38 passages that
-        still carry a datum the report never printed (9.4k-16.3k characters), and at the
-        same time the kept set holds only 42-127 characters that say nothing the rest of
-        it already says -- there is nothing to evict. So the remaining fact losses are a
-        LENGTH decision (`_REPORT_SHARE`, bracketed by the ratio gate above), not a
-        ranking one, and four re-rankings were measured against this corpus before that
-        conclusion: subjecting contested to the floor (s2_aggregate 83 -> 78), admitting
-        a passage that is the sole bearer of a content term into the data round (78),
-        ranking the data round by data-per-character instead of mass-per-character (78,
-        and lift 2), and dropping `_NODE_DECAY` from the data round (78, lift 2). Each
-        traded more findings than it recovered. What actually buys room is the CLAIM
-        MERGE, and offline it cannot run: `_claim_embeddings` needs an embedding service,
-        resynth.py's stub researcher carries no embedding configuration and d0's
-        netblocked=0 forbids opening a connection, so d1 measures a pass whose merge
-        found 0-2 restatements of 147-285 claims. The merge is exercised by the s9 RED
-        fixture, which patches the seam, and live by d2.
+        The NOVELTY test is review R1's finding, and without it a contested passage was
+        suppressed by nothing -- not by another contested passage, not by an identical
+        one, because `take()` wrote `covered`/`stated`/`bonded` and this loop never read
+        them. Measured in the shipped report: solid-state-battery stated the Toyota
+        timeline disagreement four times inside one 16-line section (the same three
+        sources and the same three dates twelve lines apart), CATL's three times, Samsung
+        SDI's twice, the market size and the cost premium twice each -- 1,172 characters
+        restating claims the report had already made, in a report whose headline condition
+        is "the same claim once". A bound on the SHARE caps how much duplication ships,
+        not whether it does. With the test, that section states each disagreement once and
+        "Toyota" falls from 21 occurrences to 5 across the report.
+
+        FIRST-COME IS RIGHT FOR THIS PATH, and that is a measurement, not an oversight
+        (review R6 asked for the ranking or the reason). Ranking the pre-pass by the same
+        greedy objective was measured on the captured corpus and cost a researched
+        finding: denorm-derived-table 50 -> 38 (s2_min_delta -13 -> -25, aggregate 80 ->
+        78), losing the Zanzibar zookie/staleness passage -- which is not contested at all
+        and never entered this loop. Re-ordering the pre-pass changes WHICH characters are
+        left for the report-wide rounds, and the objective ranks by fresh mass per
+        character, which is not a measure of whether a passage is the sole bearer of a
+        fact. Roll-up order is the source's own order, it is stable, and here it costs
+        nothing; the novelty test above is what stops the loop from spending the report,
+        which is what R1 was actually about.
+
+        Without the cap this was the one unpriced path in the pass AND the only unbounded
+        one: `_CONTEST_RE` is broad ("trade-offs", "on the other hand", "vs."), so a query
+        that argues throughout could commit its whole length -- past exhaustion, since
+        nothing tested the budget -- before the coverage objective ranked a single
+        passage, and its researched findings would then be dropped for want of characters
+        while restatements of one disagreement shipped.
+
+        WHAT THIS PASS CANNOT DO IS MAKE MUCH ROOM. `says_something_new` evicts what R4
+        said was there and the previous measurement missed by exempting contested from
+        the coverage state -- 1 to 5 passages and 58 to 997 characters per golden, logged
+        per query -- and that is the whole of it. Every golden still drops 21-38 passages
+        carrying a datum the report never printed (9.4k-16.3k characters), so the
+        remaining fact losses are a LENGTH decision (`_REPORT_SHARE`, bracketed by the
+        ratio gate above), not a ranking one, and five re-rankings have now been measured
+        against this corpus: subjecting contested to `_GAIN_FLOOR` unconditionally
+        (s2_aggregate 83 -> 78), ranking the contested pre-pass by the coverage objective
+        (80 -> 78, and denorm-derived-table 50 -> 38), admitting a passage that is the
+        sole bearer of a content term into the data round (78), ranking the data round by
+        data-per-character instead of mass-per-character (78, and lift 2), and dropping
+        `_NODE_DECAY` from the data round (78, lift 2). Each traded more findings than it
+        recovered. Because the budget is spent to the character (measured: 20,991 of
+        20,993 on solid-state-battery), a change that only MOVES characters is paid for
+        by whatever was last in the breadth round: the enumeration binding above recovers
+        the researched *Oxides* item and costs the DOE/Battery500 passage 1,124
+        characters further down, which is s2 100 -> 88 on that query. What actually buys
+        room is the CLAIM MERGE, and offline it cannot run: `_claim_embeddings` needs an
+        embedding service, resynth.py's stub researcher carries no embedding
+        configuration and d0's netblocked=0 forbids opening a connection, so d1 measures
+        a pass whose merge found 0-2 restatements of 147-285 claims. The merge is
+        exercised by the s9 RED fixture, which patches the seam, and live by d2.
         """
         terms = [_content_terms(t) for t in texts]
         weights = _term_weights(terms)
@@ -1854,11 +1942,30 @@ class TreeResearchSkill:
             taken[passages[i].node] += len(texts[i])
             pool.discard(i)
 
-        # first call, through the budget and bounded by it; the rest go back in the pool
+        def says_something_new(i: int) -> bool:
+            """Has the report NOT already stated what passage i states?
+
+            The pass's own two-tier definition, read here rather than only in the
+            rounds: a datum -- a figure, a named thing, or the two together -- the
+            report has not printed is new whatever else the passage repeats; anything
+            else has to bring _GAIN_FLOOR of its own mass.
+            """
+            if facts[i] - stated or bonds[i] - bonded:
+                return True
+            return _mass(terms[i] - covered, weights) / sizes[i] >= _GAIN_FLOOR
+
+        # first call, through the budget AND against the coverage state: a disagreement
+        # is ranked ahead of prose that would crowd it out, it is not exempt from having
+        # to say something. The rest go back in the pool and compete report-wide.
         pool -= contested
+        restated: List[int] = []
         for i in sorted(contested):
-            if spent + cost(i) <= budget * _CONTEST_SHARE:
-                take(i)
+            if spent + cost(i) > budget * _CONTEST_SHARE:
+                continue
+            if not says_something_new(i):
+                restated.append(i)
+                continue
+            take(i)
         pool |= (contested - set(kept))
         for phase in ("data", "breadth"):
             while pool:
@@ -1886,13 +1993,17 @@ class TreeResearchSkill:
         for i in pool:
             by_node[passages[i].node] += len(texts[i])
         gone = sum(len(texts[i]) for i in pool)
-        # what share of the budget the contested round took. Review R2's defect was
-        # invisible because nothing printed it: the pre-pass could spend the report and
+        # what share of the budget the contested round took, and how much of it was a
+        # claim the report had already made. Both defects this line reports were
+        # invisible because nothing printed them: the pre-pass could spend the report
+        # (review R2) and it could spend it restating one disagreement (review R1), and
         # every downstream number still looked like a coverage decision
         logger.info("roll-up selection: contested %d of %d passages kept, %d of %d "
-                    "chars printed", len(contested & set(kept)), len(contested),
+                    "chars printed; %d turned away (%d chars) for stating nothing the "
+                    "report had not stated", len(contested & set(kept)), len(contested),
                     sum(len(texts[i]) for i in contested & set(kept)),
-                    sum(len(texts[i]) for i in contested))
+                    sum(len(texts[i]) for i in contested),
+                    len(restated), sum(len(texts[i]) for i in restated))
         logger.info("roll-up selection: %d of %d passages were already covered or over "
                     "budget (%d chars, %.0f%% of the roll-up; budget %d, spent %d); "
                     "dropped per node %s", len(pool), len(texts), gone,
@@ -1924,30 +2035,13 @@ class TreeResearchSkill:
         and 20 of 29 shipped titles fell through to a term bag. The caller therefore
         offers a label per section, markdown heading first and lead-in after.
 
+        A title taken from a label the body also prints is stripped from that body by
+        _drop_title_echo -- promoting a heading and leaving it in place shipped the same
+        words twice (review R3), so the two halves live next to each other.
+
         Nothing downstream depends on which path ran: the number of sections, and so the
         d1 heading count, is fixed before this is called.
         """
-        def as_title(label: str) -> str:
-            """A source's heading, or "" when it does not name a subject.
-
-            Three kinds have to go. A node answer's own scaffolding -- "Answer",
-            "Digest", "Bottom line" -- says what the LLM was writing, not what the
-            section is about, and is a worse title than the term bag it would replace.
-            A ONE-WORD label ("Toyota", "CATL") names the item it introduces, not the
-            section that item landed in. And a heading's enumeration ("3. Event
-            reordering") numbered the node's list, not this report's sections, so the
-            number is stripped and the words kept.
-
-            An [id] inside a lead-in goes with it: a marker in a HEADING grounds
-            nothing (the frozen scorer reads the 240 characters before it, which for a
-            title is the section above), so carrying it up would spend a citation to
-            say nothing and cost S1 the difference.
-            """
-            t = _CITE_ID_RE.sub(" ", re.sub(r"^\s*\d{1,2}[.)]\s*", "", label))
-            t = re.sub(r"\s+", " ", t).strip().strip("*_#:.—-").strip()
-            return ("" if not t or len(t) > 60 or len(t.split()) < 2
-                    or t.lower() in _SCAFFOLD_TITLES else t)
-
         fallback: List[str] = []
         for g in groups:
             # the heading its own passages carried most often, whatever the count:
@@ -1958,7 +2052,7 @@ class TreeResearchSkill:
             # falls back to its top terms; two sections titled the same is worse than
             # one bag.
             common = [t for t, _c in collections.Counter(
-                as_title(labels[i]) for i in g if as_title(labels[i])).most_common()
+                _as_title(labels[i]) for i in g if _as_title(labels[i])).most_common()
                 if t not in fallback]
             fallback.append(common[0] if common else _theme_title(g, texts, weights))
         digest = "\n".join(
@@ -2107,12 +2201,16 @@ class TreeResearchSkill:
 
         out: List[str] = []
         for title, group in zip(titles, groups):
-            out.append(f"## {title.strip()}")
+            # ...and the title comes OUT of the body it was promoted from: a section
+            # that reprints its own heading as a bold lead-in two lines below has said
+            # one thing twice, in the report that exists to stop that (review R3)
+            title = title.strip()
+            out.append(f"## {title}")
             out.append("")
             for g in sorted(group, key=lambda q: units[keys[q]][0]):
                 members = units[keys[g]]
-                if passages[members[0]].frame:
-                    out += [passages[members[0]].frame]
+                if (lead := _drop_title_echo(passages[members[0]].frame, title).strip()):
+                    out += [lead]
                 para: List[int] = []
                 for i in members:
                     if para and passages[i].order == passages[para[-1]].order + 1 \
@@ -2121,10 +2219,12 @@ class TreeResearchSkill:
                         para.append(i)
                         continue
                     if para:
-                        out += [_join_passages([passages[q] for q in para]), ""]
+                        out += [_drop_title_echo(
+                            _join_passages([passages[q] for q in para]), title), ""]
                     para = [i]
                 if para:
-                    out += [_join_passages([passages[q] for q in para]), ""]
+                    out += [_drop_title_echo(
+                        _join_passages([passages[q] for q in para]), title), ""]
         return "\n".join(out).strip()
 
     # --------------------------------------------------------------- assembly
