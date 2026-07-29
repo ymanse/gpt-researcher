@@ -382,6 +382,9 @@ _REPORT_SHARE = 0.68    # length the report is written to, as a share of the ans
 _MIN_REPORT_CHARS = 6000  # ...below which a roll-up is already a report, and is not cut
 _FACT_WEIGHT = 3.0      # figures/entities against prose terms in the coverage objective
 _FACT_KINDS = "#@"      # what counts as "a datum the report has not stated yet"
+_CONTEST_SHARE = 0.5    # ...of the report a disagreement may claim before the rounds:
+                        # measured 36-49% on the captured corpus, so it binds on none of
+                        # them, and what it turns away competes rather than being deleted
 _NODE_DECAY = 0.92      # how hard a node already well represented is held back
 _SECTION_CHARS = 48     # "## " + a title + the blank line under it
 _THEME_MAX = 6          # sections; a reader cannot hold more than this many themes
@@ -1591,11 +1594,20 @@ class TreeResearchSkill:
           * every NAMED ENTITY likewise. This is what stops the first cut's failure --
             two product variants collapsed into one because they are phrased alike --
             without needing to know which entity matters.
-          * neither claim may be CONTESTED. A rebuttal restates its opponent's wording
-            by construction, so it is the single easiest thing for a similarity rule to
-            delete, and deleting it leaves the report stating one side of a disagreement
-            with no trace that the other exists (review R2 named three the previous rule
-            deleted). A contested claim is never absorbed and never absorbs.
+          * the two claims must be on the SAME SIDE of contested. A rebuttal restates
+            its opponent's wording by construction, so it is the single easiest thing
+            for a similarity rule to delete, and deleting it leaves the report stating
+            one side of a disagreement with no trace that the other exists (review R2
+            named three the previous rule deleted). That is an argument against merging
+            ACROSS the boundary, and only that: two nodes that each report the SAME
+            disagreement state one finding exactly as two nodes reporting the same
+            figure do, and exempting them from the merge is how solid-state-battery
+            shipped the "$10B by 2036 vs $300B+ by 2035" divergence three times (review
+            R1). Protecting a disagreement from DELETION is not a reason to exempt it
+            from MERGING, so contested compares with contested, plain with plain, and
+            never one with the other. The figure/entity containment guards above still
+            apply, which is what keeps a merge of two contested claims from dropping a
+            side one of them carried and the other did not.
 
         A claim is only ever absorbed into a claim it is DIRECTLY similar to, never into
         one it merely shares a cluster with, so a chain of near-neighbours cannot walk a
@@ -1618,7 +1630,7 @@ class TreeResearchSkill:
         bar = _DUP_COS if vectors else _DUP_TERM_COS
 
         def states_same(i: int, j: int) -> bool:
-            if contested[i] or contested[j]:
+            if contested[i] != contested[j]:
                 return False
             if vectors is not None:
                 vi, vj = vectors.get(i), vectors.get(j)
@@ -1751,25 +1763,53 @@ class TreeResearchSkill:
             is not what a length limit is for. Ordering inside each round is unchanged
             (fresh mass per character, decayed per node), so breadth still decides which
             of the data-bearing passages comes first.
-          * a CONTESTED passage is printed unconditionally, and so is one whose LEAD-IN
-            is contested. A disagreement is announced in one place and evidenced in
-            another: "Electrolyte families create distinct scaling problems, and sources
-            diverge on which is most viable:" carries the word, and the sulfide/oxide/
-            polymer items under it carry the sides. Protecting only the sentence that
-            contains the word ships the announcement of a disagreement with its evidence
-            deleted -- review R1 measured exactly that, both of CATL's sides and all
-            three researched oxide passages gone while "**CATL**: Major disagreement
-            here." survived (S6 100 -> 33). What a coverage rule deletes first is a
-            rebuttal, because a rebuttal restates its opponent by construction.
+          * a CONTESTED passage goes first, and so does one whose LEAD-IN is contested.
+            A disagreement is announced in one place and evidenced in another:
+            "Electrolyte families create distinct scaling problems, and sources diverge
+            on which is most viable:" carries the word, and the sulfide/oxide/polymer
+            items under it carry the sides. Protecting only the sentence that contains
+            the word ships the announcement of a disagreement with its evidence deleted
+            -- review R1 measured exactly that, both of CATL's sides and all three
+            researched oxide passages gone while "**CATL**: Major disagreement here."
+            survived (S6 100 -> 33). What a coverage rule deletes first is a rebuttal,
+            because a rebuttal restates its opponent by construction.
 
-        Contested passages are settled BEFORE the rounds, not appended after them
-        (review R5): their characters are charged through the same `cost`, their
-        lead-ins are marked paid so no later item is billed for a frame already shipped,
-        and their content enters `covered`/`stated`/`bonded` so a passage that merely
-        restates one is not printed a second time by the pass whose purpose is to remove
-        duplication. What the earlier "seeded first they suppress everything they touch"
-        measurement was about is the FLOOR, and that is now round one's business: a
-        passage carrying an unstated datum has no floor to fail.
+        FIRST CALL IS NOT A BLANK CHEQUE (review R2). Contested passages are settled
+        before the rounds, but they are settled THROUGH the budget, not around it: their
+        characters are charged by the same `cost`, their lead-ins are marked paid so no
+        later item is billed for a frame already shipped, their content enters
+        `covered`/`stated`/`bonded` so a passage that merely restates one is not printed
+        twice, and they may claim at most `_CONTEST_SHARE` of the report. Whatever the
+        bound turns away is not deleted -- it goes back into the pool and competes in
+        the rounds like anything else, where the data round's waived floor still lets a
+        disagreement carrying an unstated datum through. Without the bound this was the
+        one unpriced path in the pass AND the only unbounded one: `_CONTEST_RE` is broad
+        ("trade-offs", "on the other hand", "vs."), so a query that argues throughout
+        could commit its whole length -- past exhaustion, since nothing tested the
+        budget -- before the coverage objective ranked a single passage, and its
+        researched findings would then be dropped for want of characters while
+        restatements of one disagreement shipped. Measured on the captured corpus, the
+        contested pre-pass takes 36% / 37% / 49% of the budget (denorm-derived-table /
+        edge-ai-face-access / solid-state-battery), so the bound is a ceiling this
+        corpus does not reach and every golden's S6 and contested_ok are unchanged by
+        it; it exists for the query that would.
+
+        WHAT THIS PASS CANNOT DO IS MAKE ROOM. Every golden drops 21-38 passages that
+        still carry a datum the report never printed (9.4k-16.3k characters), and at the
+        same time the kept set holds only 42-127 characters that say nothing the rest of
+        it already says -- there is nothing to evict. So the remaining fact losses are a
+        LENGTH decision (`_REPORT_SHARE`, bracketed by the ratio gate above), not a
+        ranking one, and four re-rankings were measured against this corpus before that
+        conclusion: subjecting contested to the floor (s2_aggregate 83 -> 78), admitting
+        a passage that is the sole bearer of a content term into the data round (78),
+        ranking the data round by data-per-character instead of mass-per-character (78,
+        and lift 2), and dropping `_NODE_DECAY` from the data round (78, lift 2). Each
+        traded more findings than it recovered. What actually buys room is the CLAIM
+        MERGE, and offline it cannot run: `_claim_embeddings` needs an embedding service,
+        resynth.py's stub researcher carries no embedding configuration and d0's
+        netblocked=0 forbids opening a connection, so d1 measures a pass whose merge
+        found 0-2 restatements of 147-285 claims. The merge is exercised by the s9 RED
+        fixture, which patches the seam, and live by d2.
         """
         terms = [_content_terms(t) for t in texts]
         weights = _term_weights(terms)
@@ -1789,7 +1829,6 @@ class TreeResearchSkill:
         contested = {i for i in pool
                      if _CONTEST_RE.search(texts[i])
                      or (passages[i].frame and _CONTEST_RE.search(passages[i].frame))}
-        pool -= contested
         spent = 0
         taken: "collections.Counter[str]" = collections.Counter()
         # a lead-in ships once, in front of whichever of its items survive, so the
@@ -1815,20 +1854,23 @@ class TreeResearchSkill:
             taken[passages[i].node] += len(texts[i])
             pool.discard(i)
 
+        # first call, through the budget and bounded by it; the rest go back in the pool
+        pool -= contested
         for i in sorted(contested):
-            take(i)
-
-        for data_round in (True, False):
+            if spent + cost(i) <= budget * _CONTEST_SHARE:
+                take(i)
+        pool |= (contested - set(kept))
+        for phase in ("data", "breadth"):
             while pool:
                 best, rank = -1, 0.0
                 for i in sorted(pool):
                     if spent + cost(i) > budget:
                         continue
                     states_datum = bool(facts[i] - stated) or bool(bonds[i] - bonded)
-                    if data_round != states_datum:
+                    if (phase == "data") != states_datum:
                         continue
                     fresh = terms[i] - covered
-                    if not data_round and _mass(fresh, weights) / sizes[i] < _GAIN_FLOOR:
+                    if not states_datum and _mass(fresh, weights) / sizes[i] < _GAIN_FLOOR:
                         continue
                     nd = passages[i].node
                     key = (_mass(fresh, weights) / max(1, len(texts[i]))
@@ -1844,6 +1886,13 @@ class TreeResearchSkill:
         for i in pool:
             by_node[passages[i].node] += len(texts[i])
         gone = sum(len(texts[i]) for i in pool)
+        # what share of the budget the contested round took. Review R2's defect was
+        # invisible because nothing printed it: the pre-pass could spend the report and
+        # every downstream number still looked like a coverage decision
+        logger.info("roll-up selection: contested %d of %d passages kept, %d of %d "
+                    "chars printed", len(contested & set(kept)), len(contested),
+                    sum(len(texts[i]) for i in contested & set(kept)),
+                    sum(len(texts[i]) for i in contested))
         logger.info("roll-up selection: %d of %d passages were already covered or over "
                     "budget (%d chars, %.0f%% of the roll-up; budget %d, spent %d); "
                     "dropped per node %s", len(pool), len(texts), gone,
