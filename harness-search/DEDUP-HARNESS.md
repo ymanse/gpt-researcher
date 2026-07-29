@@ -263,6 +263,17 @@ up from a gate bug.
 three spent review rounds are forgiven by the grant because they were spent against the
 discarded contract; without that the cap would fire on the first review of the new one.
 
+**2026-07-28 (evening) — three more review rounds granted (`rev:s9` 3 → 6).** The cap fired
+correctly and the agent handed off without touching `.gralph/`. Granted because the build is
+close and both remaining defects are named with their causes: `synthesis_ratio_pct_max` 68
+(gate ≤70, was 129), `headings_min` 7, `lifted_nodes_max` 1 (was 12) and
+`s2_aggregate_pct` 83 all pass; the single blocker is `s2_min_delta = −13`
+(`denorm-derived-table` 63→50, `edge-ai-face-access` 75→63 against their own baselines).
+The second defect is review R1, verified in the diff: the contested path is exempt from
+dedup on **both** routes, so contested passages are never compared with each other and
+`solid-state-battery` states the same $10B vs $300B+ disagreement three times. Protecting
+contested content from *deletion* is not a reason to exempt it from *merging*.
+
 *Trap found while reverting — do not use `git checkout` to restore a file here.*
 `code_fp` hashes raw bytes, and `git checkout` writes CRLF while the working copy the
 corpus was captured against was LF. Restoring an otherwise-identical file that way moved
