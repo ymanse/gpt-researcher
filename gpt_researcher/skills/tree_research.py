@@ -326,6 +326,15 @@ def _primary_source_affinity(question: str) -> float:
 # lists are the explanation the review lane reads), and an unclear verdict does NOT
 # merge: not merging costs report length, wrongly merging costs facts.
 _UNIT_SPLIT_RE = re.compile(r"\n\s*\n+")
+# A claim unit is an ATOMIC CLAIM, never a paragraph. Measured 2026-07-29
+# (d1_offline.probe.json, denorm-derived-table): split on blank lines a unit is a
+# ~650-character paragraph carrying several facts, and asked what a reader would lose
+# if it were deleted, the judge answers "something" for nearly every one — correctly,
+# since a paragraph with five facts almost always holds one no other paragraph holds.
+# Nothing merged, report_chars came back exactly the zero-merge number. The unit has
+# to be the atomic claim for "is anything lost?" to have a mergeable answer at all
+# (Claimify, FActScore, NuggetIndex: index atomic facts to reduce redundancy).
+_SENT_BREAK_RE = re.compile(r"(?<=[.!?])(?:\s*\[[^\]\n]*\])*\s+(?=[^a-z\[])")
 _BRACKETED_RE = re.compile(r"\[[^\]]*\]")
 _UNIQUE_LINE_RE = re.compile(r"^(.*?)\bunique\s*[:=]\s*(.*)$", re.I)
 _QUOTED_RE = re.compile(r"[\"“”'‘’](.+?)[\"“”'‘’]", re.S)
@@ -338,7 +347,10 @@ MERGE_NEIGHBOURS = 3
 # one costs report length. The floor exists only to skip pairs with nothing in
 # common at all.
 MERGE_FLOOR = 0.08
-MERGE_VERDICT_TIMEOUT_S = 120.0
+# A screening call carries a whole group, so it is the long one: measured on this
+# deployment (claude_agent) a 2-unit verdict answers in 17-34s and a 11-unit screen in
+# 127s, which the previous 120s ceiling would have thrown away as a timeout.
+MERGE_VERDICT_TIMEOUT_S = 300.0
 MERGE_JUDGE_FAILURES = 3    # transient errors happen; a dead judge answers none
 MERGE_CONCURRENCY = 4       # verdicts in flight at once
 # Units per SCREENING call. One judge call is a whole model round trip — measured on
@@ -347,10 +359,37 @@ MERGE_CONCURRENCY = 4       # verdicts in flight at once
 # the 0xC0000142 that killed four of five re-syntheses on 2026-07-29. So the pairs are
 # SCREENED in groups first: a unit the screen says has content of its own can never be
 # merged away, so none of its pairs is ever asked. Sized to hold a whole topic (the s9
-# fixture's 11 sentences are one group) while keeping a prompt small enough to read.
-MERGE_GROUP = 12
+# fixture's 13 claim units are one group) while keeping a prompt small enough to read —
+# a pair split across two groups is never screened together and so never reaches a
+# verdict, which costs report length.
+MERGE_GROUP = 16
 _MERGE_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 MAX_THEMES = 8
+
+
+def _claim_units(text: str) -> List[str]:
+    """One node's synthesized text as atomic claims: the author's own paragraph breaks
+    first, then the sentences inside each paragraph.
+
+    A trailing [id] belongs to the sentence BEFORE it. `_attribute_citations` puts a
+    marker after the phrase it traces to (or after the full stop when only punctuation
+    follows), and the frozen scorer grounds a marker off the text PRECEDING it — so a
+    break that pushed the marker onto the next sentence would strand it beside wording
+    its own source never wrote. The lookahead keeps "e.g. foo" and "MySQL 8.0 onward"
+    whole; `\\s+` already protects a decimal point.
+    """
+    out: List[str] = []
+    for block in _UNIT_SPLIT_RE.split(text or ""):
+        prev = 0
+        for m in _SENT_BREAK_RE.finditer(block):
+            piece = block[prev:m.end()].strip()
+            if piece:
+                out.append(piece)
+            prev = m.end()
+        tail = block[prev:].strip()
+        if tail:
+            out.append(tail)
+    return out
 
 
 def _flat_claim(text: str) -> str:
@@ -1058,30 +1097,45 @@ class TreeResearchSkill:
         way round it collapses opposites. The listed cases are the two collapses
         that cost this corpus two golden facts.
 
+        ATTRIBUTION IS NOT CONTENT, and it has to be said outright. Measured
+        2026-07-29 over the corpus's own must-merge pair (the Oracle and pg_ivm
+        statements of one incremental-maintenance claim): asked the earlier phrasing,
+        three different models each answered UNIQUE and each named the SOURCE as the
+        unique part — "Oracle's Data Warehousing Guide citation", "README's opening
+        description citation". Two sources saying one thing is precisely the
+        duplication this stage removes, so the instruction now names quotation,
+        vendor and author as things to ignore, and the same pair comes back
+        `none / none`.
+
         The reply is asked to QUOTE the statement each line is about, so a list of any
         length parses back to the statement it judged and a reordered or partial answer
         cannot be misread as a verdict on the wrong one.
         """
         listed = "\n\n".join(f"{_MERGE_LABELS[i]}: {f}" for i, f in enumerate(flats))
         n = len(flats)
-        others = "the other one" if n == 2 else "the others"
+        others = "the other one" if n == 2 else f"the other {n - 1}"
         return (
-            f"{n} statements from one research report.\n\n"
+            f"{n} statements pulled from one research report. They are being "
+            "de-duplicated.\n\n"
             f"{listed}\n\n"
-            "For each statement, name the factual content a reader would LOSE if "
-            f"that statement were deleted and {others} kept.\n"
-            "NOT unique content: different wording, a different source or vendor "
-            "making the same point, extra emphasis, a restatement, an example, or "
-            "a qualifier on a claim another one also makes.\n"
-            "IS unique content: a different or opposite mechanism, a definition "
-            "where another gives a consequence or a trade-off, a different "
-            "quantity, a different subject, or a condition no other one states.\n"
+            "Judge only the FACTUAL CLAIM each one makes about the subject matter.\n"
+            "Deliberately IGNORE: which document, vendor, project or author is quoted; "
+            "the wording; whether it is a quotation; how much detail or emphasis it "
+            "carries; and any example that only illustrates a claim another one also "
+            "makes. Two statements attributing the SAME claim to two different sources "
+            "are NOT different claims — that is the duplication being removed.\n"
+            "Treat as genuinely different: an opposite or different mechanism, a "
+            "definition where another gives a consequence or a trade-off, a different "
+            "quantity or threshold, a different subject, or a condition no other "
+            "states.\n"
+            "For each statement, name the factual content a reader would LOSE if that "
+            f"statement were deleted and {others} kept.\n"
             f"Answer with exactly {n} lines and nothing else, one per statement, in "
             "this form:\n"
             '"<a verbatim fragment of that statement>" => UNIQUE: <what only that '
             "statement asserts, or the word none>\n"
-            'Write "none" when the other statements already assert everything '
-            "this one asserts."
+            'Write "none" when the others already assert everything this one asserts, '
+            "even if they say it about a different tool or in different words."
         )
 
     @staticmethod
@@ -1389,10 +1443,9 @@ class TreeResearchSkill:
             # fact purely by reciting the question that mentions it.
             if n.status == NodeStatus.PENDING:
                 return
-            for part in _UNIT_SPLIT_RE.split(text):
-                if part.strip():
-                    units.append(part.strip())
-                    unit_ids.append(node_source_ids)
+            for part in _claim_units(text):
+                units.append(part)
+                unit_ids.append(node_source_ids)
 
         # the root is the first node inserted (run() seeds it before the frontier
         # loop), which is also the order the resynth sidecar preserves
