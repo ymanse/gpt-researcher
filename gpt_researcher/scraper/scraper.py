@@ -198,9 +198,15 @@ class Scraper:
 
         scraper_key = None
 
-        if link.endswith(".pdf"):
+        # arxiv is split by URL SHAPE, not by host. Routing every arxiv.org link to
+        # ArxivScraper sent full-text pages through an abstract-only path: measured on one
+        # research run, 3 of the 4 arxiv URLs the retrievers found were arxiv.org/html/,
+        # i.e. the whole paper as ordinary HTML that the default scraper reads fine.
+        # /pdf/ links carry no .pdf suffix, so they need naming here or BeautifulSoup is
+        # handed a PDF binary.
+        if link.endswith(".pdf") or "arxiv.org/pdf/" in link:
             scraper_key = "pdf"
-        elif "arxiv.org" in link:
+        elif "arxiv.org/abs/" in link:
             scraper_key = "arxiv"
         else:
             scraper_key = self.scraper
