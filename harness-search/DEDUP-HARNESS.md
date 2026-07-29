@@ -351,6 +351,49 @@ that worked until d1 scored it. They now travel out through `assemble_report`'s 
 and `run()`'s `stats.merge`. Wiring a GATE to them needs a change under
 `harness-search/scripts/`, which the impl lane is not allowed to make.
 
+### The fourth cut merges, and is still nowhere near the ratio — measured, 2026-07-29
+
+First round in which the merge removed content without losing a fact. Probe at
+`code_fp d099fa7f53576633` (`scripts/offline_dedup.py --only denorm-derived-table`):
+
+| | third cut | this cut | d1 gate |
+|---|---|---|---|
+| `synthesis_ratio_pct` | 119–121 | **116** | ≤ 70 |
+| `max_lift_pct` | 99–100 | **91** | *reported* |
+| `headings` | 6 | **10** | ≥ 4 |
+| `S2_pct` / `S2_delta` | 63 / 0 | **63 / 0** | delta ≥ −5 |
+| claim units merged away | 0 of 212 | **22 of 202** | — |
+| characters removed | 0 | **2,728 (4.3%)** | — |
+
+Three causes of the previous no-op were mechanical and are fixed (see the commits): the
+screening groups were slices of a nearest-neighbour chain through *one* connected
+component covering all 212 units, so the judge was asked whether a LISTEN/NOTIFY sentence
+says anything a `hierarchyid` sentence does not; the verdict pairs came from a global
+top-3 neighbour graph that need not contain the pair the screen had just implicated; and
+a cumulative failure counter read three scattered timeouts as a dead judge and abandoned
+the screens still queued. Groups are now grown clusters (`MERGE_CLUSTER_FLOOR` 0.30, the
+corpus's own top ~1% of pair scores), verdict pairs come from the screen's own group, and
+a two-unit screen is used as the verdict it already is.
+
+**What remains is not mechanical, and it is the judge's own threshold.** Across the
+screened groups the model answers `UNIQUE: none` for roughly one statement in twenty:
+asked what a reader would lose if a statement were deleted, it can nearly always name
+*something* — a figure, a qualifier, an example — even when two statements make one
+claim. That rate caps the merge at ~10% of units however good the clustering gets, and
+the ratio needs ~42% of the report's characters gone. Loosening the prompt (telling it to
+disregard extra detail, examples or quantities) is the obvious next lever and is also
+exactly how golden facts 2 and 8 were lost before, so it is not a change to make without
+a per-query `S2_delta` measurement behind it.
+
+**Also unmeasured here: the offline judge is not the deployment's.** `Config()` resolves
+`STRATEGIC_LLM` to the `claude_agent:sonnet` default when the replay runs with
+`cwd = harness-search/`, because only `main.py` loads the repo `.env` (which names
+`openrouter:minimax/minimax-m3`). A screening call costs 142–320s as a CLI round trip,
+which is what makes a five-golden preflight an hour. And `EMBEDDING` resolves correctly
+but the OpenAI key returns 429 `insufficient_quota`, so candidate selection degrades to
+the bag-of-content-words fallback on every offline run — the semantic half of "similarity
+selects candidates" has never actually been exercised.
+
 ## Loop policy
 
 Stop hierarchy: **gate-pass** > **journal-counted refit rounds** (`rev_journal_s9`,
