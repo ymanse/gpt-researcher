@@ -142,6 +142,19 @@ def main() -> int:
             row["S2_base_pct"] = base
             row["S2_delta"] = s2 - base
             deltas.append(s2 - base)
+        # Optional, and read from disk rather than trusted from a claim: the merge's own
+        # counters, if the runner drops <gid>.merge_stats.json beside the report. Without
+        # them nothing downstream can tell "the merge found nothing" from "the merge
+        # worked" — a no-op ships looking like a cautious success, which is exactly how
+        # one round passed its own preflight while merging 0 of 10 node answers. Not
+        # gated: synthesis_ratio_pct_max already refuses a no-op (a no-op measures ~121%).
+        try:
+            st = json.loads((OFFLINE / f"{gid}.merge_stats.json").read_text(encoding="utf-8"))
+            row["merge"] = {k: st.get(k) for k in
+                            ("claim_units", "units_merged", "chars_before", "chars_kept",
+                             "screens", "verdicts", "screened_out") if k in st}
+        except (OSError, json.JSONDecodeError):
+            pass
         rows.append(row)
 
     ev = {

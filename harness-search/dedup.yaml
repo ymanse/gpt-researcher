@@ -251,6 +251,26 @@ commands:
            FAIL CLOSED: when the verdict is unclear, DO NOT MERGE. Not merging costs
            synthesis_ratio; wrongly merging costs facts, and s2_min_delta >= -5 is the
            tighter bound. Prefer the error the gates forgive.
+        5. A CLUSTER IS A CLIQUE, NOT A CONNECTED COMPONENT. Equivalence is decided
+           PAIRWISE and is NOT transitive: A==B and B==C does not make A==C, so uniting
+           whole roots (union-find / transitive closure) can delete a claim in favour of
+           a survivor it was never compared with. This is the classic entity-resolution
+           error and it is measured, not theoretical — Draisbach 2022: "the commonly used
+           transitive closure is inferior to most other clustering algorithms, ESPECIALLY
+           FOR THE PRECISION of results", and precision is the axis that costs facts here.
+           In graph terms (Stanford IR book): connected components = single-link, cliques
+           = complete-link. Use the clique:
+             add u to cluster C  iff  _equivalent(u, m) holds for EVERY m in C
+           and REMEMBER THE NEGATIVES — a "not equivalent" verdict must block that pair
+           forever, which transitive closure silently discards ("calculating the
+           transitive closure ignores that records are classified as non-duplicates",
+           Draisbach 2019). The extra cost is small because these clusters are tiny: a
+           3-member cluster needs 3 verdicts instead of 2.
+           Recorded for later, NOT for this round: in-context clustering (arXiv:2506.02509)
+           hands the model a whole candidate GROUP to partition instead of asking pairwise,
+           which removes the transitivity assumption by construction and measured ~100x
+           fewer model calls (30.2K -> 0.28K). That is a rewrite of the merge path; land
+           the clique first.
 
       USE THE SEAMS — THEY ARE PATCHED FOR YOU. The s9 RED fixture replaces
       `skill.embed_question` with an offline stand-in and patches
@@ -279,6 +299,13 @@ commands:
       stages later. Report in your submission, for the captured corpus: claim units merged
       away, characters removed, and per-node lift. A threshold you did not measure against
       this corpus is a guess.
+      MAKE THE MERGE COUNT ITSELF. Have the runner drop <golden_id>.merge_stats.json
+      beside each re-synthesised report — claim_units, units_merged, chars_before,
+      chars_kept, and if you screen candidates, screens/verdicts/screened_out.
+      offline_dedup.py folds it into per_query["merge"] when it is there. Counters that
+      only reach a log cannot tell anyone "the merge found nothing" from "the merge
+      worked", and a no-op then reads as a cautious success — one round shipped merging
+      0 of 10 node answers on the probe query and nothing in its own evidence said so.
       If you are running out of time, COMMIT WHAT WORKS and say what is unfinished — a
       timed-out session loses everything it held in memory, and two already have.
       WATCH s2_min_delta, NOT THE AGGREGATE. Each query is scored against its own

@@ -147,6 +147,24 @@ distinct content. Three findings, in the order they matter:
    tighter bound. The paper's own benchmark tops out at 61.4% accuracy for general
    relation classification, so this is not a solved problem — but the decision needed here
    is only the empty-difference case on candidate pairs, with the safe default available.
+5. **A cluster is a clique, not a connected component.** Equivalence is decided pairwise
+   and is *not* transitive, so uniting whole roots — union-find, i.e. transitive closure —
+   can delete a claim in favour of a survivor it was never compared with. This is the
+   classic entity-resolution error, and it is measured: Draisbach 2022 finds "the commonly
+   used transitive closure is inferior to most other clustering algorithms, **especially
+   for the precision** of results", and precision is the axis that costs facts here.
+   Draisbach 2019 names the mechanism — transitive closure "ignores that records … are
+   classified as non-duplicates", i.e. it throws away the *negative* verdicts. In graph
+   terms (Stanford IR book) connected components = single-link, cliques = complete-link;
+   take the clique: add `u` to cluster `C` only when `_equivalent(u, m)` holds for **every**
+   `m ∈ C`, and remember the negatives so a refused pair stays refused. Cheap here because
+   these clusters are tiny — a 3-member cluster costs 3 verdicts instead of 2.
+   *Recorded, not yet adopted:* in-context clustering (arXiv:2506.02509) hands the model a
+   whole candidate group to partition rather than asking pairwise, dropping the transitivity
+   assumption by construction and measuring ~100× fewer model calls (30.2K → 0.28K). It
+   rewrites the merge path, so the clique lands first. Correlation clustering is the
+   principled optimum but NP-hard, and the ACM CSUR survey found simple Center/Merge-Center
+   "comparable, if not better".
 
 **The seams are open (since the 2026-07-28 re-cut).** The s9 RED fixture replaces
 `skill.embed_question` with an offline stand-in and patches `tr.create_chat_completion`,
