@@ -25,12 +25,43 @@ import subprocess
 import code_fp
 import credits
 import hconf
+import live_lib
 import rollup_scan
 
 DEDUP = hconf.HARNESS / "no_read" / "dedup"
 CORPUS = DEDUP / "corpus"
 OFFLINE = DEDUP / "offline"
 RESYNTH = hconf.HARNESS / "scripts" / "resynth.py"
+
+
+FRONTIER = "(unexplored frontier)"
+
+
+def baseline_s2(gid: str) -> int | None:
+    """S2 of the concatenating report with its UNEXPLORED-FRONTIER lines removed.
+
+    synthesize_node emits "(unexplored frontier) {question}" for every PENDING node, and
+    the captured reports carry 16-22 such lines. They are questions nobody researched, not
+    findings — but the frozen scorer matches a golden fact pattern anywhere in the file, so
+    a report can score a fact purely by reciting the question that mentions it. Measured
+    2026-07-29: edge-ai-face-access baseline 75 -> 62 once those lines are excluded, and
+    the merge's entire "-13 fact loss" on that query was this artifact. Comparing a merge
+    that drops frontier lines (correctly) against a baseline credited for them punishes the
+    right behaviour, so the baseline is scored on the stripped text.
+
+    Still the FROZEN scorer, on a real file, via its own CLI — the metric is never
+    re-implemented here.
+    """
+    src = CORPUS / f"{gid}.report.md"
+    if not src.exists():
+        return None
+    stripped = CORPUS / f"{gid}.baseline.report.md"
+    text = src.read_text(encoding="utf-8", errors="replace")
+    stripped.write_text(
+        "\n".join(ln for ln in text.split("\n") if FRONTIER not in ln), encoding="utf-8")
+    sc = live_lib.score(gid, str(stripped), str(CORPUS / f"{gid}.tree.json"),
+                        f"no_read/dedup/corpus/{gid}.baseline.scores.json")
+    return int(sc.get("S2_pct", -1)) if sc else None
 
 
 def resynth(gid: str) -> str:
@@ -86,8 +117,7 @@ def main() -> int:
         # aggregate while losing 13 and 12 points on the two queries whose baseline was
         # already the weakest (63 and 75). A mean over five queries lets one report lose
         # half its facts, which is exactly the deletion this gate exists to refuse.
-        base = (rollup_scan.s2_from_scores(gid, CORPUS)
-                or rollup_scan.rescore(gid, CORPUS))
+        base = baseline_s2(gid)
         if s2 is None:
             errors.append(f"{gid}: frozen scorer produced no S2")
         elif base is None:
