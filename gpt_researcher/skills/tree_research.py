@@ -338,8 +338,18 @@ MERGE_NEIGHBOURS = 3
 # one costs report length. The floor exists only to skip pairs with nothing in
 # common at all.
 MERGE_FLOOR = 0.08
-MERGE_VERDICT_TIMEOUT_S = 60.0
+MERGE_VERDICT_TIMEOUT_S = 120.0
 MERGE_JUDGE_FAILURES = 3    # transient errors happen; a dead judge answers none
+MERGE_CONCURRENCY = 4       # verdicts in flight at once
+# Units per SCREENING call. One judge call is a whole model round trip — measured on
+# this deployment (claude_agent) at ~90s — and the captured goldens offer 111-294
+# candidate pairs each, which is hours per query and, at 175 sequential CLI spawns,
+# the 0xC0000142 that killed four of five re-syntheses on 2026-07-29. So the pairs are
+# SCREENED in groups first: a unit the screen says has content of its own can never be
+# merged away, so none of its pairs is ever asked. Sized to hold a whole topic (the s9
+# fixture's 11 sentences are one group) while keeping a prompt small enough to read.
+MERGE_GROUP = 12
+_MERGE_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 MAX_THEMES = 8
 
 
@@ -954,36 +964,46 @@ class TreeResearchSkill:
                            "merge candidates by word overlap instead")
         return [_claim_counts(t) for t in texts], _bag_cosine
 
-    async def _equivalent(self, a: str, b: str) -> bool:
-        """Does either unit answer a question the other cannot?
+    async def _covered(self, texts: List[str]) -> Dict[int, bool]:
+        """{index -> this unit states nothing the OTHERS listed do not}.
 
-        Asks the model to ENUMERATE, for each of the two units, what it states that
-        the other does not; equivalent only when BOTH lists are empty. Fails closed
-        on every unclear outcome — no model, a timeout, a reply that does not name
-        both units — because not merging costs `synthesis_ratio_pct_max` while
-        wrongly merging costs facts, and `s2_min_delta >= -5` is the tighter bound.
+        One model call for the whole list, asking the same question either way: for
+        each statement, ENUMERATE what a reader would LOSE if that statement were
+        deleted and the rest kept.
+
+        Two units is the VERDICT — equivalent only when both lists come back empty.
+        More units is the cheap SCREEN in front of it: a unit the screen says has
+        content of its own cannot be merged away by anybody, so none of its candidate
+        pairs is worth a round trip. The screen never decides a merge on its own — with
+        three or more units "nothing of my own" does not say WHICH of the others covers
+        it, and collapsing a whole group on that is how two different claims on one
+        topic become one (see `_merge_claim_units`).
+
+        Fails closed on every unclear outcome — no model, a timeout, a reply that names
+        no unit — because not merging costs `synthesis_ratio_pct_max` while wrongly
+        merging costs facts, and `s2_min_delta >= -5` is the tighter bound.
 
         The units are sent marker-free: an [id] is not part of the claim, and a
         marker spliced mid-sentence would otherwise break the reply's own quoting.
         """
-        if not self._merge_judge_ok:
-            return False
-        fa, fb = _flat_claim(a), _flat_claim(b)
-        if not fa or not fb:
-            return False
+        if not self._merge_judge_ok or len(texts) < 2:
+            return {}
+        flats = [_flat_claim(t) for t in texts]
+        if not all(flats):
+            return {}
         provider, model = self._strategic_model()
         if not provider or not model:
             self._merge_judge_ok = False
-            return False
+            return {}
         try:
             reply = await asyncio.wait_for(
                 create_chat_completion(
                     messages=[{"role": "user", "content":
-                               self._equivalence_prompt(fa, fb)}],
+                               self._equivalence_prompt(flats)}],
                     llm_provider=provider, model=model, temperature=0),
                 timeout=MERGE_VERDICT_TIMEOUT_S)
         except Exception as exc:
-            # a transient error is worth another pair; a dead judge is not worth the
+            # a transient error is worth another call; a dead judge is not worth the
             # rest of the run, so stop asking after a few
             self._merge_judge_fails += 1
             logger.warning(f"claim-equivalence judge failed ({type(exc).__name__}: "
@@ -991,8 +1011,15 @@ class TreeResearchSkill:
                            f"{MERGE_JUDGE_FAILURES} before the merge gives up")
             if self._merge_judge_fails >= MERGE_JUDGE_FAILURES:
                 self._merge_judge_ok = False
-            return False
-        return self._reads_as_equivalent(str(reply or ""), fa, fb)
+            return {}
+        return self._reads_as_covered(str(reply or ""), flats)
+
+    async def _equivalent(self, a: str, b: str) -> bool:
+        """Does either unit answer a question the other cannot? The two-unit call is
+        the only one that decides a merge, because only there does "nothing of my own"
+        name the statement that covers it: the other one."""
+        verdict = await self._covered([a, b])
+        return verdict.get(0, False) and verdict.get(1, False)
 
     def _strategic_model(self) -> tuple:
         """(provider, model) for the merge judge, resolved once per assembly.
@@ -1020,41 +1047,52 @@ class TreeResearchSkill:
         return self._strategic_llm
 
     @staticmethod
-    def _equivalence_prompt(fa: str, fb: str) -> str:
-        """What each statement says that the other does not.
+    def _equivalence_prompt(flats: List[str]) -> str:
+        """What each statement says that the others do not.
 
         Enumeration, not classification, and phrased as the loss test the report is
         actually graded on: a fact a reader would LOSE if this statement were
-        deleted and the other kept. Asked as a bare "are these the same?" a model
+        deleted and the others kept. Asked as a bare "are these the same?" a model
         reports every difference in emphasis it can find — a restated claim with an
         extra qualifier reads as unique and nothing ever merges. Asked the other
         way round it collapses opposites. The listed cases are the two collapses
         that cost this corpus two golden facts.
+
+        The reply is asked to QUOTE the statement each line is about, so a list of any
+        length parses back to the statement it judged and a reordered or partial answer
+        cannot be misread as a verdict on the wrong one.
         """
+        listed = "\n\n".join(f"{_MERGE_LABELS[i]}: {f}" for i, f in enumerate(flats))
+        n = len(flats)
+        others = "the other one" if n == 2 else "the others"
         return (
-            "Two statements from one research report.\n\n"
-            f"A: {fa}\n\nB: {fb}\n\n"
+            f"{n} statements from one research report.\n\n"
+            f"{listed}\n\n"
             "For each statement, name the factual content a reader would LOSE if "
-            "that statement were deleted and the other one kept.\n"
+            f"that statement were deleted and {others} kept.\n"
             "NOT unique content: different wording, a different source or vendor "
             "making the same point, extra emphasis, a restatement, an example, or "
-            "a qualifier on a claim the other also makes.\n"
+            "a qualifier on a claim another one also makes.\n"
             "IS unique content: a different or opposite mechanism, a definition "
-            "where the other gives a consequence or a trade-off, a different "
-            "quantity, a different subject, or a condition the other never states.\n"
-            "Answer with exactly two lines and nothing else:\n"
-            "A => UNIQUE: <what only A asserts, or the word none>\n"
-            "B => UNIQUE: <what only B asserts, or the word none>\n"
-            'Write "none" when the other statement already asserts everything '
+            "where another gives a consequence or a trade-off, a different "
+            "quantity, a different subject, or a condition no other one states.\n"
+            f"Answer with exactly {n} lines and nothing else, one per statement, in "
+            "this form:\n"
+            '"<a verbatim fragment of that statement>" => UNIQUE: <what only that '
+            "statement asserts, or the word none>\n"
+            'Write "none" when the other statements already assert everything '
             "this one asserts."
         )
 
     @staticmethod
-    def _reads_as_equivalent(reply: str, fa: str, fb: str) -> bool:
-        """Parse the judge's enumeration. Each line names one side — by quoting a
-        fragment of it, or by an A/B label — and says what only that side asserts.
-        Both sides must be named, and both must have nothing of their own."""
-        verdict: Dict[str, bool] = {}
+    def _reads_as_covered(reply: str, flats: List[str]) -> Dict[int, bool]:
+        """Parse the judge's enumeration into {index -> nothing of its own}.
+
+        Each line names one statement — by quoting a fragment of it, or by its label —
+        and says what only that statement asserts. A statement the reply never names
+        is absent from the result, which reads as "no verdict" everywhere above and so
+        fails closed."""
+        verdict: Dict[int, bool] = {}
         for line in reply.splitlines():
             m = _UNIQUE_LINE_RE.match(line.strip())
             if not m:
@@ -1062,20 +1100,19 @@ class TreeResearchSkill:
             head, unique = m.group(1), m.group(2).strip().strip(".;,").lower()
             quoted = _QUOTED_RE.search(head)
             frag = (quoted.group(1) if quoted else "").strip()
-            if frag and frag in fa:
-                side = "A"
-            elif frag and frag in fb:
-                side = "B"
-            elif re.match(r"^\W*(?:statement\s*)?[Aa1]\b", head):
-                side = "A"
-            elif re.match(r"^\W*(?:statement\s*)?[Bb2]\b", head):
-                side = "B"
-            else:
-                continue
-            # a side named twice with different verdicts is not a clear answer
+            side = next((i for i, f in enumerate(flats) if frag and frag in f), None)
+            if side is None:
+                label = re.match(r"^\W*(?:statement\s*)?([A-Za-z]|\d{1,2})\b", head)
+                if not label:
+                    continue
+                tag = label.group(1)
+                side = int(tag) - 1 if tag.isdigit() else _MERGE_LABELS.find(tag.upper())
+                if not 0 <= side < len(flats):
+                    continue
+            # a statement named twice with different verdicts is not a clear answer
             empty = unique in ("none", "nothing", "n a", "none.", "")
             verdict[side] = empty if side not in verdict else (verdict[side] and empty)
-        return verdict.get("A", False) and verdict.get("B", False)
+        return verdict
 
     async def _merge_claim_units(self, texts: List[str], vecs, sim) -> Dict[int, List[int]]:
         """{canonical unit index -> the indices it absorbs}.
@@ -1104,17 +1141,96 @@ class TreeResearchSkill:
                 if score >= MERGE_FLOOR:
                     pairs[(min(i, j), max(i, j))] = score
         merged: Dict[int, List[int]] = {}
+        # SCREEN, then decide. A unit the screen says states something of its own can
+        # never be merged away, so the pairs it sits in are not worth a round trip;
+        # measured on the captured corpus this is what takes a query from 111-294
+        # verdicts to a few dozen calls. The screen is not allowed to merge anything by
+        # itself: with three or more units in front of it, "nothing of my own" does not
+        # say WHICH of the others covers this one, and collapsing the whole answer-none
+        # set is how a closure-table DEFINITION and its TRADE-OFF become one statement.
+        groups = self._merge_groups(pairs, len(texts), vecs, sim)
+        screened = await self._judged_in_waves(
+            [[texts[i] for i in g] for g in groups], self._covered)
+        covered = {g[k] for g, verdict in zip(groups, screened)
+                   for k, nothing_of_its_own in (verdict or {}).items()
+                   if nothing_of_its_own and k < len(g)}
         # strongest candidates first, so the canonical of a cluster is decided by the
-        # closest pair rather than by iteration order
-        for (i, j), _ in sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0])):
-            if find(i) == find(j) or not self._merge_judge_ok:
+        # closest pair rather than by iteration order. A wave at a time: waves keep the
+        # ordering that matters (a stronger pair is always judged before a weaker one)
+        # — the only thing concurrency loses is the chance to SKIP a pair whose ends
+        # have just been united, which costs a call, never a wrong merge.
+        order = [p for p, _ in sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0]))
+                 if p[0] in covered and p[1] in covered]
+        for w in range(0, len(order), MERGE_CONCURRENCY):
+            if not self._merge_judge_ok:
+                break
+            wave = [(i, j) for i, j in order[w:w + MERGE_CONCURRENCY] if find(i) != find(j)]
+            if not wave:
                 continue
-            if not await self._equivalent(texts[i], texts[j]):
-                continue
-            keep, drop = sorted((find(i), find(j)))
-            parent[drop] = keep
-            merged.setdefault(keep, []).extend([drop, *merged.pop(drop, [])])
+            verdicts = await asyncio.gather(
+                *(self._equivalent(texts[i], texts[j]) for i, j in wave))
+            for (i, j), same in zip(wave, verdicts):
+                if not same or find(i) == find(j):
+                    continue
+                keep, drop = sorted((find(i), find(j)))
+                parent[drop] = keep
+                merged.setdefault(keep, []).extend([drop, *merged.pop(drop, [])])
+        self._merge_calls = {"screens": len(groups), "verdicts": len(order),
+                             "screened_out": len(texts) - len(covered)}
         return {k: sorted(v) for k, v in merged.items()}
+
+    @staticmethod
+    def _merge_groups(pairs: Dict[tuple, float], n: int, vecs, sim) -> List[List[int]]:
+        """The candidate graph's connected components, each cut into screening groups.
+
+        A component is walked as a nearest-neighbour chain from its most central member,
+        so consecutive members are the ones most alike and a cut between groups falls
+        where the units are least related — a pair split across two groups is never
+        screened together and so never reaches a verdict, which costs report length.
+        Deterministic: the same tree screens the same groups every run.
+        """
+        adj: Dict[int, set] = {}
+        for i, j in pairs:
+            adj.setdefault(i, set()).add(j)
+            adj.setdefault(j, set()).add(i)
+        groups: List[List[int]] = []
+        seen: set = set()
+        for start in range(n):
+            if start in seen or start not in adj:
+                continue
+            comp, stack = [], [start]
+            seen.add(start)
+            while stack:                       # component
+                cur = stack.pop()
+                comp.append(cur)
+                for nb in sorted(adj[cur]):
+                    if nb not in seen:
+                        seen.add(nb)
+                        stack.append(nb)
+            if len(comp) < 2:
+                continue
+            centre = max(comp, key=lambda i: (sum(sim(vecs[i], vecs[j]) for j in comp), -i))
+            chain, left = [centre], [i for i in comp if i != centre]
+            while left:                        # nearest-neighbour chain
+                nxt = max(left, key=lambda i: (sim(vecs[i], vecs[chain[-1]]), -i))
+                chain.append(nxt)
+                left.remove(nxt)
+            groups += [chain[k:k + MERGE_GROUP] for k in range(0, len(chain), MERGE_GROUP)]
+        return [g for g in groups if len(g) > 1]
+
+    @staticmethod
+    async def _judged_in_waves(batches: List[list], judge) -> List[Any]:
+        """Run `judge` over every batch, MERGE_CONCURRENCY calls in flight.
+
+        The deployment's judge is a CLI round trip; sequentially, a query's calls run
+        past any sane session budget, and all of them at once is the process-spawn
+        storm that crashed four of five re-syntheses.
+        """
+        out: List[Any] = []
+        for w in range(0, len(batches), MERGE_CONCURRENCY):
+            out += list(await asyncio.gather(
+                *(judge(b) for b in batches[w:w + MERGE_CONCURRENCY])))
+        return out
 
     def _themes(self, idx: List[int], vecs, sim) -> List[List[int]]:
         """Group the surviving units (given by index) into themes DERIVED FROM THEM.
@@ -1300,9 +1416,12 @@ class TreeResearchSkill:
             "claim_units": len(units), "units_merged": len(absorbed),
             "chars_before": sum(len(u) for u in units),
             "chars_kept": sum(len(units[i]) for i in kept),
+            **getattr(self, "_merge_calls", {}),
         }
         logger.info(f"roll-up merge: {len(absorbed)} of {len(units)} claim units "
-                    f"absorbed into {len(merged)} shared claims")
+                    f"absorbed into {len(merged)} shared claims "
+                    f"({self._merge_stats.get('screens', 0)} screening calls, "
+                    f"{self._merge_stats.get('verdicts', 0)} verdicts)")
 
         if kept:
             groups = self._themes(kept, vecs, sim)
