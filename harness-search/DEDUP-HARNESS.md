@@ -333,6 +333,16 @@ Extra rounds are granted only by a human writing them into
 in the **foreground** — a `claude -p` session ends when it stops emitting, orphaning a
 backgrounded run (measured: 8 iterations lost that way on the search-quality build).
 
+**Agent timeout is 120m, raised from 75m on 2026-07-29.** Once the merge started asking a
+model for a per-pair verdict, two `s9-impl` sessions were killed at exactly `1h15m0s`
+mid-work, losing everything they had not committed. The dominant cost is the preflight:
+a tree offers 100–300 candidate pairs and re-synthesising all five goldens multiplies that
+by five. `scripts/offline_dedup.py --only <golden>` exists for that — it probes one query
+into `d1_offline.probe.json`, deliberately a **separate file**, because the d1 gate reads
+`d1_offline.json` and requires `queries_scanned == 5`, so a probe can never be mistaken
+for gate evidence. The impl guidance points at `denorm-derived-table`: the other four
+goldens are already lossless, so it is the only query that still decides anything.
+
 **Completion alarm.** `run-dedup.sh` calls `notify()` at its `DONE`/`STUCK`/`TIMEOUT`
 exits (terminal bell + Windows toast, `BurntToast` → `msg *` → bell). The loop is a
 separate process and gralph only prints `cursor is DONE` to stderr, so nothing else

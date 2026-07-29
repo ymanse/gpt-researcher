@@ -17,6 +17,7 @@ d0 established has stopped holding.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -83,6 +84,16 @@ def resynth(gid: str) -> str:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    # A probe run for the impl lane. The merge asks a model for a verdict per candidate
+    # pair and a real tree offers 100-300 of them, so re-synthesising all five goldens is
+    # the dominant cost of an s9-impl session — two of them hit the 75m agent timeout
+    # before they could submit. --only re-synthesises one golden and writes to a
+    # SEPARATE evidence file, so a probe can never be mistaken for the d1 gate's evidence
+    # (which requires queries_scanned == 5 and would read a partial file as a hard fail).
+    ap.add_argument("--only", help="probe a single golden id; writes d1_offline.probe.json")
+    a = ap.parse_args()
+
     OFFLINE.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
     try:
@@ -94,6 +105,8 @@ def main() -> int:
     before = credits.remaining()
     for r in man.get("queries") or []:
         gid = r["id"]
+        if a.only and gid != a.only:
+            continue
         # the scorer and the lift scan both read the ORIGINAL tree: the node answers are
         # the fixed input, the report is what the merge changed
         shutil.copyfile(CORPUS / f"{gid}.tree.json", OFFLINE / f"{gid}.tree.json")
@@ -104,7 +117,8 @@ def main() -> int:
     after = credits.remaining()
 
     rows, s2s, deltas = [], [], []
-    for g in hconf.load_golden():
+    goldens = [g for g in hconf.load_golden() if not a.only or g["id"] == a.only]
+    for g in goldens:
         gid = g["id"]
         row = rollup_scan.scan_query(gid, OFFLINE)
         if not row:
@@ -147,11 +161,15 @@ def main() -> int:
         "s2_aggregate_pct": round(sum(s2s) / len(s2s)) if s2s else 0,
         # the decisive fact-retention field: worst per-query loss against that query's own
         # concatenating baseline. -999 when a baseline is missing (law 4: unknown != zero)
-        "s2_min_delta": min(deltas) if deltas and len(deltas) == len(hconf.load_golden()) else -999,
+        "s2_min_delta": min(deltas) if deltas and len(deltas) == len(goldens) else -999,
         "per_query": rows,
         "errors": errors,
     }
-    hconf.write_json(hconf.EVID / "d1_offline.json", ev)
+    out = hconf.EVID / ("d1_offline.probe.json" if a.only else "d1_offline.json")
+    hconf.write_json(out, ev)
+    if a.only:
+        print(f"PROBE ONLY ({a.only}) -> {out.name}. The d1 gate reads d1_offline.json and "
+              f"requires queries_scanned == 5; run without --only before submitting.")
     print(json.dumps({k: v for k, v in ev.items() if k != "per_query"}, indent=2, sort_keys=True))
     for r in rows:
         print(f"  {r['qid'][:22]:24} lifted {r['lifted_nodes']}/{r['node_answers_scanned']} "

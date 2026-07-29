@@ -24,7 +24,11 @@
 
 agent:
   command: ["claude", "-p", "{{prompt}}", "--dangerously-skip-permissions", "--add-dir", "D:/dev_ext/gpt-researcher", "--add-dir", "D:/dev_ext/gptr-mcp"]
-  timeout: 75m
+  # 75m was too tight once the merge started asking a model for a per-pair verdict: two
+  # s9-impl sessions were killed mid-work at exactly 1h15m, losing everything they had
+  # not committed. Raised rather than removed — an agent that is stuck should still be
+  # cut off, and gralph's 5-consecutive-abnormal-exit give-up is the backstop.
+  timeout: 120m
 
 fail_threshold: 3
 lua_timeout: 90s
@@ -261,12 +265,22 @@ commands:
       under themes does not lower lifted_nodes_max on its own — only removing or
       re-wording content does. Headings alone move one metric of four.
 
-      MEASURE BEFORE YOU SUBMIT — IT IS FREE. Run `python scripts/offline_dedup.py`
-      (minutes, zero Firecrawl credits) and read the per-query lines it prints. The impl
-      gate cannot tell a merge that found nothing from a merge that worked, so a no-op
-      passes verify_impl and only fails four stages later. Report in your submission, for
-      the captured corpus: claim units merged away, characters removed, and per-node lift.
-      A threshold you did not measure against this corpus is a guess.
+      MEASURE BEFORE YOU SUBMIT — BUT PROBE ONE QUERY FIRST. A verdict is a model round
+      trip and a real tree offers 100-300 candidate pairs, so re-synthesising all five
+      goldens dominates this session: two impl rounds hit the 75m agent timeout before
+      they could submit anything. Work in this order:
+        python scripts/offline_dedup.py --only denorm-derived-table
+      — one golden, writes d1_offline.probe.json, and it is THE query that still fails
+      (the other four are already lossless). Iterate against the probe. Only when it
+      looks right, run the full five:
+        python scripts/offline_dedup.py
+      (zero Firecrawl credits either way). The impl gate cannot tell a merge that found
+      nothing from a merge that worked, so a no-op passes verify_impl and only fails four
+      stages later. Report in your submission, for the captured corpus: claim units merged
+      away, characters removed, and per-node lift. A threshold you did not measure against
+      this corpus is a guess.
+      If you are running out of time, COMMIT WHAT WORKS and say what is unfinished — a
+      timed-out session loses everything it held in memory, and two already have.
       WATCH s2_min_delta, NOT THE AGGREGATE. Each query is scored against its own
       concatenating baseline (100/63/75/100/100, aggregate 88); >-5 per query is the bar.
       A cut that measured 83 aggregate was dropping 13 and 12 points on the two weakest
