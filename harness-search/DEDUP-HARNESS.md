@@ -316,6 +316,41 @@ confirm `python scripts/code_fp.py` matches `no_read/dedup/corpus/corpus.json`. 
 fingerprint is deliberately left byte-exact (normalising it would invalidate the recorded
 manifest for no present gain), so this is a documented handling rule, not a defect to fix.
 
+### Why the third cut still merged nothing — measured, 2026-07-29
+
+The third RED cut prescribed the right operator (equivalence decides, similarity only
+selects) and the implementation still came back at `synthesis_ratio_pct_max` 121 with
+`lifted_nodes_max` 10 of 10 — a report that scores exactly its own concatenating
+baseline. Splitting the claim unit from a paragraph down to a sentence did not move it.
+Three causes, all measured on `denorm-derived-table` (212 claim units, 430 candidate
+pairs, 13 screening groups of 16):
+
+1. **Coverage was required to be MUTUAL.** A pair only reached a verdict when both ends
+   screened "nothing of my own", and 4 of 32 screened units did — so essentially no pair
+   was ever judged. But coverage is directional and the common shape in a research tree
+   is a later node restating an earlier finding *with more detail*: A is covered by B,
+   B is not covered by A. Deleting A there loses nothing — that is precisely what the
+   judge enumerated — and B survives whole. Requiring the mutual case buys no safety and
+   refuses most of the real redundancy.
+2. **The judge does not quote verbatim.** It strips the markdown from the fragment it
+   quotes (`**Fast Refresh using materialized view logs**` comes back bare), so
+   `fragment in unit` missed and the whole line — including a `UNIQUE: none` — was
+   discarded as unreadable. Measured parse rate: 10 of 16 statements in one screen, 5 of
+   8 in another.
+3. **The judge drops the keyword.** One screen answered
+   `"The refresh method can be incremental or a complete refresh" => none`, with no
+   `UNIQUE:` at all. The keyword-anchored line pattern threw it away.
+
+Both parse failures fail closed, which is why they were invisible: a discarded verdict
+looks exactly like "the model said this one is unique".
+
+*The counters are the reason this took a round.* `_merge_stats` and `_merge_calls` were
+computed, logged, and written to no file, so `screens`, `verdicts` and `screened_out`
+never reached evidence and a merge that found nothing was indistinguishable from one
+that worked until d1 scored it. They now travel out through `assemble_report`'s result
+and `run()`'s `stats.merge`. Wiring a GATE to them needs a change under
+`harness-search/scripts/`, which the impl lane is not allowed to make.
+
 ## Loop policy
 
 Stop hierarchy: **gate-pass** > **journal-counted refit rounds** (`rev_journal_s9`,
