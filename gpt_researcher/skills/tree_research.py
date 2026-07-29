@@ -392,10 +392,9 @@ def _claim_units(text: str) -> List[str]:
     its own source never wrote. The lookahead keeps "e.g. foo" and "MySQL 8.0 onward"
     whole; `\\s+` already protects a decimal point.
     """
-    out: List[str] = []
+    pieces: List[str] = []
     for block in _UNIT_SPLIT_RE.split(text or ""):
         prev = 0
-        pieces: List[str] = []
         for m in _SENT_BREAK_RE.finditer(block):
             piece = block[prev:m.end()].strip()
             if piece:
@@ -404,18 +403,18 @@ def _claim_units(text: str) -> List[str]:
         tail = block[prev:].strip()
         if tail:
             pieces.append(tail)
-        # A COLON-TERMINATED CLAUSE IS NOT A CLAIM, it is the lead-in to the next one,
-        # and once every unit is its own block laid out by theme it ends up severed from
-        # the material it introduces and sometimes filed under a different heading —
-        # measured on the shipped denorm report as 6 stranded lines ("Per the docs:",
-        # "Three defensible patterns:"). It travels with the unit it governs.
-        merged: List[str] = []
-        for piece in pieces:
-            if merged and merged[-1].endswith(":"):
-                merged[-1] = f"{merged[-1]} {piece}"
-            else:
-                merged.append(piece)
-        out += merged
+    # A COLON-TERMINATED CLAUSE IS NOT A CLAIM, it is the lead-in to the next one, and
+    # once every unit is its own block laid out by theme it ends up severed from the
+    # material it introduces and sometimes filed under a different heading — measured on
+    # the shipped denorm report as 6 stranded lines ("Per the docs:", "Three defensible
+    # patterns:"). It travels with the unit it governs. Across paragraph breaks too:
+    # a lead-in and its list are two BLOCKS more often than they are two sentences.
+    out: List[str] = []
+    for piece in pieces:
+        if out and out[-1].endswith(":"):
+            out[-1] = f"{out[-1]}\n\n{piece}"
+        else:
+            out.append(piece)
     return out
 
 
