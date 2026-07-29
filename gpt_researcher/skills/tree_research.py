@@ -313,6 +313,70 @@ def _primary_source_affinity(question: str) -> float:
             + 0.35 * bool(_OWN_SOURCE_RE.search(question)))
 
 
+# --- s9: the roll-up states each CLAIM once, under themes drawn from the claims.
+# SIMILARITY SELECTS CANDIDATES; EQUIVALENCE DECIDES. Cosine, word overlap, LSA and
+# coverage all score the INTERSECTION of two texts, and the merge decision lives in
+# the DIFFERENCE — four implementations merged on the intersection and each deleted a
+# fact (a "complete refresh" sentence merged away in favour of an "incremental
+# refresh" one; a closure-table DEFINITION merged away in favour of its TRADE-OFF).
+# arXiv:2509.08304 states the operator: two texts are equivalent only when neither
+# answers a question the other cannot, and OVERLAP — each with its own answerable
+# questions — must never be collapsed. So the verdict is a model call that ENUMERATES
+# what each side says the other does not (steadier than classification, and the two
+# lists are the explanation the review lane reads), and an unclear verdict does NOT
+# merge: not merging costs report length, wrongly merging costs facts.
+_UNIT_SPLIT_RE = re.compile(r"\n\s*\n+")
+_BRACKETED_RE = re.compile(r"\[[^\]]*\]")
+_UNIQUE_LINE_RE = re.compile(r"^(.*?)\bunique\s*[:=]\s*(.*)$", re.I)
+_QUOTED_RE = re.compile(r"[\"“”'‘’](.+?)[\"“”'‘’]", re.S)
+# candidate pairs per unit. Its only job is to put the equivalent pairs in front of
+# the judge; a higher k costs verdict calls, never accuracy.
+MERGE_NEIGHBOURS = 3
+# Low on purpose: the similarity here only RANKS, and the redundancy this harness
+# measures is topical, not lexical (repeated 5-grams 0-2%), so a bar high enough to
+# be "safe" is too high to fire. A weak candidate costs one verdict call; a missed
+# one costs report length. The floor exists only to skip pairs with nothing in
+# common at all.
+MERGE_FLOOR = 0.08
+MERGE_VERDICT_TIMEOUT_S = 60.0
+MERGE_JUDGE_FAILURES = 3    # transient errors happen; a dead judge answers none
+MAX_THEMES = 8
+
+
+def _flat_claim(text: str) -> str:
+    """One claim unit as the judge should see it: citation markers gone (a marker is
+    not content, and it is noise in a comparison) and whitespace collapsed."""
+    return re.sub(r"\s+", " ", _BRACKETED_RE.sub(" ", text or "")).strip()
+
+
+def _claim_counts(text: str) -> Dict[str, int]:
+    """The unit's content words and how often it uses them. Citation markers are
+    stripped first — a marker is not content, and rollup_scan's own tokenizer drops
+    them too."""
+    counts: Dict[str, int] = {}
+    for t in _ctx_tokens(_BRACKETED_RE.sub(" ", text or "")):
+        counts[t] = 0
+    for t in _norm_tokens(_BRACKETED_RE.sub(" ", text or "")):
+        if t in counts:
+            counts[t] += 1
+    return counts
+
+
+def _claim_tokens(text: str) -> set:
+    return set(_claim_counts(text))
+
+
+def _bag_cosine(a: Dict[str, int], b: Dict[str, int]) -> float:
+    """Term-frequency cosine over content words — what a real encoder can at least
+    see. The stand-in for the embedding service, and like it, only a RANKER."""
+    if not a or not b:
+        return 0.0
+    num = sum(v * b.get(k, 0) for k, v in a.items())
+    na = math.sqrt(sum(v * v for v in a.values()))
+    nb = math.sqrt(sum(v * v for v in b.values()))
+    return num / (na * nb) if na and nb else 0.0
+
+
 def _slug(text: str, max_len: int = 40) -> str:
     s = re.sub(r"[^\w\s-]", "", text or "").strip().lower()
     s = re.sub(r"[\s_-]+", "-", s)
@@ -337,6 +401,10 @@ class TreeResearchSkill:
         self._root_query: str = str(getattr(researcher, "query", "") or "")
         self._max_breadth = 4
         self._rollup_dropped_ratio = 0.0  # share of the body verify_rollup removed
+        self._merge_judge_ok = True  # cleared for the run once the judge stops answering
+        self._merge_judge_fails = 0
+        self._strategic_llm: Optional[tuple] = None
+        self._merge_stats: Dict[str, int] = {}
         self.tokens_spent = 0
         self.credits_spent = 0.0
 
@@ -824,7 +892,17 @@ class TreeResearchSkill:
         early in a long sentence is invisible from the far end of it — measured
         on the round-1 goldens, that placement is what left denorm-derived-table
         at 3 of 5 ids grounded and solid-state-battery at 1 of 2. Sitting next to
-        the wording it traces to is also what a citation is supposed to mean."""
+        the wording it traces to is also what a citation is supposed to mean.
+
+        s9: paragraph breaks survive. This used to space-join every sentence of a
+        node answer into one blob, which left the roll-up a single 5KB lump with
+        no claim units in it to compare or merge — and it silently reflowed the
+        author's markdown (lists, bold lead-ins) into a wall.
+        """
+        blocks = _UNIT_SPLIT_RE.split(text or "")
+        if len(blocks) > 1:
+            return "\n\n".join(self._attribute_citations(b, source_ids)
+                               for b in blocks if b.strip())
         sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
         if not sentences:
             return (text or "").strip()
@@ -849,11 +927,261 @@ class TreeResearchSkill:
             out.append(sent)
         return " ".join(out)
 
+    # ------------------------------------------------------- s9: claim merging
+
+    async def _unit_vectors(self, texts: List[str]) -> tuple:
+        """(vectors, similarity) for the claim units — embeddings when the service
+        answers, bag-of-content-words when it does not.
+
+        Either way this only SELECTS candidate pairs. The redundancy measured here
+        is topical, not lexical (repeated 5-grams 0-2%), so word overlap alone
+        misses the pairs that matter — but a missed candidate costs report length,
+        never a fact, and the verdict below is what actually decides. Falling back
+        instead of failing keeps the merge working wherever the embedding provider
+        is down, out of quota, or simply not configured.
+        """
+        if not texts:
+            return [], _bag_cosine
+        try:
+            probe = await self.embed_question(texts[0])
+            if probe:
+                rest = await asyncio.gather(*(self.embed_question(t) for t in texts[1:]))
+                vecs = [list(probe), *(list(v) for v in rest)]
+                if all(vecs):
+                    return vecs, _cosine
+        except Exception as exc:  # any provider/seam failure degrades, never crashes
+            logger.warning(f"claim-unit embeddings unavailable ({exc}); selecting "
+                           "merge candidates by word overlap instead")
+        return [_claim_counts(t) for t in texts], _bag_cosine
+
+    async def _equivalent(self, a: str, b: str) -> bool:
+        """Does either unit answer a question the other cannot?
+
+        Asks the model to ENUMERATE, for each of the two units, what it states that
+        the other does not; equivalent only when BOTH lists are empty. Fails closed
+        on every unclear outcome — no model, a timeout, a reply that does not name
+        both units — because not merging costs `synthesis_ratio_pct_max` while
+        wrongly merging costs facts, and `s2_min_delta >= -5` is the tighter bound.
+
+        The units are sent marker-free: an [id] is not part of the claim, and a
+        marker spliced mid-sentence would otherwise break the reply's own quoting.
+        """
+        if not self._merge_judge_ok:
+            return False
+        fa, fb = _flat_claim(a), _flat_claim(b)
+        if not fa or not fb:
+            return False
+        provider, model = self._strategic_model()
+        if not provider or not model:
+            self._merge_judge_ok = False
+            return False
+        try:
+            reply = await asyncio.wait_for(
+                create_chat_completion(
+                    messages=[{"role": "user", "content":
+                               self._equivalence_prompt(fa, fb)}],
+                    llm_provider=provider, model=model, temperature=0),
+                timeout=MERGE_VERDICT_TIMEOUT_S)
+        except Exception as exc:
+            # a transient error is worth another pair; a dead judge is not worth the
+            # rest of the run, so stop asking after a few
+            self._merge_judge_fails += 1
+            logger.warning(f"claim-equivalence judge failed ({type(exc).__name__}: "
+                           f"{exc}) — {self._merge_judge_fails} of "
+                           f"{MERGE_JUDGE_FAILURES} before the merge gives up")
+            if self._merge_judge_fails >= MERGE_JUDGE_FAILURES:
+                self._merge_judge_ok = False
+            return False
+        return self._reads_as_equivalent(str(reply or ""), fa, fb)
+
+    def _strategic_model(self) -> tuple:
+        """(provider, model) for the merge judge, resolved once per assembly.
+
+        The offline re-synthesis runner rebuilds the skill from a sidecar and has no
+        live Config to hand it, so fall back to the deployment's own settings — the
+        replay must exercise the same judge the live run does, or it is measuring
+        something else.
+        """
+        if self._strategic_llm is None:
+            cfg = getattr(self.researcher, "cfg", None)
+            provider = getattr(cfg, "strategic_llm_provider", None)
+            model = getattr(cfg, "strategic_llm_model", None)
+            if not provider or not model:
+                try:
+                    from ..config import Config
+                    live = Config()
+                    provider = provider or live.strategic_llm_provider
+                    model = model or live.strategic_llm_model
+                except Exception as exc:
+                    logger.warning(f"no strategic model for the claim merge ({exc}); "
+                                   "the roll-up will not merge")
+                    provider = model = None
+            self._strategic_llm = (provider, model)
+        return self._strategic_llm
+
+    @staticmethod
+    def _equivalence_prompt(fa: str, fb: str) -> str:
+        """What each statement says that the other does not.
+
+        Enumeration, not classification, and phrased as the loss test the report is
+        actually graded on: a fact a reader would LOSE if this statement were
+        deleted and the other kept. Asked as a bare "are these the same?" a model
+        reports every difference in emphasis it can find — a restated claim with an
+        extra qualifier reads as unique and nothing ever merges. Asked the other
+        way round it collapses opposites. The listed cases are the two collapses
+        that cost this corpus two golden facts.
+        """
+        return (
+            "Two statements from one research report.\n\n"
+            f"A: {fa}\n\nB: {fb}\n\n"
+            "For each statement, name the factual content a reader would LOSE if "
+            "that statement were deleted and the other one kept.\n"
+            "NOT unique content: different wording, a different source or vendor "
+            "making the same point, extra emphasis, a restatement, an example, or "
+            "a qualifier on a claim the other also makes.\n"
+            "IS unique content: a different or opposite mechanism, a definition "
+            "where the other gives a consequence or a trade-off, a different "
+            "quantity, a different subject, or a condition the other never states.\n"
+            "Answer with exactly two lines and nothing else:\n"
+            "A => UNIQUE: <what only A asserts, or the word none>\n"
+            "B => UNIQUE: <what only B asserts, or the word none>\n"
+            'Write "none" when the other statement already asserts everything '
+            "this one asserts."
+        )
+
+    @staticmethod
+    def _reads_as_equivalent(reply: str, fa: str, fb: str) -> bool:
+        """Parse the judge's enumeration. Each line names one side — by quoting a
+        fragment of it, or by an A/B label — and says what only that side asserts.
+        Both sides must be named, and both must have nothing of their own."""
+        verdict: Dict[str, bool] = {}
+        for line in reply.splitlines():
+            m = _UNIQUE_LINE_RE.match(line.strip())
+            if not m:
+                continue
+            head, unique = m.group(1), m.group(2).strip().strip(".;,").lower()
+            quoted = _QUOTED_RE.search(head)
+            frag = (quoted.group(1) if quoted else "").strip()
+            if frag and frag in fa:
+                side = "A"
+            elif frag and frag in fb:
+                side = "B"
+            elif re.match(r"^\W*(?:statement\s*)?[Aa1]\b", head):
+                side = "A"
+            elif re.match(r"^\W*(?:statement\s*)?[Bb2]\b", head):
+                side = "B"
+            else:
+                continue
+            # a side named twice with different verdicts is not a clear answer
+            empty = unique in ("none", "nothing", "n a", "none.", "")
+            verdict[side] = empty if side not in verdict else (verdict[side] and empty)
+        return verdict.get("A", False) and verdict.get("B", False)
+
+    async def _merge_claim_units(self, texts: List[str], vecs, sim) -> Dict[int, List[int]]:
+        """{canonical unit index -> the indices it absorbs}.
+
+        MERGE BY SELECTION, NOT BY REWRITING: one member's ORIGINAL wording is kept
+        and the others are dropped, so nothing is re-worded and nothing loses the
+        grounding its node earned. Three rewrite-then-re-attribute designs were
+        measured live to lose citations, one reaching citations_total=0.
+        """
+        n = len(texts)
+        if n < 2:
+            return {}
+        parent = list(range(n))
+
+        def find(i: int) -> int:
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        pairs: Dict[tuple, float] = {}
+        for i in range(n):
+            scored = sorted(((sim(vecs[i], vecs[j]), j) for j in range(n) if j != i),
+                            key=lambda p: (-p[0], p[1]))
+            for score, j in scored[:MERGE_NEIGHBOURS]:
+                if score >= MERGE_FLOOR:
+                    pairs[(min(i, j), max(i, j))] = score
+        merged: Dict[int, List[int]] = {}
+        # strongest candidates first, so the canonical of a cluster is decided by the
+        # closest pair rather than by iteration order
+        for (i, j), _ in sorted(pairs.items(), key=lambda kv: (-kv[1], kv[0])):
+            if find(i) == find(j) or not self._merge_judge_ok:
+                continue
+            if not await self._equivalent(texts[i], texts[j]):
+                continue
+            keep, drop = sorted((find(i), find(j)))
+            parent[drop] = keep
+            merged.setdefault(keep, []).extend([drop, *merged.pop(drop, [])])
+        return {k: sorted(v) for k, v in merged.items()}
+
+    def _themes(self, idx: List[int], vecs, sim) -> List[List[int]]:
+        """Group the surviving units (given by index) into themes DERIVED FROM THEM.
+
+        The report's outline must not be the tree's: a node's answer could only ever
+        appear beneath its own node, so two siblings restating one finding were never
+        in the same place and no threshold could ever bring them together. Themes cut
+        across nodes (STORM, arXiv:2402.14207, expands an outline built from the
+        collected references; Egnyte's writer stage makes the emergent themes of a
+        meta-analysis over all question analyses its sections).
+
+        Seeds are the most central unit, then repeatedly the unit least like every
+        seed so far — deterministic, so two runs of the same tree lay out the same.
+        """
+        n = len(idx)
+        k = max(2, min(MAX_THEMES, int(round(n ** 0.5))))
+        if n <= k:
+            return [[i] for i in idx]
+        total = {i: sum(sim(vecs[i], vecs[j]) for j in idx) for i in idx}
+        seeds = [max(idx, key=lambda i: (total[i], -idx.index(i)))]
+        while len(seeds) < k:
+            seeds.append(min((i for i in idx if i not in seeds),
+                             key=lambda i: (max(sim(vecs[i], vecs[s]) for s in seeds), i)))
+        groups: List[List[int]] = [[] for _ in seeds]
+        for i in idx:
+            best = max(range(len(seeds)), key=lambda s: (sim(vecs[i], vecs[seeds[s]]), -s))
+            groups[best].append(i)
+        return [g for g in groups if g]
+
+    @staticmethod
+    def _theme_title(members: List[str], others: List[str]) -> str:
+        """A title made of what this theme says and the others do not."""
+        inside: Dict[str, int] = {}
+        for t in members:
+            for w in _claim_tokens(t):
+                inside[w] = inside.get(w, 0) + 1
+        outside: Dict[str, int] = {}
+        for t in others:
+            for w in _claim_tokens(t):
+                outside[w] = outside.get(w, 0) + 1
+        ranked = sorted(inside, key=lambda w: (-inside[w] / (1 + outside.get(w, 0)),
+                                               -inside[w], w))
+        picked: List[str] = []
+        for w in ranked:
+            # "table" and "tables" are one word for a title's purposes
+            if any(w[:5] == p[:5] for p in picked):
+                continue
+            picked.append(w)
+            if len(picked) == 4:
+                break
+        # ponytail: keyword titles, derived from the theme's own distinctive words.
+        # Ask the model for a phrasing if a human ever reads these for prose.
+        return ", ".join(w.capitalize() if i == 0 else w
+                         for i, w in enumerate(picked)) or "Findings"
+
     async def synthesize_node(self, node: ResearchNode,
                               child_summaries: Optional[List[str]] = None,
                               source_ids: Optional[Dict[str, str]] = None) -> str:
         """Roll one node up into a summary (leaf: own attributed answer;
         internal: own answer followed by each child's summary, verbatim).
+
+        s9: assemble_report now calls this once per node with NO child summaries and
+        lays the claim units out by theme instead. Nesting a child's text inside its
+        parent's is what pinned every finding under its own node, so two siblings
+        restating one claim were never in the same place and no merge could reach
+        them. The child argument stays — the seam's contract is unchanged and a
+        caller that wants the subtree in one string still gets it.
 
         Three progressively wider "LLM rewrites the merge, then re-derive [id]
         markers by fuzzy-matching the rewrite against pre-merge text" designs
@@ -920,26 +1248,76 @@ class TreeResearchSkill:
                     url_to_id[url] = cid
                     citation_map[cid] = url
 
-        # post-order roll-up: children before parent, root synthesized last
-        async def rollup(n: ResearchNode) -> str:
-            summaries = []
+        # post-order roll-up: children before parent, root synthesized last. Each
+        # node is synthesized ON ITS OWN — the child summaries are no longer nested
+        # into the parent's text, because that nesting is exactly what pinned every
+        # finding under its own node and put two siblings' restatements of one claim
+        # in two different places, where no merge could ever reach them. The claim
+        # units below are laid out by THEME instead.
+        units: List[str] = []
+        unit_ids: List[Dict[str, str]] = []
+        self._merge_judge_ok, self._merge_judge_fails = True, 0
+
+        async def rollup(n: ResearchNode) -> None:
             for cid in n.children:
                 child = self.nodes[cid]
                 if child.status == NodeStatus.PRUNED:
                     continue
-                summaries.append(await rollup(child))
+                await rollup(child)
             node_source_ids = {u: url_to_id[u] for u in n.sources if u in url_to_id}
-            text = await self.synthesize_node(n, summaries, node_source_ids)
+            text = await self.synthesize_node(n, [], node_source_ids)
             self._syntheses[n.id] = text
-            return text
+            # a PENDING node contributes "(unexplored frontier) {question}" — a
+            # question nobody researched, not a finding. The frozen scorer matches a
+            # golden fact anywhere in the file, so those lines let a report score a
+            # fact purely by reciting the question that mentions it.
+            if n.status == NodeStatus.PENDING:
+                return
+            for part in _UNIT_SPLIT_RE.split(text):
+                if part.strip():
+                    units.append(part.strip())
+                    unit_ids.append(node_source_ids)
 
         # the root is the first node inserted (run() seeds it before the frontier
         # loop), which is also the order the resynth sidecar preserves
         root = next(iter(self.nodes.values()), None)
-        root_text = ("" if root is None or root.status == NodeStatus.PRUNED
-                     else await rollup(root))
+        if root is not None and root.status != NodeStatus.PRUNED:
+            await rollup(root)
 
-        body = "\n".join([f"# {query}", "", root_text or "_(no synthesis)_", ""])
+        vecs, sim = await self._unit_vectors(units)
+        merged = await self._merge_claim_units(units, vecs, sim)
+        absorbed = {i for members in merged.values() for i in members}
+        # MIGRATE THE GROUNDING, don't assume it: an absorbed unit's source earns its
+        # [id] on the surviving wording only where the frozen scorer can still trace
+        # it to that source's own page. _attribute_citations is that rule.
+        for keep, members in merged.items():
+            extra = {u: cid for i in members for u, cid in unit_ids[i].items()
+                     if u not in unit_ids[keep]}
+            if extra:
+                units[keep] = self._attribute_citations(units[keep], extra)
+        kept = [i for i in range(len(units)) if i not in absorbed]
+        self._merge_stats = {
+            "claim_units": len(units), "units_merged": len(absorbed),
+            "chars_before": sum(len(u) for u in units),
+            "chars_kept": sum(len(units[i]) for i in kept),
+        }
+        logger.info(f"roll-up merge: {len(absorbed)} of {len(units)} claim units "
+                    f"absorbed into {len(merged)} shared claims")
+
+        if kept:
+            groups = self._themes(kept, vecs, sim)
+            sections = sorted(
+                (min(g), self._theme_title([units[i] for i in g],
+                                           [units[i] for i in kept if i not in g]), g)
+                for g in groups)
+            lines = [f"# {query}", ""]
+            for _, title, g in sections:
+                lines += [f"## {title}", ""]
+                for i in g:
+                    lines += [units[i], ""]
+            body = "\n".join(lines)
+        else:
+            body = "\n".join([f"# {query}", "", "_(no synthesis)_", ""])
 
         # defect 6a fail-closed: an [id] with no citations entry never reaches
         # the caller — detect, then strip the unbacked markers. Body only: the
