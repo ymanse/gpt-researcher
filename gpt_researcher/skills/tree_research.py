@@ -376,8 +376,11 @@ _DUP_COS = 0.90         # embedding cosine at/above which two claims state one f
 _DUP_TERM_COS = 0.60    # ...the offline bar, an idf cosine over content terms
 _BLOCK_TAU = 0.35       # blocking bar: below it a pair is never a duplicate candidate
 _GAIN_FLOOR = 0.58      # share of a passage's content that must be new to print it
-                        # ...and none at all for one stating a datum not yet printed,
-                        # which is round one of _select_passages rather than a constant
+_DATA_FLOOR = 0.25      # ...and the lower share still asked of one stating a datum the
+                        # report has not printed. A datum earns a passage its RANK (round
+                        # one of _select_passages), not its characters: waiving the floor
+                        # outright let one unprinted token buy a whole paragraph of
+                        # restatement (review R1)
 _REPORT_SHARE = 0.68    # length the report is written to, as a share of the answers
 _MIN_REPORT_CHARS = 6000  # ...below which a roll-up is already a report, and is not cut
 _FACT_WEIGHT = 3.0      # figures/entities against prose terms in the coverage objective
@@ -410,6 +413,11 @@ _CONTEST_RE = re.compile(
     r"in\s+exchange\s+for|on\s+the\s+other\s+hand|the\s+(?:downside|catch)\s+is)\b")
 # what a node answer calls its own parts. These are the LLM's scaffolding, not a
 # subject, so they must never become a section title of the merged report.
+# ...and the subset of those a node writes ABOUT ITS OWN ANSWER. synthesize_node asks
+# each node for one in those words -- "DIGEST: a <=120-word summary of the answer" -- so
+# it restates material the tree already carries rather than reporting anything of its
+# own. _select_passages says what that changes and why the wider set is wrong there.
+_SELF_SUMMARY = {"digest", "summary", "tl;dr"}
 _SCAFFOLD_TITLES = {"answer", "digest", "summary", "overview", "bottom line",
                     "conclusion", "conclusions", "notes", "note", "learnings",
                     "sources", "references", "background", "introduction", "tl;dr",
@@ -473,6 +481,13 @@ _ABBREV_END_RE = re.compile(
     r"(?:\b(?:vs|e\.?g|i\.?e|etc|cf|approx|est|no|fig|eq|ref|al|ca|Inc|Ltd|Co|Corp|"
     r"Dr|Mr|Ms|Mrs|Prof|St|Jr|Sr|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)"
     r"|\b[A-Za-z])\.[\"')\]*_]*$")
+# Review R4 asked for `\d{1,2}[.)]` here too, so that "**4. Fail-closed authorization
+# derivation**" stops being cut after the ordinal and shipping with an unmatched "**".
+# It is RIGHT and it is NOT APPLIED, because it was measured: joining the ordinal back
+# moves every passage boundary in the paragraph, and on this corpus that cost
+# denorm-derived-table a researched finding (S2 38 -> 25, the golden's REFRESH
+# MATERIALIZED VIEW fact). A cosmetic repair is not worth a fact, so the unbalanced
+# markers stay until the length that pays for them exists.
 _COHERE_TAU = 0.30      # idf cosine at/above which two sentences are still one passage
 _MIN_STANDALONE = 4     # content terms a sentence needs to be a passage of its own
 # where an ITEM of an enumeration begins: its own list marker, or a bold/italic label
@@ -604,10 +619,20 @@ def _form_passages(node: str, rows: List[Any], weights: Dict[str, float],
         # (solid-state 3 of 8, denorm 4 of 16, bun-rust 3 of 8, outbox 1 of 13), and each
         # one orphaned its items into other sections -- the exact failure `frame` exists
         # to fix, and _ITEM_HEAD_RE and _LEAD_LABEL_RE already knew the form (review R2).
+        # ...and the items may be a BLANK LINE below the lead-in, which is how this
+        # corpus writes the majority of them: measured over the five roll-ups, 26 of the
+        # 45 colon lead-ins followed by a list are blank-separated (bun-rust 7 of 8,
+        # denorm 7 of 11, edge-ai 5 of 7, outbox 5 of 11, solid-state 2 of 8). A blank
+        # line opens a new block here, so requiring ONE block orphaned the commoner
+        # form: Stripe's v1/v2 key-retention comparison shipped one of its two versions,
+        # and edge-ai announced that market-size figures diverge 66 lines from the
+        # figures (review R3). A HEADING between the two is a new subject rather than a
+        # continuation, and `nxt[1]` is where _split_lines puts one.
         if units[-1].rstrip().rstrip("*_").rstrip().endswith(":") \
-                and nxt and nxt[0] == block and nxt[2]:
+                and nxt and nxt[2] and not nxt[1] and nxt[0] in (block, block + 1):
             # a lead-in for the items below it: not a passage, a frame on each of them
-            frame, frame_block = (head and f"**{head}**\n") + prefix + " ".join(units), block
+            frame, frame_block = \
+                (head and f"**{head}**\n") + prefix + " ".join(units), nxt[0]
             continue
         terms = [_content_terms(u) for u in units]
         run: List[str] = []
@@ -698,8 +723,13 @@ def _drop_title_echo(block: str, title: str) -> str:
 def _render_lines(label: str, lines: List[Any]) -> str:
     """Passage text as it ships: its paragraph's heading WORDS in bold (never as a
     heading of an outline this text was never part of), then each line that still has a
-    sentence, behind its own list marker."""
-    out = [f"**{label}**"] if label else []
+    sentence, behind its own list marker.
+
+    A node's own scaffolding -- "Digest", "Answer", "Bottom line" -- is not a heading of
+    anything: it names what the LLM was writing, which is why _as_title refuses it as a
+    section title, and a merged report that prints one as a body line reads as the
+    transcript s9 exists to stop shipping (review R5)."""
+    out = [f"**{label}**"] if label and label.lower() not in _SCAFFOLD_TITLES else []
     out += [prefix + " ".join(u for u in units if u)
             for prefix, units in lines if any(units)]
     return "\n".join(out) if len(out) > (1 if label else 0) else ""
@@ -1812,8 +1842,8 @@ class TreeResearchSkill:
           * THE DATA GO FIRST. The pass runs in two rounds over one budget and one
             coverage state: round one considers only passages stating a datum -- a
             figure, a named thing, or the two together -- that the report has not
-            printed yet, and applies no novelty floor to them at all; round two spends
-            whatever is left on breadth, under _GAIN_FLOOR. Review R3 measured the
+            printed yet, under the lowered _DATA_FLOOR; round two spends whatever is
+            left on breadth, under _GAIN_FLOOR. Review R3 measured the
             single-round version, where an unstated datum only bought a lower floor and
             still had to out-rank prose: what the budget ran out on was the one
             occurrence of "REFRESH MATERIALIZED VIEW ... completely replaces" in a query
@@ -1841,7 +1871,7 @@ class TreeResearchSkill:
         report, and -- `says_something_new` -- one that states neither a datum the report
         has not printed nor `_GAIN_FLOOR` of its own mass in fresh content does not print
         at all. Whatever the cap or that test turns away is not deleted: it goes back into
-        the pool and competes report-wide, where the data round's waived floor still lets
+        the pool and competes report-wide, where the data round's lowered floor still lets
         a disagreement carrying an unstated datum through.
 
         The NOVELTY test is review R1's finding, and without it a contested passage was
@@ -1908,6 +1938,26 @@ class TreeResearchSkill:
         whole: "collections.Counter[str]" = collections.Counter()
         for i, t in enumerate(texts):
             whole[passages[i].node] += len(t)
+        # A NODE'S OWN DIGEST IS NOT A FINDING, so it does not get the datum's lowered
+        # floor: the datum it carries is one its own answer already reported. This is
+        # PROVENANCE, not similarity, and it has to be -- review R1 measured that the
+        # similarity is invisible from here. solid-state-battery's 722-character DIGEST
+        # states ten claims the report makes in full elsewhere, and holds 51% of its
+        # content terms ALONE, because it restates them in other words; the repeated
+        # 5-grams this corpus carries are 0-2%, which is the same ceiling that stopped
+        # two earlier word-overlap cuts. What the datum bought it was 722 characters,
+        # and the budget is spent to the character, so the DOE/Battery500 passage came
+        # off the end of the breadth round (1,124 chars, S2 100 -> 88).
+        # NARROW ON PURPOSE, AND THE WIDTH WAS MEASURED. _SCAFFOLD_TITLES is the right
+        # set for a TITLE and the wrong one here: "Bottom line" is not a section this
+        # module asks any node for, it is the model's own conclusion inside an ANSWER,
+        # and it is the only scaffold label three of the five goldens carry at all
+        # (denorm 868 chars, outbox 940, bun-rust 489). Holding those to _GAIN_FLOOR
+        # deleted findings: denorm-derived-table 50 -> 25.
+        summary_of_itself = [
+            (_lead_label(t) or passages[i].label
+             or _lead_label(passages[i].frame)).strip().strip(":").lower() in _SELF_SUMMARY
+            for i, t in enumerate(texts)]
 
         covered: set = set()
         stated: set = set()          # the data the report has already printed
@@ -1947,12 +1997,17 @@ class TreeResearchSkill:
 
             The pass's own two-tier definition, read here rather than only in the
             rounds: a datum -- a figure, a named thing, or the two together -- the
-            report has not printed is new whatever else the passage repeats; anything
-            else has to bring _GAIN_FLOOR of its own mass.
+            report has not printed lowers the bar to _DATA_FLOOR; anything else has to
+            bring _GAIN_FLOOR of its own mass. It does not remove the bar.
             """
-            if facts[i] - stated or bonds[i] - bonded:
-                return True
-            return _mass(terms[i] - covered, weights) / sizes[i] >= _GAIN_FLOOR
+            return is_new(i, terms[i] - covered,
+                          bool(facts[i] - stated) or bool(bonds[i] - bonded))
+
+        def is_new(i: int, fresh: set, datum: bool) -> bool:
+            """...the bar itself, so the pre-pass and both rounds ask one question."""
+            datum = datum and not summary_of_itself[i]
+            return (_mass(fresh, weights) / sizes[i]
+                    >= (_DATA_FLOOR if datum else _GAIN_FLOOR))
 
         # first call, through the budget AND against the coverage state: a disagreement
         # is ranked ahead of prose that would crowd it out, it is not exempt from having
@@ -1977,7 +2032,9 @@ class TreeResearchSkill:
                     if (phase == "data") != states_datum:
                         continue
                     fresh = terms[i] - covered
-                    if not states_datum and _mass(fresh, weights) / sizes[i] < _GAIN_FLOOR:
+                    # the datum lowers the floor, it does not remove it, and a node's
+                    # summary of its own answer does not get it lowered at all (R1)
+                    if not is_new(i, fresh, states_datum):
                         continue
                     nd = passages[i].node
                     key = (_mass(fresh, weights) / max(1, len(texts[i]))
@@ -2189,14 +2246,20 @@ class TreeResearchSkill:
                            "merged report ships unsectioned", len(kept))
             return "\n\n".join(texts[i] for i in kept)
         groups = _themes(vectors)
-        # a section is titled from a heading its own material came under -- the
-        # markdown one the answer wrote, or, when it wrote none, the bold lead-in it
-        # used instead (review R4)
+        # a section is titled from a heading its own material came under -- the markdown
+        # one the answer wrote, or, when it wrote none, the bold lead-in it used instead
+        # (review R4). Only ever something that INTRODUCED several passages: a heading,
+        # or an enumeration's lead-in. An ITEM's own bold label is that item's subject,
+        # not a heading, and offering it here was wrong twice over -- it titled a
+        # twelve-paragraph section on review gates, Zig's maintainers and the Rust
+        # Foundation "Cold startup", and _drop_title_echo then stripped that label back
+        # out of the item, shipping a benchmark row with no metric name and a
+        # market-size series whose source ("**Mordor Intelligence**") had been deleted.
+        # No metric sees that: the attribution was prose, not an [id] (review R2).
         titles = await self._theme_titles(
             groups, [" ".join(texts[i] for i in units[k]) for k in keys], weights,
             [next((lab for i in units[k]
-                   if (lab := passages[i].topic or _lead_label(passages[i].frame)
-                       or _lead_label(texts[i]))), "")
+                   if (lab := passages[i].topic or _lead_label(passages[i].frame))), "")
              for k in keys])
 
         out: List[str] = []
