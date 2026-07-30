@@ -268,6 +268,15 @@ One golden (`outbox-failure-modes`, the worst case) through the real container.
 | `live_S1_pct` | ≥ 95 (was 99) | → `s9-impl` — citation integrity lost |
 | `live_S3_pct` | ≤ 0 (was 0) | → `s9-impl` — a trap value entered the report |
 
+**d2 does NOT carry d1's `embedded_units` check, and does not need one to be safe.**
+`_persist` receives `meta` before `run()` enriches it, so `stats.merge` never reaches
+`tree.json` and `live_dedup.py` has no counters to read; wiring it would mean either
+touching the frozen artifact contract or spending a ~330-credit live run to find out
+whether the MCP result carries `stats`. Neither is worth it, because a degraded live run
+cannot pass anyway: it measures `live_synthesis_ratio_pct` 115–129 against a ≤ 70 gate.
+It would fail for the wrong reason and route to `s9-impl` — which is only reachable after
+d1 has already proven the signal was real for all five goldens.
+
 Plus `recreated`/`health` 200, an in-gate `code_fp` match, `frozen_ok`, and a `[sq][s9]`
 commit with both tracked trees clean — the s9 tag rather than a d2 one, because the code
 under test is s9's and what actually protects the measurement is the clean-tree
