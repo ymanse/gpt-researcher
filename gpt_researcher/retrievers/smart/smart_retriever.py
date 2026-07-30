@@ -94,6 +94,16 @@ _RETRIEVER_API_KEYS = {
 # remember. Per-process is the right lifetime — a new container run re-probes.
 _DEAD_RETRIEVERS: set[str] = set()
 
+# How long the parallel bundle waits before writing off whoever hasn't answered.
+# Env-overridable so a slow deployment can widen it without a code change.
+_RETRIEVER_TIMEOUT_S: float = float(os.getenv("SMART_RETRIEVER_TIMEOUT_S", "60"))
+
+# Retrievers that have overrun the bundle timeout once. A single timeout is a
+# blip (the same forgiveness _run_single_retriever's retry gives a raised error);
+# the second one retires the retriever, because otherwise every remaining
+# sub-query in the run re-pays the full timeout for the same dead service.
+_TIMED_OUT_ONCE: set[str] = set()
+
 
 class SmartRetriever:
     """LLM-routed multi-retriever that selects optimal search engines per query."""
@@ -256,14 +266,19 @@ class SmartRetriever:
         """Run retrievers in parallel using ThreadPoolExecutor."""
         all_results = []
 
-        with ThreadPoolExecutor(max_workers=len(configs)) as executor:
+        # NOT a `with` block: leaving one calls shutdown(wait=True), which joins the
+        # very straggler the timeout below just wrote off. Measured cost of that join
+        # on a live run — timeout logged at 06:26:19, call returned 06:31:29: 5m10s of
+        # a 37-minute run spent waiting for results already declared lost.
+        executor = ThreadPoolExecutor(max_workers=len(configs))
+        try:
             futures = {}
             for name, max_res, extra_kwargs in configs:
                 future = executor.submit(self._run_single_retriever, name, max_res, extra_kwargs)
                 futures[future] = name
 
             try:
-                for future in as_completed(futures, timeout=60):
+                for future in as_completed(futures, timeout=_RETRIEVER_TIMEOUT_S):
                     name = futures[future]
                     try:
                         results = future.result(timeout=30)
@@ -280,9 +295,28 @@ class SmartRetriever:
                 # Some futures didn't complete in time — keep partial results
                 timed_out = [futures[f] for f in futures if not f.done()]
                 self._failed_retrievers.extend(timed_out)
+                self._retire_repeat_timeouts(timed_out)
                 logger.warning(f"Retrievers timed out: {timed_out}. Returning partial results.")
+        finally:
+            # ponytail: cancel_futures drops queued work; a thread already inside a
+            # blocking HTTP call cannot be cancelled and runs to completion in the
+            # background. That is the cost of not waiting — bounded, because the
+            # retriever's own retries terminate and a repeat offender gets retired.
+            executor.shutdown(wait=False, cancel_futures=True)
 
         return all_results
+
+    def _retire_repeat_timeouts(self, timed_out):
+        """First timeout is forgiven, second retires the retriever from routing."""
+        for name in timed_out:
+            if name in _TIMED_OUT_ONCE:
+                _DEAD_RETRIEVERS.add(name)
+                logger.warning(
+                    f"Retriever '{name}' timed out twice — retired from routing for "
+                    f"this process; routing to an alternate"
+                )
+            else:
+                _TIMED_OUT_ONCE.add(name)
 
     def _run_single_retriever(self, name, max_results, extra_kwargs):
         """Run a retriever, retrying once; a second failure retires it from routing."""
