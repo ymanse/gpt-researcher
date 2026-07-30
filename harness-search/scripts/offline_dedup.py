@@ -152,7 +152,8 @@ def main() -> int:
             row["merge"] = {k: st.get(k) for k in
                             ("claim_units", "embedded_units", "units_merged", "shared_claims",
                              "chars_before", "chars_kept", "screens", "candidate_pairs",
-                             "verdicts", "covered_units", "screened_out") if k in st}
+                             "candidate_floor", "verdicts", "covered_units",
+                             "screened_out") if k in st}
         except (OSError, json.JSONDecodeError):
             errors.append(f"{gid}: no merge_stats.json beside the report — cannot tell whether "
                           "the merge ran on a real similarity signal")

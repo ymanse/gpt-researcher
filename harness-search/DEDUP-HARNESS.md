@@ -391,6 +391,66 @@ topology chosen over union-find with the reason written down — `it does NOT co
 clique guidance committed in `bfa0e524` was answering a defect the code had already fixed.
 No round of the three was spent on a real design fault.
 
+**2026-07-30 — the embeddings moved to a local server, and the candidate floor stopped
+being a number.** The quota is not coming back on a schedule anyone controls, so the
+embedder moved to the llama.cpp server this machine already runs for codeGrove's text
+embeddings (`qwen3-embedding-4b`, 2560-d, `http://localhost:1236/v1`;
+`host.docker.internal` from the container). Config only — gpt-researcher's `openai`
+provider takes an OpenAI-compatible base URL — and passed in `EMBEDDING_KWARGS` rather
+than `OPENAI_BASE_URL`, because that variable is also read by the LLM paths and would
+silently point chat at the embedding server. Measured 254 ms/call, 865 claim units over
+the five goldens in 60 s, cost 0.
+
+*Why the floor could not simply be carried over.* A cosine is not comparable across
+embedders, and `MERGE_CLUSTER_FLOOR = 0.30` was never an absolute — it was the corpus's
+own top ~1% band under `text-embedding-3-small`. Re-measured on the SAME corpus:
+
+| | text-embedding-3-small | qwen3-embedding-4b |
+|---|---|---|
+| pairs | 22,366 | 78,713 |
+| q0.99 | 0.291 | **0.738** |
+| q0.999 | 0.468 | 0.853 |
+| max | **0.613** | 1.000 |
+
+Keeping 0.30 admits **76.85% of all pairs** as candidates, and every candidate is a model
+round trip — the session-timeout failure mode, at scale. Porting a qwen3-derived floor
+back the other way is worse: `text-embedding-3-small` never scored *any* pair above 0.613,
+so nothing would ever be a candidate and the merge would be a no-op indistinguishable from
+a tree with no redundancy. Both directions fail silently, which is the same defect class
+as the degraded-signal one above.
+
+So the constant is gone and the derivation is the code: `MERGE_CANDIDATE_PCT = 0.01`, and
+the floor is read off **this run's own** pair distribution. Under qwen3 that evaluates to
+~0.74, which two independent measurements agree on — the corpus percentile (78,713 pairs,
+q0.99 = 0.738) and the RED fixture's labelled pairs, where 0.74 keeps all four must-merge
+pairs and 0.76 loses one. It admits 1,352 pairs, ~270 per query, which is the 111–294
+per-query workload the screening design (`MERGE_GROUP`, wave concurrency) was measured
+against. The derived value travels out as `merge_stats.candidate_floor` (-1 = the tree fit
+in one screening call, so no floor was needed), because it now varies per run and nothing
+else downstream could tell a healthy band from a degenerate one.
+
+*A second defect, found because the switch appeared to do nothing.* The first probe after
+the config change still reported `emb 0/167` — and that is the whole point of the gate
+above: without it this reads as an implementation failure, which is how three rounds were
+spent. The cause was in the harness, not the config. Every gpt-researcher entrypoint calls
+`load_dotenv()` itself; `scripts/resynth.py` never did, so the offline lane replayed with
+whatever the OS environment held — measured: **nothing at all**, so it resolved
+gpt-researcher's *defaults* (`openai/text-embedding-3-small`). The lane every refit round
+is measured on could not be configured. It now reads `EMBEDDING` and `EMBEDDING_KWARGS`
+from the fork's `.env`, and **only** those two: the same file names
+`SMART_LLM`/`STRATEGIC_LLM` as `openrouter:minimax-m3` on this host while the container it
+replays runs `claude_agent:sonnet`, so a plain `load_dotenv()` would swap the equivalence
+judge for a different model and bill OpenRouter for every verdict. A re-synthesis that no
+longer replays the live pipeline is not an instrument. The encoder is what must match —
+it decides which pairs the judge is ever asked about.
+
+*What this does NOT change.* The fixture's central measurement survives a SOTA embedder:
+lowest must-merge pair 0.741, highest must-not-merge pair 0.816 — still no threshold
+separates them, and the two pinned collapses score 0.729 and 0.795, the second higher than
+three of the four must-merge pairs. Similarity still only selects; the equivalence judge
+still decides. A better embedder was never going to make this an easier problem, and
+measuring it is how we know rather than assume.
+
 ### Why the third cut still merged nothing — measured, 2026-07-29
 
 The third RED cut prescribed the right operator (equivalence decides, similarity only
@@ -446,9 +506,9 @@ component covering all 212 units, so the judge was asked whether a LISTEN/NOTIFY
 says anything a `hierarchyid` sentence does not; the verdict pairs came from a global
 top-3 neighbour graph that need not contain the pair the screen had just implicated; and
 a cumulative failure counter read three scattered timeouts as a dead judge and abandoned
-the screens still queued. Groups are now grown clusters (`MERGE_CLUSTER_FLOOR` 0.30, the
-corpus's own top ~1% of pair scores), verdict pairs come from the screen's own group, and
-a two-unit screen is used as the verdict it already is.
+the screens still queued. Groups are now grown clusters (the corpus's own top ~1% of pair
+scores — a constant 0.30 then, derived per run now, see below), verdict pairs come from
+the screen's own group, and a two-unit screen is used as the verdict it already is.
 
 **What remains is not mechanical, and it is the judge's own threshold.** Across the
 screened groups the model answers `UNIQUE: none` for roughly one statement in twenty:
@@ -536,11 +596,12 @@ half the corpus: `bun-rust-port` 87 of 170 (51%), `denorm-derived-table` 64 of 1
 `solid-state-battery` 84 of 144 (58%). Everything else is a singleton that cannot merge
 whatever the judge answers, so even a judge that collapsed every group to one statement
 would leave `denorm-derived-table` around 30% shorter against a ratio that needs ~42%.
-This is measured with the **bag-of-content-words fallback**, because the OpenAI key still
-answers 429 — the semantic candidate selection the design calls for has never run here,
-and `MERGE_CLUSTER_FLOOR` 0.30 is a lexical threshold standing in for it. Lowering it is
-not the fix: at 0.08 the graph was one connected component and the groups were arbitrary
-slices of a chain through every topic (see the third cut).
+This was measured with the **bag-of-content-words fallback**, because the OpenAI key
+answered 429 — the semantic candidate selection the design calls for had never actually
+run here. It runs now, on a local embedder (see below); the paragraph above describes the
+degraded regime and is kept because it is what the numbers in this section were taken
+under. Lowering the floor was never the fix: at 0.08 the graph was one connected component
+and the groups were arbitrary slices of a chain through every topic (see the third cut).
 
 Left undone, again: **R5, the section titles are still comma-joined keyword bags**
 ("Moved, entire, contents, counts"). Prose titles are a model call whose output nothing

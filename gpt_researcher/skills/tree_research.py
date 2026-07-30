@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .. import GPTResearcher
 from ..utils.llm import create_chat_completion
@@ -407,10 +407,18 @@ _MD_NOISE_RE = re.compile(r"[*_`~]+")
 # groups were arbitrary slices of a chain through it — LISTEN/NOTIFY next to hierarchyid
 # next to a Cosmos DB session token. Asked whether any of those 16 says nothing the
 # others do not, the honest answer is no, and 195 screened units produced 5 covered.
-# 0.30 is the corpus's own top ~1% of pair scores (measured 2026-07-29: 22,366 pairs,
-# q0.99 = 0.291, q0.999 = 0.468, max 0.613), i.e. the band where the top pairs really are
-# restatements of one another.
-MERGE_CLUSTER_FLOOR = 0.30
+# THE BAND, NOT A NUMBER. It was a constant 0.30, read off the corpus's own top ~1% of
+# pair scores (text-embedding-3-small, 2026-07-29: 22,366 pairs, q0.99 = 0.291,
+# q0.999 = 0.468, max 0.613). A cosine is not comparable across embedders, so that
+# constant was silently bound to one provider: measured 2026-07-30 on the SAME corpus with
+# a local qwen3-embedding-4b, 78,713 pairs give q0.99 = 0.738 and max 1.000, where 0.30
+# admits 76.85% of ALL pairs as candidates — every pair a model round trip — while
+# text-embedding-3-small never scored ANY pair above 0.613, so a floor ported the other
+# way admits nothing and the merge is a silent no-op. Both failures are invisible in the
+# output. So the derivation itself is the code now: take the top MERGE_CANDIDATE_PCT of
+# THIS run's own pair scores. Same band on any embedder, nothing to re-tune, and the
+# recorded numbers above stay meaningful as what the band evaluated to.
+MERGE_CANDIDATE_PCT = 0.01
 # A screening call carries a whole group, so it is the long one: measured on this
 # deployment (claude_agent) a 2-unit verdict answers in 17-34s and a 11-unit screen in
 # 127s, which the previous 120s ceiling would have thrown away as a timeout.
@@ -551,8 +559,10 @@ class TreeResearchSkill:
         self._merge_judge_ok = True  # cleared for the run once the judge stops answering
         self._merge_judge_fails = 0
         self._strategic_llm: Optional[tuple] = None
-        self._merge_stats: Dict[str, int] = {}
-        self._merge_calls: Dict[str, int] = {}
+        # Any, not int: these are JSON payloads that travel out with the report, and
+        # candidate_floor is a cosine
+        self._merge_stats: Dict[str, Any] = {}
+        self._merge_calls: Dict[str, Any] = {}
         # claim units that got a REAL embedding this run, 0 when _unit_vectors degraded
         # to word overlap. Travels out in _merge_stats so a measurement taken on the
         # degraded signal can be refused instead of read as "there was no redundancy".
@@ -1393,7 +1403,7 @@ class TreeResearchSkill:
         # itself: with three or more units in front of it, "nothing of my own" does not
         # say WHICH of the others covers this one, and collapsing the whole answer-none
         # set is how a closure-table DEFINITION and its TRADE-OFF become one statement.
-        groups = self._merge_groups(n, vecs, sim)
+        groups, floor = self._merge_groups(n, vecs, sim)
         screened = await self._judged_in_waves(
             [[texts[i] for i in g] for g in groups], self._covered)
         # THE VERDICT PAIRS COME FROM THE SCREEN'S OWN GROUP, not from a global
@@ -1467,11 +1477,16 @@ class TreeResearchSkill:
                              "screened_units": sum(len(g) for g in groups),
                              "covered_units": len(covered),
                              "verdicts": verdicts_asked, "verdict_pairs": len(order),
-                             "screened_out": sum(len(g) for g in groups) - len(covered)}
+                             "screened_out": sum(len(g) for g in groups) - len(covered),
+                             # the band this run actually derived (-1 = tree fit in one
+                             # screening call, so no floor was needed). Recorded because
+                             # it now varies with the embedder: nothing else downstream
+                             # can tell a healthy band from a degenerate one.
+                             "candidate_floor": round(floor, 4)}
         return {k: sorted(v) for k, v in merged.items()}
 
     @staticmethod
-    def _merge_groups(n: int, vecs, sim) -> List[List[int]]:
+    def _merge_groups(n: int, vecs, sim) -> Tuple[List[List[int]], float]:
         """The units that are worth screening together, as clusters GROWN around the
         closest pair rather than sliced out of a chain.
 
@@ -1484,17 +1499,27 @@ class TreeResearchSkill:
 
         Grown instead: take the strongest unassigned pair as the seed, then repeatedly
         add the unassigned unit most like the cluster SO FAR, stopping when the best
-        candidate's mean similarity to the cluster falls under MERGE_CLUSTER_FLOOR or
+        candidate's mean similarity to the cluster falls under the candidate floor or
         the group is full. A unit that joins no cluster is never screened, which is the
         saving — the old scheme screened every unit in the tree.
+
+        The floor is READ OFF THIS RUN'S OWN SCORES, not configured: the top
+        MERGE_CANDIDATE_PCT of the pair distribution. A cosine means nothing across
+        embedders — the same corpus scores q0.99 = 0.291 under text-embedding-3-small and
+        0.738 under qwen3-embedding-4b — so a hardcoded floor is a hidden dependency on
+        one provider that fails silently in BOTH directions (too low: every pair becomes a
+        model round trip; too high: nothing is ever a candidate and the merge is a no-op
+        that looks like a tree with no redundancy).
 
         A tree that fits in one group is screened in one call: at that size there is no
         grouping decision to get wrong, and it is the shape the s9 fixture pins.
         Deterministic — ties break on the lower index, so the same tree screens the
         same groups every run.
         """
+        # -1.0, not 0.0: at this size there IS no candidate floor (every unit is screened
+        # in one call), and 0.0 would read as a derived band that admitted nothing
         if n <= MERGE_GROUP:
-            return [list(range(n))] if n > 1 else []
+            return ([list(range(n))] if n > 1 else []), -1.0
         cache: Dict[tuple, float] = {}
 
         def s(i: int, j: int) -> float:
@@ -1503,9 +1528,12 @@ class TreeResearchSkill:
                 cache[key] = sim(vecs[key[0]], vecs[key[1]])
             return cache[key]
 
-        seeds = sorted(((s(i, j), i, j) for i in range(n) for j in range(i + 1, n)
-                        if s(i, j) >= MERGE_CLUSTER_FLOOR),
-                       key=lambda t: (-t[0], t[1], t[2]))
+        # every pair is scored either way (the seed list needs the ranking), so reading the
+        # floor off the same scan costs nothing beyond the sort it already does
+        ranked = sorted(((s(i, j), i, j) for i in range(n) for j in range(i + 1, n)),
+                        key=lambda t: (-t[0], t[1], t[2]))
+        floor = ranked[min(len(ranked) - 1, int(len(ranked) * MERGE_CANDIDATE_PCT))][0]
+        seeds = [t for t in ranked if t[0] >= floor]
         used: set = set()
         groups: List[List[int]] = []
         for _, i, j in seeds:
@@ -1519,12 +1547,12 @@ class TreeResearchSkill:
                     break
                 nxt = max(left, key=lambda m: (sum(s(m, c) for c in cluster) / len(cluster),
                                                -m))
-                if sum(s(nxt, c) for c in cluster) / len(cluster) < MERGE_CLUSTER_FLOOR:
+                if sum(s(nxt, c) for c in cluster) / len(cluster) < floor:
                     break
                 cluster.append(nxt)
                 used.add(nxt)
             groups.append(sorted(cluster))
-        return groups
+        return groups, floor
 
     @staticmethod
     async def _judged_in_waves(batches: List[list], judge,

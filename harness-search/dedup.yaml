@@ -242,6 +242,15 @@ commands:
            equivalence judge instead of a similarity scorer:
              (a) CANDIDATES, cheap: embedding cosine. Good at finding pairs worth
                  checking. Never a verdict on its own.
+                 NEVER HARDCODE A COSINE THRESHOLD. A cosine is not comparable across
+                 embedders: the SAME corpus scores q0.99 = 0.291 under
+                 text-embedding-3-small (max 0.613) and 0.738 under the local
+                 qwen3-embedding-4b (max 1.000). A constant tuned to one admits 77% of
+                 ALL pairs on the other (every pair a model round trip, i.e. the session
+                 timeout) or admits nothing at all (a no-op that reads as "no
+                 redundancy") — and both fail silently. Take a PERCENTILE of the run's
+                 own pair distribution instead (MERGE_CANDIDATE_PCT), and report the
+                 value it evaluated to in merge_stats so a reader can see the band.
              (b) VERDICT, on candidates only: ask the model (the seam is patched) to
                  ENUMERATE what each side says that the other does not. Merge only when
                  both lists are empty. Enumeration is a steadier task for an LLM than

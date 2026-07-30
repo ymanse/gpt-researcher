@@ -27,13 +27,35 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import pathlib
 import sys
 import types
 
+from dotenv import dotenv_values
+
 import hconf
 
 sys.path.insert(0, str(hconf.REPO))
+
+# THE ENCODER, AND ONLY THE ENCODER, comes from the fork's .env.
+#
+# Every gpt-researcher entrypoint calls load_dotenv() itself; this runner never did, so it
+# replayed with whatever the OS environment held — measured 2026-07-30: nothing at all, so
+# it resolved gpt-researcher's DEFAULTS (openai/text-embedding-3-small) and an .env edit
+# switching the embedder had no effect on the lane every refit round is measured on. That
+# is the same divergence _embedding_cfg's docstring warns about, one level up.
+#
+# NOT load_dotenv(): the fork's .env also names SMART_LLM/STRATEGIC_LLM
+# (openrouter:minimax-m3 on this host), while the container the offline lane is replaying
+# runs claude_agent:sonnet. Importing the whole file would swap the equivalence judge for a
+# different model AND start billing OpenRouter for every verdict — a re-synthesis that no
+# longer replays the live pipeline is not an instrument. The encoder is what has to match:
+# it decides which pairs the judge is ever asked about.
+for _k in ("EMBEDDING", "EMBEDDING_KWARGS"):
+    _v = dotenv_values(hconf.REPO / ".env").get(_k)
+    if _v and not os.environ.get(_k):  # an explicit shell export still wins
+        os.environ[_k] = _v
 
 from gpt_researcher.skills.tree_research import (
     NodeStatus,
