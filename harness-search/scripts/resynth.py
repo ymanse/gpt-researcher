@@ -91,6 +91,14 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     report = out / f"{a.gid}.report.md"
     report.write_bytes(result["report_md"].encode("utf-8"))
+    # The merge's own counters, beside the report they describe. assemble_report returns
+    # them; only run() used to persist them, so the OFFLINE lane — the one every refit
+    # round is measured on — could not tell "the merge found nothing to do" from "the
+    # similarity signal was unavailable and it never looked". It could not tell them
+    # apart for three rounds (2026-07-29/30, expired embeddings quota).
+    (out / f"{a.gid}.merge_stats.json").write_text(
+        json.dumps(result.get("merge_stats") or {}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
     print(f"resynth_ok=1 id={a.gid} nodes={len(skill.nodes)} "
           f"read_docs={len(skill._read_docs)} chars={len(result['report_md'])} "
           f"citations={len(result['citation_map'])} out={report}")

@@ -198,6 +198,8 @@ are directly comparable with the table above.
 | `credits_delta` | 0 | read from Firecrawl's own balance before/after; -1 (unreadable) fails closed |
 | `queries_scanned` | 5 | hollow-zero guard |
 | `node_answers_scanned_total` | ≥ 20 | live baseline scanned 62 |
+| `claim_units_total` | ≥ 50 | measured 863–984 across the five goldens; 0 = no `merge_stats.json` |
+| `embedded_units_total` | **== `claim_units_total`** | the similarity signal was real for every unit — a HARD fail, not a refit |
 | `s2_min_delta` | ≥ −5 | per-query, vs that query's own concatenating baseline |
 | `s2_aggregate_pct` | ≥ 80 | corpus baseline 88 |
 | `synthesis_ratio_pct_max` | ≤ 70 | 120–133% (denominator = **kept** nodes only) |
@@ -230,6 +232,22 @@ than 5 points.
 
 The denominator is kept nodes on purpose: measured against *all* nodes the ratio rewards a
 tree for pruning more (one query scored "best" at 47% purely because it pruned 8).
+
+**Why a degraded similarity signal is a hard fail and not a miss (2026-07-30).**
+`_unit_vectors` falls back to word-overlap candidate selection whenever the embedding
+provider is down, out of quota or unconfigured. That is right for production and useless
+for measurement: the redundancy here is topical, so under word overlap the restated pairs
+never become candidates, the equivalence judge is never asked about them, and the merge is
+a no-op whose numbers are **identical** to a tree that genuinely had nothing to merge.
+The OpenAI embeddings quota expired mid-loop (HTTP 429 `insufficient_quota`, last healthy
+`POST /v1/embeddings 200` at 05:58 UTC 2026-07-29) and every round after that reported
+`lifted 10/10`, `ratio 115%`, `S2 63 = base` — read as an implementation failure, which
+cost three refit rounds and three human round-grants on code that was never at fault. The
+gate now refuses the measurement instead: `embedded_units` travels out in `merge_stats`,
+`resynth.py` writes it beside each report, and a mismatch **fails** rather than routing to
+`s9-impl` — no edit to the merge can put an embedding provider back, so routing there
+spends the cap on an environment failure. It sits with `resynth_failed` and
+`credits_delta`, above every metric verdict.
 
 A metric miss is not a gate error — it routes back to `s9-impl` with the reason, capped at
 three rounds (`off_journal_d1`, counted from `journal.jsonl`).
@@ -333,6 +351,36 @@ not changed at all. Restore with `git cat-file blob <sha>:<path>` written verbat
 confirm `python scripts/code_fp.py` matches `no_read/dedup/corpus/corpus.json`. The
 fingerprint is deliberately left byte-exact (normalising it would invalidate the recorded
 manifest for no present gain), so this is a documented handling rule, not a defect to fix.
+
+**2026-07-30 — the loop had been measuring a dead similarity signal, and no gate could see
+it.** Diagnosed offline at zero credits after the third d1 cap fired, on the question
+"is candidate generation blocking merges, or is the verdict?". Running the merge directly
+printed `claim-unit embeddings unavailable (Error code: 429 … insufficient_quota);
+selecting merge candidates by word overlap instead`, and a direct probe of
+`https://api.openai.com/v1/embeddings` returned 429. The container log's last healthy
+`POST /v1/embeddings "HTTP/1.1 200 OK"` is 05:58 UTC 2026-07-29, so the rounds after that
+point ran degraded: candidates picked by word overlap, restated pairs never proposed, the
+judge never asked, `lifted 10/10 · ratio 115% · S2 63 = base`. That reads exactly like a
+failed implementation, and it was read that way — for three rounds.
+
+*What was actually wrong with the harness.* A law-4 hollow zero: nothing distinguished
+"the merge found nothing to do" from "the similarity signal was unavailable and it never
+looked". `merge_stats` now carries `embedded_units`, `scripts/resynth.py` writes
+`<gid>.merge_stats.json` beside every report (it had been discarding what
+`assemble_report` already returned, so the offline lane — the one every refit round is
+measured on — was the only lane blind to this), `offline_dedup.py` sums
+`claim_units_total` / `embedded_units_total`, and `d1_offline.lua` refuses the measurement
+outright when they differ. Pinned by `tests/search_quality/s9/test_s9_similarity_provenance.py`
+in both directions: a live seam must report `embedded_units == claim_units`, a seam raising
+429 must still produce a report **and** must report 0.
+
+*What was NOT wrong.* The implementation. Reading it during the diagnosis showed it had
+already reached the design the research prescribed: in-context group judging over A..P
+labels, enumeration rather than classification, a prompt hardened against the attribution
+trap (three models each named the *source* as the unique part before that fix), and a star
+topology chosen over union-find with the reason written down — `it does NOT compose`. The
+clique guidance committed in `bfa0e524` was answering a defect the code had already fixed.
+No round of the three was spent on a real design fault.
 
 ### Why the third cut still merged nothing — measured, 2026-07-29
 

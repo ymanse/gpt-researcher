@@ -61,6 +61,48 @@ if not na or na < 20 then
   return
 end
 
+-- WAS THE SIMILARITY SIGNAL REAL? A HARD FAIL, not a refit round.
+--
+-- _unit_vectors degrades to word-overlap candidate selection whenever the embedding
+-- provider is down, out of quota or unconfigured — correct for production, useless for
+-- measurement: genuinely-restated pairs share almost no vocabulary (repeated 5-grams
+-- 0-2%), so they never become candidates, the judge is never asked, and the merge is a
+-- no-op that reads as "there was no redundancy". Measured 2026-07-29/30: the OpenAI
+-- embeddings quota expired mid-loop (HTTP 429 insufficient_quota) and the ratio miss it
+-- produced sent THREE refit rounds plus three human round-grants at an implementation
+-- that was never the defect.
+--
+-- So this is not a `miss`. A miss routes to s9-impl, and no edit to the merge can put an
+-- embedding provider back — routing here would spend the cap on an environment failure.
+-- It sits with resynth_failed and credits_delta: the measurement is void, stop and tell
+-- a human. 50 is a floor derived from the corpus: the five goldens yielded 863-984 claim
+-- units across every measured cut, and 0 is what a missing merge_stats.json leaves behind.
+local cu = L.num(blob, '"claim_units_total":(%d+)')
+local eu = L.num(blob, '"embedded_units_total":(%d+)')
+if not cu or not eu then
+  gralph.fail('d1: evidence must carry numeric claim_units_total and embedded_units_total — ' ..
+    'they come from <gid>.merge_stats.json, which scripts/resynth.py writes beside each report. ' ..
+    'Re-run (FOREGROUND): python scripts/offline_dedup.py')
+  return
+end
+if cu < 50 then
+  gralph.fail("d1: claim_units_total=" .. cu .. " < 50 — the merge saw almost no claim units " ..
+    "across five goldens (every measured cut yielded 863-984), so every redundancy " ..
+    "number on this page is measuring nothing. Either merge_stats.json is missing beside the " ..
+    "reports or the merge never ran; check errors[] in no_read/evidence/d1_offline.json")
+  return
+end
+if eu ~= cu then
+  gralph.fail("d1: embedded_units_total=" .. eu .. " of claim_units_total=" .. cu .. " — the " ..
+    "merge picked candidate pairs by WORD OVERLAP because the embedding provider did not " ..
+    "answer, and word overlap cannot find restatements (repeated 5-grams 0-2%). This " ..
+    "measurement is VOID, not bad: it is indistinguishable from a clean no-op and it is NOT " ..
+    "an implementation defect, so do NOT route it to s9-impl and do NOT edit the merge in " ..
+    "response to it. Look for 'claim-unit embeddings unavailable' in the resynth stderr, fix " ..
+    "the provider (quota/key/config), then re-run: python scripts/offline_dedup.py")
+  return
+end
+
 if not L.check_frozen() then return end
 if not L.check_commit(9) then return end
 

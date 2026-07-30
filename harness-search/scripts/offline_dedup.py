@@ -142,19 +142,20 @@ def main() -> int:
             row["S2_base_pct"] = base
             row["S2_delta"] = s2 - base
             deltas.append(s2 - base)
-        # Optional, and read from disk rather than trusted from a claim: the merge's own
-        # counters, if the runner drops <gid>.merge_stats.json beside the report. Without
-        # them nothing downstream can tell "the merge found nothing" from "the merge
-        # worked" — a no-op ships looking like a cautious success, which is exactly how
-        # one round passed its own preflight while merging 0 of 10 node answers. Not
-        # gated: synthesis_ratio_pct_max already refuses a no-op (a no-op measures ~121%).
+        # Read from disk rather than trusted from a claim: the merge's own counters, which
+        # resynth.py drops beside the report. Without them nothing downstream can tell
+        # "the merge found nothing" from "the merge worked" — a no-op ships looking like a
+        # cautious success, which is exactly how one round passed its own preflight while
+        # merging 0 of 10 node answers.
         try:
             st = json.loads((OFFLINE / f"{gid}.merge_stats.json").read_text(encoding="utf-8"))
             row["merge"] = {k: st.get(k) for k in
-                            ("claim_units", "units_merged", "chars_before", "chars_kept",
-                             "screens", "verdicts", "screened_out") if k in st}
+                            ("claim_units", "embedded_units", "units_merged", "shared_claims",
+                             "chars_before", "chars_kept", "screens", "candidate_pairs",
+                             "verdicts", "covered_units", "screened_out") if k in st}
         except (OSError, json.JSONDecodeError):
-            pass
+            errors.append(f"{gid}: no merge_stats.json beside the report — cannot tell whether "
+                          "the merge ran on a real similarity signal")
         rows.append(row)
 
     ev = {
@@ -167,6 +168,14 @@ def main() -> int:
         "resynth_failed": len([e for e in errors if "resynth.py" in e]),
         "queries_scanned": len(rows),
         "node_answers_scanned_total": sum(r["node_answers_scanned"] for r in rows),
+        # PROVENANCE OF THE SIMILARITY SIGNAL (law 4). These two must be EQUAL: every
+        # claim unit the merge considered had a real embedding behind it. When the
+        # embedding provider is out of quota the implementation degrades to word overlap
+        # and reports a clean no-op — measured 2026-07-29/30, three refit rounds and
+        # three human round-grants spent on an implementation that was never at fault.
+        # A missing merge_stats.json leaves both at 0, and the gate reads 0 as unusable.
+        "claim_units_total": sum((r.get("merge") or {}).get("claim_units", 0) for r in rows),
+        "embedded_units_total": sum((r.get("merge") or {}).get("embedded_units", 0) for r in rows),
         "lifted_nodes_max": max((r["lifted_nodes"] for r in rows), default=999),
         "lifted_nodes_total": sum(r["lifted_nodes"] for r in rows),
         "synthesis_ratio_pct_max": max((r["synthesis_ratio_pct"] for r in rows), default=999),
@@ -185,14 +194,13 @@ def main() -> int:
               f"requires queries_scanned == 5; run without --only before submitting.")
     print(json.dumps({k: v for k, v in ev.items() if k != "per_query"}, indent=2, sort_keys=True))
     for r in rows:
+        m = r.get("merge") or {}
+        s2 = (f"S2 {r['S2_pct']}(base {r['S2_base_pct']}, d{r['S2_delta']:+})"
+              if "S2_delta" in r else "S2 -")
         print(f"  {r['qid'][:22]:24} lifted {r['lifted_nodes']}/{r['node_answers_scanned']} "
               f"max_lift {r['max_lift_pct']}% synth_ratio {r['synthesis_ratio_pct']}% "
-              f"S2 {r.get('S2_pct', '-')}(base {r.get('S2_base_pct', '-')}, "
-              f"d{r.get('S2_delta', '-'):+}) headings {r['headings']}"
-              if "S2_delta" in r else
-              f"  {r['qid'][:22]:24} lifted {r['lifted_nodes']}/{r['node_answers_scanned']} "
-              f"max_lift {r['max_lift_pct']}% synth_ratio {r['synthesis_ratio_pct']}% "
-              f"S2 - headings {r['headings']}")
+              f"{s2} headings {r['headings']} "
+              f"emb {m.get('embedded_units', '?')}/{m.get('claim_units', '?')}")
     return 0
 
 

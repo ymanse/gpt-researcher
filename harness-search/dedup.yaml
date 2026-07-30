@@ -299,13 +299,26 @@ commands:
       stages later. Report in your submission, for the captured corpus: claim units merged
       away, characters removed, and per-node lift. A threshold you did not measure against
       this corpus is a guess.
-      MAKE THE MERGE COUNT ITSELF. Have the runner drop <golden_id>.merge_stats.json
-      beside each re-synthesised report — claim_units, units_merged, chars_before,
-      chars_kept, and if you screen candidates, screens/verdicts/screened_out.
-      offline_dedup.py folds it into per_query["merge"] when it is there. Counters that
-      only reach a log cannot tell anyone "the merge found nothing" from "the merge
-      worked", and a no-op then reads as a cautious success — one round shipped merging
-      0 of 10 node answers on the probe query and nothing in its own evidence said so.
+      READ THE emb COLUMN ON THE PROBE BEFORE YOU CHANGE ANYTHING. Every per-query line
+      ends with "emb <embedded>/<claim_units>". Anything other than N/N means
+      _unit_vectors could not reach the embedding provider and fell back to WORD-OVERLAP
+      candidate selection — correct for production, useless here: the redundancy in this
+      corpus is topical, so restated pairs never become candidates, the judge is never
+      asked, and the merge is a no-op indistinguishable from "nothing to merge". STOP and
+      say so; no edit to the merge can put an embedding provider back, and the d1 gate
+      HARD-FAILS on it rather than routing back here. Measured 2026-07-29/30: the OpenAI
+      embeddings quota expired mid-loop and three refit rounds plus three human
+      round-grants were spent on an implementation that was never at fault.
+      THE MERGE ALREADY COUNTS ITSELF — keep it that way. scripts/resynth.py writes
+      <golden_id>.merge_stats.json beside each re-synthesised report from what
+      assemble_report returns (claim_units, embedded_units, units_merged, shared_claims,
+      chars_before, chars_kept, and the screens/candidate_pairs/verdicts/covered_units
+      counters), and offline_dedup.py folds it into per_query["merge"] and sums
+      claim_units_total / embedded_units_total for the gate. Any new counter you add
+      belongs in _merge_stats, not in a log line: counters that only reach a log cannot
+      tell anyone "the merge found nothing" from "the merge worked", and a no-op then
+      reads as a cautious success — one round shipped merging 0 of 10 node answers on the
+      probe query and nothing in its own evidence said so.
       If you are running out of time, COMMIT WHAT WORKS and say what is unfinished — a
       timed-out session loses everything it held in memory, and two already have.
       WATCH s2_min_delta, NOT THE AGGREGATE. Each query is scored against its own
@@ -388,10 +401,21 @@ commands:
       comparable) and re-scores with the FROZEN bench/score_report.py.
 
       GATE: resynth_failed=0, credits_delta=0, queries_scanned=5,
-      node_answers_scanned_total>=20, s2_min_delta>=-5, s2_aggregate_pct>=80,
+      node_answers_scanned_total>=20, claim_units_total>=50,
+      embedded_units_total==claim_units_total, s2_min_delta>=-5, s2_aggregate_pct>=80,
       synthesis_ratio_pct_max<=70 (denominator = KEPT nodes only), headings_min>=4,
       code_fp recomputed in-gate, frozen_ok, and a [sq][s9] commit with both tracked
       trees clean.
+      embedded_units_total==claim_units_total IS THE PROVENANCE OF THE SIMILARITY SIGNAL,
+      and unlike every metric below it this one HARD-FAILS instead of routing back to
+      s9-impl. _unit_vectors degrades to word-overlap candidate selection when the
+      embedding provider does not answer; word overlap cannot find restatements on this
+      corpus (repeated 5-grams 0-2%), so the run produces a no-op indistinguishable from
+      "there was no redundancy". That is an environment failure, not a design fault — no
+      merge edit can fix it, and routing it to s9-impl spends the cap for nothing (it did:
+      three rounds and three human grants, 2026-07-29/30, on an expired embeddings quota).
+      Look for "claim-unit embeddings unavailable" in the resynth stderr and the emb N/N
+      column on each per-query line, fix the provider, then re-measure.
       lifted_nodes_max is MEASURED AND REPORTED BUT NOT GATED (2026-07-28): every kept
       node's 5-grams are 98-100% unique against every other node on this corpus, so no
       other node's text can supply them, and requiring all-but-one node under 70% demanded
