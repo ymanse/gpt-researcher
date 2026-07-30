@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 from gpt_researcher.llm_provider.generic.base import ReasoningEfforts
 from ..utils.llm import create_chat_completion
-from ..utils.enum import ReportType, ReportSource, Tone
+from ..utils.enum import ReportType, ReportSource
 from ..actions.query_processing import get_search_results
 
 logger = logging.getLogger(__name__)
@@ -202,6 +202,35 @@ Format each question on a new line starting with 'Question: '"""}
             'followUpQuestions': questions[:num_learnings],
             'citations': citations
         }
+
+    def scraped_documents(self) -> Dict[str, str]:
+        """url -> page text for every source this run already read.
+
+        Seeds the citation pass so it checks quotes against pages we still hold in
+        memory. Without it every claim re-fetches its source through firecrawl with
+        maxAge=0 (cache bypass), serially: measured 13 minutes of a 37-minute run
+        re-scraping 66 urls the research had scraped minutes earlier.
+        """
+        documents: Dict[str, str] = {}
+        # Read the store directly rather than through get_research_sources(): the
+        # seed is an optimisation, so a researcher that doesn't track sources should
+        # degrade to fetching, not raise.
+        for source in getattr(self.researcher, 'research_sources', None) or []:
+            url = source.get('url')
+            content = source.get('raw_content') or source.get('content')
+            # Empty content must NOT be seeded: an entry for a url is a claim that
+            # we have the page, and an empty one would mark its claims unverified
+            # rather than falling through to a fetch.
+            if url and content:
+                documents[url] = content
+        return documents
+
+    async def verify_citations(self, citations: Dict[str, str]) -> Dict[str, Any]:
+        """Verify collected claims against their cited sources (stage 3)."""
+        from .citation_verification import CitationAgent
+        return await asyncio.to_thread(
+            CitationAgent().verify, citations, self.scraped_documents()
+        )
 
     async def deep_research(
             self,
@@ -425,8 +454,7 @@ Format each question on a new line starting with 'Question: '"""}
         )
 
         # Citation-verification post-pass over collected claims (stage 3)
-        from .citation_verification import CitationAgent
-        verification = await asyncio.to_thread(CitationAgent().verify, results['citations'])
+        verification = await self.verify_citations(results['citations'])
         print(
             f"TIERA_EVIDENCE stage=3 total_claims={verification['total_claims']} "
             f"grounded={verification['grounded']} unverified={verification['unverified']}",
