@@ -553,6 +553,10 @@ class TreeResearchSkill:
         self._strategic_llm: Optional[tuple] = None
         self._merge_stats: Dict[str, int] = {}
         self._merge_calls: Dict[str, int] = {}
+        # claim units that got a REAL embedding this run, 0 when _unit_vectors degraded
+        # to word overlap. Travels out in _merge_stats so a measurement taken on the
+        # degraded signal can be refused instead of read as "there was no redundancy".
+        self._embedded_units = 0
         self.tokens_spent = 0
         self.credits_spent = 0.0
 
@@ -1104,7 +1108,17 @@ class TreeResearchSkill:
         never a fact, and the verdict below is what actually decides. Falling back
         instead of failing keeps the merge working wherever the embedding provider
         is down, out of quota, or simply not configured.
+
+        THE FALLBACK IS FOR PRODUCTION, NOT FOR MEASUREMENT. Genuinely-restated
+        pairs share little vocabulary, so under word overlap they never become
+        candidates, the judge is never asked about them, and the merge is a no-op
+        that looks exactly like a clean "nothing to merge". Measured 2026-07-29/30:
+        the embeddings quota expired mid-loop and three refit rounds plus three
+        human round-grants were spent on an implementation that was never the
+        problem. `_embedded_units` is what lets a gate tell the two apart — see the
+        embedded_units check in harness-search/scripts/d1_offline.lua.
         """
+        self._embedded_units = 0
         if not texts:
             return [], _bag_cosine
         try:
@@ -1118,6 +1132,7 @@ class TreeResearchSkill:
                                                    EMBED_CONCURRENCY)
                 vecs = [list(probe), *(list(v) for v in rest)]
                 if all(vecs):
+                    self._embedded_units = len(vecs)
                     return vecs, _cosine
         except Exception as exc:  # any provider/seam failure degrades, never crashes
             logger.warning(f"claim-unit embeddings unavailable ({exc}); selecting "
@@ -1742,6 +1757,11 @@ class TreeResearchSkill:
         self._merge_stats = {
             "claim_units": len(units), "units_merged": len(absorbed),
             "shared_claims": len(merged),
+            # PROVENANCE OF THE SIMILARITY SIGNAL, not a quality number: < claim_units
+            # means candidates were picked by word overlap, which cannot find the pairs
+            # this stage exists to merge, so any redundancy figure taken from that run
+            # is unusable rather than merely bad. See _unit_vectors.
+            "embedded_units": self._embedded_units,
             "chars_before": sum(len(u) for u in units),
             "chars_kept": sum(len(units[i]) for i in kept),
             **self._merge_calls,
@@ -1752,12 +1772,16 @@ class TreeResearchSkill:
         # re-synthesis runner configures no logging, so info is swallowed and warning is
         # the only level that reaches its stderr — the counters themselves travel out in
         # the returned merge_stats, but only run() persists those today.
+        degraded = self._embedded_units < len(units)
         line = (f"roll-up merge: {len(absorbed)} of {len(units)} claim units "
                 f"absorbed into {len(merged)} shared claims "
                 f"({self._merge_stats.get('screens', 0)} screening calls, "
                 f"{self._merge_stats.get('verdicts', 0)} verdicts, "
-                f"{self._merge_stats.get('covered_units', 0)} units screened as covered)")
-        (logger.warning if not absorbed and len(units) > 1 else logger.info)(line)
+                f"{self._merge_stats.get('covered_units', 0)} units screened as covered, "
+                f"{self._embedded_units}/{len(units)} embedded"
+                f"{' — CANDIDATES BY WORD OVERLAP' if degraded else ''})")
+        (logger.warning if (degraded or not absorbed) and len(units) > 1
+         else logger.info)(line)
 
         if kept:
             groups = self._themes(kept, vecs, sim)
