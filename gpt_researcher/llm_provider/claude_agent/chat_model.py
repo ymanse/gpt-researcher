@@ -13,6 +13,7 @@ import asyncio
 import dataclasses
 import inspect
 import logging
+import re
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -37,6 +38,17 @@ from gpt_researcher.llm_provider.claude_agent._subscription import (
 from gpt_researcher.llm_provider.generic.base import GenericLLMProvider
 
 logger = logging.getLogger(__name__)
+
+# What the `claude` CLI prints INSTEAD of an answer when it will not serve the request.
+# These arrive as ordinary stdout content, so without this they are indistinguishable
+# from a model reply — see the check at the end of _run_query for what that cost.
+_CLI_REFUSAL_RE = re.compile(
+    r"you'?ve hit your (?:weekly|usage|\w+) limit"
+    r"|resets \w+ \d+, \d+(?::\d+)?\s*(?:am|pm)"
+    r"|(?:please )?run\s+`?/?login"
+    r"|invalid api key|authentication[ _]error|not logged in|credit balance is too low",
+    re.I,
+)
 
 
 def _accepted_option_fields() -> set[str]:
@@ -174,6 +186,22 @@ class ChatClaudeAgent(BaseChatModel):
         if not final or not final.strip():
             raise RuntimeError(
                 "[claude_agent] empty response (possible rate limit or auth failure)"
+            )
+        # A REFUSAL BANNER IS NOT AN ANSWER. The CLI reports a spent quota or a broken
+        # login by printing one line and exiting non-zero — so `result_text` is non-empty,
+        # the exception above is swallowed as a "post-content" race, and the banner is
+        # returned as if the model had said it. Measured 2026-08-03: every LLM call in a
+        # deep_research run returned "You've hit your weekly limit · resets Aug 4, 9pm
+        # (UTC)"; the query classifier took it as a CATEGORY, the sub-query generator
+        # parsed it into ZERO queries, and the run finished in 16s reporting success with
+        # a 0-char, 0-source report. Nothing anywhere said the LLM had never answered.
+        # Bounded by length as well as by pattern: a banner is one line, so a real answer
+        # that happens to discuss rate limits cannot trip this.
+        stripped = final.strip()
+        if len(stripped) < 300 and _CLI_REFUSAL_RE.search(stripped):
+            raise RuntimeError(
+                f"[claude_agent] the CLI refused the request instead of answering: "
+                f"{stripped[:200]}"
             )
         return final
 
