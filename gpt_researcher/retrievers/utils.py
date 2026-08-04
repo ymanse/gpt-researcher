@@ -12,6 +12,33 @@ import re
 logger = logging.getLogger(__name__)
 
 
+# Observed in a live run (harness-search): GithubSearch logged HTTP 422 six times —
+# once per sub-query, never recovering, because the request itself is malformed and a
+# retry resends the identical request into the identical rejection. 400/401/403/404
+# are the same shape (bad/unauthorized/absent request, not a transient condition).
+# Everything NOT in this set — 429/502/503/504 (also observed live, worth retrying)
+# and any status-less exception (connection refused, DNS failure, read timeout — no
+# response was ever received) — defaults to retryable, preserving today's behavior
+# for codes with no evidence either way (e.g. Tavily's non-standard 432 rate-limit
+# signal) instead of guessing a wider ban.
+_NON_RETRYABLE_STATUS = {400, 401, 403, 404, 422}
+
+
+def is_retryable_error(exc: BaseException) -> bool:
+    """True if retrying `exc` could plausibly succeed.
+
+    Reads the HTTP status off `requests.HTTPError` (`.response.status_code`) or
+    `urllib.error.HTTPError` (`.code`). No status found means no response was ever
+    received (network-level failure) — transient by definition, so retryable.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is None:
+        status = getattr(exc, "code", None)
+    if status is None:
+        return True
+    return status not in _NON_RETRYABLE_STATUS
+
+
 def normalize_wikipedia_lang(lang) -> str:
     """Normalize a language or ddgs region code to a valid wikipedia language code.
 

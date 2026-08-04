@@ -9,6 +9,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
+from ..utils import is_retryable_error
+
 logger = logging.getLogger(__name__)
 
 # Query categories and their retriever routing configurations.
@@ -319,10 +321,26 @@ class SmartRetriever:
                 _TIMED_OUT_ONCE.add(name)
 
     def _run_single_retriever(self, name, max_results, extra_kwargs):
-        """Run a retriever, retrying once; a second failure retires it from routing."""
+        """Run a retriever, retrying once; a second failure retires it from routing.
+
+        A non-retryable failure (400/401/403/404/422 — see retrievers.utils.
+        is_retryable_error) skips that one free retry: the request itself is
+        malformed/unauthorized/absent, so a retry would resend the identical
+        request into the identical rejection — wall-clock spent on a guaranteed
+        failure. Observed live: GithubSearch logged the same 422 six times, once
+        per sub-query, because nothing here retired it after the first.
+        """
         try:
             return self._invoke_retriever(name, max_results, extra_kwargs)
         except Exception as first:
+            if not is_retryable_error(first):
+                _DEAD_RETRIEVERS.add(name)
+                self._failed_retrievers.append(name)
+                logger.warning(
+                    f"Retriever '{name}' failed with a non-retryable error ({first}) "
+                    f"— retired from routing for this process without a wasted retry"
+                )
+                return []
             # The retry is defect 1's "재시도" half: a 432/timeout that a second call
             # clears never needed alternate routing, and reporting it as a failure
             # would turn every transient blip into a live-gate failure.

@@ -8,6 +8,7 @@
 import json
 import logging
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -32,6 +33,12 @@ class GithubSearch:
         print(f"Searching GitHub with query: {self.query}...")
         try:
             return self._search(max_results)
+        except urllib.error.HTTPError:
+            # HTTP failures (e.g. 422 malformed request) must surface so the caller
+            # (SmartRetriever) can classify retry-worthiness and route around a
+            # retriever that cannot serve — swallowed, they read as "no results" and
+            # get re-paid for on every subsequent sub-query.
+            raise
         except Exception as e:
             logger.error(f"Error: {e}. Failed fetching GitHub sources. Resulting in empty response.")
             return []

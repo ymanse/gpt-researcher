@@ -35,6 +35,11 @@ class FirecrawlSearch:
             return []
         try:
             return self._search(max_results)
+        except requests.HTTPError:
+            # HTTP failures (e.g. 502 Bad Gateway, observed live and worth retrying)
+            # must surface so the caller (SmartRetriever) can classify
+            # retry-worthiness instead of reading a swallowed failure as "no results".
+            raise
         except Exception as e:
             logger.error(f"Error: {e}. Failed fetching sources from Firecrawl. Resulting in empty response.")
             return []
