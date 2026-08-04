@@ -13,6 +13,117 @@ import bs4
 from bs4 import BeautifulSoup
 
 
+# Cookies the bot-management vendors set themselves. Header-level, so they do not depend
+# on the challenge page's wording or language.
+CHALLENGE_COOKIES = ("ak_bmsc", "__cf_bm", "cf_clearance", "datadome", "incap_ses",
+                     "visid_incap", "_px", "px-captcha")
+# THE MACHINERY the walls ship. These tokens exist nowhere but inside the challenge
+# itself — bm-verify and triggerInterstitialChallenge are Akamai's (measured on
+# preprints.org 2026-08-04), the cdn-cgi path is Cloudflare's — so they are safe to
+# believe on a document of any length.
+CHALLENGE_TOKENS = re.compile(
+    r"bm-verify|triggerinterstitialchallenge|/cdn-cgi/challenge-platform|"
+    r"__cf_chl_|px-captcha",
+    re.I,
+)
+# WHAT THE WALL SAYS. Trustworthy only on a document short enough to be nothing BUT the
+# banner. These are ordinary English and real articles are written about them: AWS's
+# "Troubleshoot access denied (403 Forbidden) errors in Amazon S3" is 16,009 characters
+# of genuine documentation and matches `access denied` (measured 2026-08-04). Believing
+# a banner on a full-length page deletes exactly the sources a research run wants most —
+# the ones that explain the error you are researching.
+CHALLENGE_BANNERS = re.compile(
+    r"powered and protected by|just a moment|checking your browser|"
+    r"enable javascript and cookies to continue|attention required!|"
+    r"verify(?:ing)? you are (?:a )?human|access denied|request unsuccessful",
+    re.I,
+)
+# Longest wall measured is 275 characters; the shortest real article in the sample is
+# 2,119. The bound sits in that gap, nearer the walls.
+WALL_MAX_CHARS = 1000
+# A refresh redirect means the response is a WAYPOINT, not the document. A real article
+# does not ask the browser to leave five seconds after arriving.
+META_REFRESH = re.compile(r"<meta[^>]+http-equiv=[\"']?refresh[\"']?", re.I)
+MIN_USABLE_CHARS = 100  # the bar scraper.py already drops below
+
+
+def detect_unreadable(text: str, html: str, headers=None, status: int = 200):
+    """Why this response is not the page — or None if it looks like the page.
+
+    A fetch can fail while returning HTTP 200 and a well-formed document. Measured
+    2026-08-04, preprints.org answers our scraper with an Akamai interstitial: 200 OK,
+    2,670 bytes of markup, 32 characters of text reading "Powered and protected by
+    Privacy". Nothing raised, so the page was recorded as one that had almost nothing to
+    say — and a later verification pass, comparing a correct figure against that
+    non-corpus, reported the SOURCE as disagreeing. Absence became evidence.
+
+    Returns a REASON rather than a bool so the log and the run summary can say which
+    signal fired.
+
+    STRONG signals fire unconditionally: the challenge markers and the refresh waypoint
+    appear only on an interstitial, so seeing them means the response is not the
+    document however much boilerplate it carries.
+
+    WEAK signals fire only once the extracted text is already below what the pipeline
+    will use. A vendor cookie is the clearest reason for that split: ak_bmsc is set by
+    Akamai Bot Manager on EVERY response from a protected origin, successful ones
+    included, so alone it says "bot management is present", not "you were blocked" —
+    treating it as proof misclassified four of seven good pages when this was derived.
+
+    Below that bar the question stops being "was this a bot wall" and becomes "did we
+    fail to read a document that has content" — and blocked, rate-limited, JS-rendered
+    and paywalled all take the same remedy: do not report the source as read.
+
+    Do NOT replace this with a text/HTML ratio. That was tried and measured dead on the
+    same day: blocked preprints.org scores 1.20% while GitHub scores 0.85% and a
+    genuinely thin page (example.com) scores 25.40%, so every ratio threshold flags a
+    good page and passes a stub.
+    """
+    head = (html or "")[:4000]
+    body = (text or "").strip()
+
+    # STRONG — machine tokens and the status line. Neither can be produced by an article
+    # writing ABOUT bot walls, so length is irrelevant to them.
+    m = CHALLENGE_TOKENS.search(head)
+    if m:
+        return f"bot-challenge:{m.group(0)[:40].strip().lower()}"
+    if status >= 400:
+        # An error body is never the document we asked for, however chatty it is: a 404
+        # page or a rate-limit notice can easily run past MIN_USABLE_CHARS, and
+        # accepting it files a fetch that failed as a source that spoke.
+        return f"http-{status}"
+
+    # BANNER-SHAPED — the wording only means anything on a document that is nothing but
+    # the wording. Above this size the same phrases are simply the subject matter.
+    if len(body) < WALL_MAX_CHARS:
+        m = CHALLENGE_BANNERS.search(head)
+        if m:
+            return f"bot-challenge:{m.group(0)[:40].strip().lower()}"
+        if META_REFRESH.search(head):
+            # On a stub this is the challenge's own waypoint; on a full page it is an
+            # ordinary canonical redirect, and condemning that would lose real sources.
+            return "meta-refresh-redirect"
+
+    if len(body) >= MIN_USABLE_CHARS:
+        return None  # we got the page; nothing below outweighs that
+
+    cookie = ""
+    try:
+        cookie = str(headers.get("set-cookie", "")) if headers else ""
+    except AttributeError:  # a mapping-like that is not a mapping — not worth crashing on
+        cookie = ""
+    for c in CHALLENGE_COOKIES:
+        if c.lower() in cookie.lower():
+            return f"bot-managed-origin:{c}"
+    if len(html or "") > 1500:
+        # Substantial markup, nothing legible: JS-rendered or paywalled.
+        return "no-text-in-markup"
+    if len(html or "") < 200:
+        # Not a thin page — a response with no document in it at all.
+        return "empty-response"
+    return None
+
+
 def get_relevant_images(soup: BeautifulSoup, url: str) -> list:
     """Extract relevant images from the page"""
     image_urls = []

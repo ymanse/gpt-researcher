@@ -12,6 +12,8 @@ import time
 
 import requests
 
+from ..scraper.utils import detect_unreadable
+
 _FIRECRAWL_V2_SCRAPE = "https://api.firecrawl.dev/v2/scrape"
 
 
@@ -107,7 +109,18 @@ class CitationAgent:
                 data = resp.json()
                 if not data.get("success"):
                     return None
-                return data.get("data", {}).get("markdown") or None
+                md = data.get("data", {}).get("markdown") or None
+                # A wall is not a page here either. This is the ONE seam that decides
+                # whether a claim reads as "we never got the source" or "the source does
+                # not back it", so accepting any non-empty markdown means an
+                # interstitial re-fetched here becomes a source that REFUTES the claim.
+                # Same detector the scraper uses, so the two lanes agree on what a page
+                # is. No html and no status to offer it — the markdown is all we have,
+                # which is why the machine tokens and the short-document banner rule
+                # both still apply.
+                if md and detect_unreadable(md, md):
+                    return None
+                return md
             except Exception:
                 time.sleep(1)
         return None
@@ -126,7 +139,33 @@ class CitationAgent:
                 cache[url] = self._scrape(url) if url else None
             source = cache[url]
             verified = bool(source) and self._matches(quote, source)
-            claims.append({"quote": quote, "url": url, "verified": verified})
+            claim = {"quote": quote, "url": url, "verified": verified}
+            # WHY it failed, on the claim itself. `bool(source)` False means we never
+            # obtained the page — blocked, rate-limited, no url at all — while _matches
+            # False means we read the page and it does not carry this quote. Those are
+            # opposite findings: the first is a hole in the evidence, the second is
+            # evidence against the claim. Collapsing them is what let a correct figure
+            # be discarded because the source it came from had been silently walled off
+            # (preprints.org, 2026-08-04).
+            #
+            # A SUB-PARTITION, not a third bucket: total_claims / grounded / unverified
+            # keep their meanings and their arithmetic, and an unretrieved claim stays
+            # counted in `unverified` — pinned by tests/tier_a/stage3/test_stage3_citation.py
+            # (:126 requires unverified==1 for an unfetchable url, :151 requires
+            # total == grounded + unverified, :157 asserts exact equality on the empty
+            # result, so no new top-level key may appear).
+            #
+            # `url and` is load-bearing. An EMPTY url does not mean "we failed to fetch
+            # it" — it means the caller already looked and found no source of its own
+            # that supports the claim. tree_research builds claim_urls exactly that way
+            # (`next((u for u in n.sources if text_supported(...)), "")`), so without
+            # this guard the tree path would stamp `unretrieved` on the one case that is
+            # the OPPOSITE of a retrieval hole: every source was read, and none of them
+            # carried the claim. That is evidence, and mislabelling it as a gap is the
+            # same inversion this flag exists to prevent.
+            if not verified and url and not source:
+                claim["unretrieved"] = True
+            claims.append(claim)
         grounded = sum(1 for c in claims if c["verified"])
         return {
             "total_claims": len(claims),

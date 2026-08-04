@@ -5,7 +5,7 @@ import random
 import traceback
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
-from typing import Dict, Literal, cast, Tuple, List
+from typing import Dict, Literal, cast, Tuple
 import requests
 import asyncio
 import logging
@@ -203,7 +203,9 @@ class NoDriverScraper:
                 browser = await self.get_browser()
             except ImportError as e:
                 self.logger.error(f"Failed to initialize browser: {str(e)}")
-                return str(e), [], ""
+                # not str(e): an exception message returned as content is a page the
+                # pipeline will quote and cite. See browser.py for the measurement.
+                return "", [], ""
 
             page = await browser.get(self.url)
             if page is None:
@@ -249,7 +251,7 @@ class NoDriverScraper:
                 "Full stack trace:\n"
                 f"{traceback.format_exc()}"
             )
-            return str(e), [], ""
+            return "", [], ""
         finally:
             try:
                 if page and browser:

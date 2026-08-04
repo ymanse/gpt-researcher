@@ -69,6 +69,30 @@ class Scraper:
         )
 
         res = [content for content in contents if content["raw_content"] is not None]
+
+        # COUNT WHAT WAS LOST. Dropping the record here is right — an entry with no text
+        # must not masquerade as a page we hold — but until now the drop left no trace
+        # of any kind: no counter, no ratio, no end-of-run line. Nineteen of twenty URLs
+        # could vanish and every number in the run stayed the same, so a report built on
+        # one source looked exactly like a report built on twenty. The tally is kept on
+        # the instance as well as logged, so a caller that wants it does not have to
+        # scrape its own logs.
+        self.unread = [
+            {"url": c["url"], "reason": c.get("unread_reason") or "unknown"}
+            for c in contents
+            if c["raw_content"] is None
+        ]
+        if self.unread:
+            by_reason: dict = {}
+            for u in self.unread:
+                key = u["reason"].split(":")[0]
+                by_reason[key] = by_reason.get(key, 0) + 1
+            self.logger.warning(
+                f"{len(self.unread)} of {len(contents)} URLs were NOT read "
+                f"({', '.join(f'{k}={v}' for k, v in sorted(by_reason.items()))}). "
+                f"Claims resting on them cannot be verified from the text — that is a "
+                f"gap in the evidence, not evidence against the claim."
+            )
         return res
 
     def _check_pkg(self, scrapper_name: str) -> None:
@@ -130,11 +154,37 @@ class Scraper:
                         self.worker_pool.executor, scraper.scrape
                     )
 
-                if len(content) < 100:
-                    self.logger.warning(f"Content too short or empty for {link}")
+                # The reason is consulted BEFORE the length test, not inside it. A
+                # challenge page is not obliged to be short — "Checking your browser…
+                # This process is automatic, you will be redirected shortly" clears 100
+                # characters easily — and gating the strong signals behind the length
+                # test would have let exactly those through as article text, which is
+                # the failure this whole change exists to stop.
+                reason = getattr(scraper, "unreadable_reason", None)
+                if reason or len(content) < 100:
+                    # SAY WHICH IT WAS. "Content too short or empty" describes a thin
+                    # page, and a bot wall, a 429 and a JS-only shell all arrived here
+                    # wearing that description — so a source we were BLOCKED from
+                    # reading was recorded as a source with nothing to say, and a later
+                    # verification pass read that silence as the source disagreeing.
+                    # Measured 2026-08-04 on preprints.org (Akamai, HTTP 200, 32 chars)
+                    # and news.ycombinator.com (HTTP 429, 6 bytes).
+                    if reason:
+                        self.logger.warning(
+                            f"UNREAD {link}: {reason} "
+                            f"(extracted {len(content)} chars) — the page was not "
+                            f"obtained; do not treat it as a source that says little"
+                        )
+                    else:
+                        self.logger.warning(f"Content too short or empty for {link}")
                     return {
                         "url": link,
+                        # stays None on purpose: an empty string here would register as
+                        # "we hold this page and it is blank", which disarms the
+                        # evidence-starvation guard in tree_research and suppresses
+                        # CitationAgent's re-fetch (see deep_research.scraped_documents)
                         "raw_content": None,
+                        "unread_reason": reason or "content-too-short",
                         "image_urls": [],
                         "title": title,
                     }
@@ -148,15 +198,8 @@ class Scraper:
                 self.logger.info(f"URL: {link}")
                 self.logger.info("=" * 50)
 
-                if not content or len(content) < 100:
-                    self.logger.warning(f"Content too short or empty for {link}")
-                    return {
-                        "url": link,
-                        "raw_content": None,
-                        "image_urls": [],
-                        "title": title,
-                    }
-
+                # (the duplicate `len(content) < 100` guard that stood here was
+                # unreachable — the branch above returns for every such case)
                 return {
                     "url": link,
                     "raw_content": content,

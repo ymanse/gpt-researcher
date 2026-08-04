@@ -453,13 +453,39 @@ Format each question on a new line starting with 'Question: '"""}
             on_progress=on_progress
         )
 
+        # BEFORE verification, not after it. scraped_documents() reads
+        # researcher.research_sources to seed the citation pass with pages this run
+        # already holds; that assignment used to sit ~45 lines below, so at this point
+        # the seed was empty and the optimisation never fired — every claim re-fetched
+        # through firecrawl with maxAge=0, which is the 13-minutes-of-37 the seed was
+        # added to remove. Worse since `unretrieved` exists: a re-fetch that fails then
+        # marks a page we are holding in memory as one we could not obtain, inventing
+        # the very evidence-hole that flag is meant to report honestly.
+        if results.get('sources'):
+            self.researcher.research_sources = results['sources']
+
         # Citation-verification post-pass over collected claims (stage 3)
         verification = await self.verify_citations(results['citations'])
+        # unretrieved is reported SEPARATELY from unverified, not carved out of it.
+        # Both numbers matter and they mean opposite things: unverified says the
+        # evidence does not back the claim, unretrieved says we never got to look. A
+        # line that prints only the first invites the reader to treat a fetch we lost
+        # as a claim the sources refuted — which is how a correct finding was thrown
+        # away. It stays a subset so the pinned arithmetic still holds.
+        unretrieved = sum(1 for c in verification.get("claims", []) if c.get("unretrieved"))
         print(
             f"TIERA_EVIDENCE stage=3 total_claims={verification['total_claims']} "
-            f"grounded={verification['grounded']} unverified={verification['unverified']}",
+            f"grounded={verification['grounded']} unverified={verification['unverified']} "
+            f"unretrieved={unretrieved}",
             flush=True,
         )
+        if unretrieved:
+            logger.warning(
+                f"{unretrieved} of {verification['unverified']} unverified claims cite a "
+                f"source that was never obtained (blocked, rate-limited or unreachable). "
+                f"That is a gap in the evidence, not evidence against the claim — do not "
+                f"drop those claims on the strength of this pass."
+            )
 
         # Get costs after deep research
         research_costs = self.researcher.get_costs() - initial_costs
@@ -496,9 +522,7 @@ Format each question on a new line starting with 'Question: '"""}
         )
         self.researcher.visited_urls = results['visited_urls']
 
-        # Set research sources
-        if results.get('sources'):
-            self.researcher.research_sources = results['sources']
+        # (research_sources is assigned above, before verify_citations needs it)
 
         # Log total execution time
         end_time = time.time()

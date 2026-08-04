@@ -10,12 +10,10 @@ import string
 import os
 
 from bs4 import BeautifulSoup
-from typing import Iterable, cast
 
 from .processing.scrape_skills import (scrape_pdf_with_pymupdf,
                                        scrape_pdf_with_arxiv)
 
-from urllib.parse import urljoin
 
 from ..utils import get_relevant_images, extract_title, get_text_from_soup, clean_soup
 
@@ -52,7 +50,12 @@ class BrowserScraper:
             print(f"An error occurred during scraping: {str(e)}")
             print("Full stack trace:")
             print(traceback.format_exc())
-            return f"An error occurred: {str(e)}\n\nStack trace:\n{traceback.format_exc()}", [], ""
+            # An empty string, NOT the traceback. Returning the error as content made a
+            # failed scrape indistinguishable from a successful one to every caller, and
+            # worse than the thin-page case: a stack trace always clears the 100-char
+            # floor in scraper.py, so it was never dropped — it became `raw_content`,
+            # entered the research corpus, and could be quoted and cited like a source.
+            return "", [], ""
         finally:
             if self.driver:
                 self.driver.quit()
@@ -195,10 +198,13 @@ class BrowserScraper:
             WebDriverWait(self.driver, 20).until(
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
-        except TimeoutException as e:
+        except TimeoutException:
             print("Timed out waiting for page to load")
             print(f"Full stack trace:\n{traceback.format_exc()}")
-            return "Page load timed out", [], ""
+            # same rule as the handler in scrape(): a status line is not a page. This
+            # one happens to be short enough that scraper.py drops it anyway, which is
+            # precisely why it survived unnoticed — the outcome was right by accident.
+            return "", [], ""
 
         self._scroll_to_bottom()
 
