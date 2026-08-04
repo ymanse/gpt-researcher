@@ -375,6 +375,16 @@ def _delims_closed(text: str) -> bool:
 # unit — 26 of 199 shipped units opened this way.
 _ANAPHOR_RE = re.compile(
     r"^[\s*_>-]*(?:This|That|These|Those|It|They|Such|Thus|Therefore|Hence)\b", re.I)
+# A LIST MARKER IS NOT A CLAIM. "1." parses as a sentence end by every rule
+# _SENT_BREAK_RE has — a full stop, whitespace, then a capital — so an enumerated list
+# is shredded into empty ordinals plus content that then gets laid out by theme far
+# from the number that introduced it. Measured 2026-08-04 on the shipped
+# harness-landscape report: 8 of 139 claim units (5.8%) were bare markers
+# (`**1.` `**2.` `**3.` `1.` `2.` `3.` `4.` `5.`), and the report rendered
+# "**Key contrasts:**" followed by five empty numbers while the five actual items sat
+# under other headings. The marker governs what follows exactly as a colon lead-in
+# does, so it rejoins the same way.
+_ORDINAL_ONLY_RE = re.compile(r"^[\s*_>#-]*(?:\d{1,2}|[a-zA-Z]|[ivxIVX]{1,4})\s*[.)]\s*$")
 # The reply's own shape is `"<fragment>" => UNIQUE: <what only this one says>`, and the
 # keyword is what a model drops first: measured 2026-07-29 on this deployment, a screen
 # answered `"The refresh method can be incremental or a complete refresh" => none`, which
@@ -477,7 +487,8 @@ def _claim_units(text: str) -> List[str]:
     # paragraph and a blank line across two.
     out: List[tuple] = []
     for bno, piece in pieces:
-        if out and (out[-1][1].endswith(":") or _ANAPHOR_RE.match(piece)):
+        if out and (out[-1][1].endswith(":") or _ANAPHOR_RE.match(piece)
+                    or _ORDINAL_ONLY_RE.match(out[-1][1])):
             sep = " " if out[-1][0] == bno else "\n\n"
             out[-1] = (bno, f"{out[-1][1]}{sep}{piece}")
         else:
