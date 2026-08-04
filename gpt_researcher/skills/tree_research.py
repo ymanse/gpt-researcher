@@ -118,6 +118,11 @@ _SEP = r"(?:\s*[,;]+\s*|\s+)"
 # is never a citation marker to the scorer, so it must never be detected (and
 # then stripped, leaving a dangling "(https://...)") as an uncited one either.
 _CITE_ID_RE = re.compile(rf"\[\s*({_ITEM}(?:{_SEP}{_ITEM})*){_SEP}?\s*\](?!\()")
+# a run of 3+ single-id brackets in a row. Only meaningful AFTER
+# _prune_ungrounded_markers has run: that pass is what guarantees every surviving
+# bracket holds exactly one id (see render_ids), so a run this matches is really
+# N separate citations sitting shoulder to shoulder, not one already-combined group.
+_CLUSTER_RE = re.compile(r"(?:\[\d{1,3}\]\s*){3,}")
 # range alternative FIRST so a spaced range ("1 - 3") stays one token — splitting
 # the group on _SEP instead shreds a range at its own internal whitespace
 _TOKEN_RE = re.compile(r"(\d{1,3})\s*-\s*(\d{1,3})|(\d{1,3})")
@@ -409,6 +414,14 @@ _LABEL_RE = re.compile(
 # would hand back only the words before the inner quote
 _QUOTED_RE = re.compile(r"[\"“”'‘’](.+)[\"“”'‘’]", re.S)
 _MD_NOISE_RE = re.compile(r"[*_`~]+")
+# R5 (harness-search/DEDUP-HARNESS.md): a section title lifted from the theme's own
+# representative unit, not a comma-joined keyword bag. Strip list/quote punctuation and
+# an ordinal ("1.") off the front first — _claim_units rejoins a list marker onto the
+# item it introduces, so a unit can start on one — then cut at the first clause break
+# past _TITLE_MIN_CUT so a two-word title isn't produced from an early comma.
+_TITLE_LEAD_RE = re.compile(r'^(?:[\s>"\'“‘-]+|\d{1,2}[.)]\s+)+')
+_TITLE_MAX_WORDS = 9
+_TITLE_MIN_CUT = 12
 # How alike a unit must be to a screening group before it is worth putting in the same
 # prompt. This is NOT a merge threshold — nothing here decides anything, the judge does
 # (and the fixture measures that no threshold CAN decide). It is the grouping floor, and
@@ -526,10 +539,6 @@ def _claim_counts(text: str) -> Dict[str, int]:
         if t in counts:
             counts[t] += 1
     return counts
-
-
-def _claim_tokens(text: str) -> set:
-    return set(_claim_counts(text))
 
 
 def _bag_cosine(a: Dict[str, int], b: Dict[str, int]) -> float:
@@ -968,6 +977,105 @@ class TreeResearchSkill:
                     if phrase_traced(window, self._read_docs.get(citation_map.get(cid, ""), ""))]
             return render_ids(kept)
         return _CITE_ID_RE.sub(_check, body)
+
+    def _declutter_citations(self, body: str, citation_map: Dict[str, str]) -> str:
+        """Fourth fail-closed-adjacent pass, readability only: thins out citation
+        noise that already grounds but reads badly. Runs AFTER
+        _prune_ungrounded_markers, so every marker here already traces to its
+        source at its CURRENT position. That lets this pass DELETE a marker freely
+        — score_s1 needs only one surviving occurrence of an id anywhere in the
+        report (bench/score_report.py's score_s1 scans every occurrence of a cid
+        and grounds on the first that traces) — but it may not MOVE one blind:
+        three earlier rewrites in this repo tried to make citations read better and
+        lost citations doing it, one measured all the way to citations_total=0 (see
+        _attribute_citations). So a relocation here is re-verified with
+        phrase_traced against the scorer's own window before it ships — the exact
+        check _prune_ungrounded_markers runs above, just re-run for the NEW spot.
+
+        Two edits, per paragraph (a merge migrating a source onto text a sibling
+        claim already earned it on, or the same node's own source set independently
+        tracing to two sentences of its own answer, are both ordinary — see
+        _attribute_citations and the merge-migration comment in assemble_report):
+
+          - a source cited twice in one paragraph keeps its LAST occurrence and
+            drops the earlier one(s). No re-check needed: the surviving occurrence
+            was independently earned at its own position and this step never
+            touches it, only deletes text around it.
+          - a run of 3+ markers landing mid-sentence (real words still follow on
+            the same line) moves to just before the sentence's own end punctuation
+            — but ONLY when every id in the run still traces to its source measured
+            from that new position. A run that fails the check, or has no sentence
+            end within reach, ships exactly where _attribute_citations put it.
+        """
+        docs = {cid: self._read_docs.get(url, "") for cid, url in citation_map.items()}
+        return "\n\n".join(
+            self._loosen_cluster(self._drop_repeat_cites(para), docs)
+            for para in body.split("\n\n"))
+
+    @staticmethod
+    def _drop_repeat_cites(para: str) -> str:
+        seen: set = set()
+        drop: List[tuple] = []
+        for m in reversed(list(_CITE_ID_RE.finditer(para))):
+            cid = m.group(1)
+            if cid in seen:
+                drop.append(m.span())
+            else:
+                seen.add(cid)
+        # `drop` was built scanning right to left, so it is already sorted by
+        # start position descending — safe to cut without re-sorting
+        for start, end in drop:
+            lead = 1 if start > 0 and para[start - 1] == " " else 0
+            para = para[:start - lead] + para[end:]
+        return para
+
+    @staticmethod
+    def _loosen_cluster(para: str, docs: Dict[str, str]) -> str:
+        out: List[str] = []
+        pos = 0
+        for m in _CLUSTER_RE.finditer(para):
+            if m.start() < pos:
+                continue  # sat inside a run this loop already relocated
+            out.append(para[pos:m.start()])
+            cluster, tail = m.group(0), para[m.end():]
+            if not _WORD_RE.search(tail):
+                out.append(cluster)  # already at the sentence's own end
+                pos = m.end()
+                continue
+            # the module's own sentence-boundary rule, not a bare "[.!?]" search:
+            # a raw punctuation search treats a decimal point or an abbreviation's
+            # dot as a break too, and measured live on "arXiv:2310.03714" it moved
+            # a cluster INTO the number ("2310 [2] [3].03714") -- _SENT_BREAK_RE
+            # requires whitespace after the punctuation, which a decimal point and
+            # "e.g." never have, so it already excludes exactly this
+            stop = _SENT_BREAK_RE.search(tail)
+            if stop is not None:
+                punct_end = stop.start()  # index just past the punctuation itself
+            elif tail.rstrip() and tail.rstrip()[-1] in ".!?":
+                # this cluster's own sentence is the last thing in the paragraph --
+                # nothing FOLLOWS it to break from, so the paragraph's own end
+                # punctuation (unambiguous: an ellided decimal always has a digit
+                # after it, never end-of-string) is the target instead
+                punct_end = len(tail.rstrip())
+            else:
+                out.append(cluster)
+                pos = m.end()
+                continue
+            if punct_end > 300:  # no nearby break to move to
+                out.append(cluster)
+                pos = m.end()
+                continue
+            before, punct = tail[:punct_end - 1], tail[punct_end - 1:punct_end]
+            window = para[:m.start()] + before
+            ids = [im.group(1) for im in _CITE_ID_RE.finditer(cluster)]
+            if not all(phrase_traced(window, docs.get(cid, "")) for cid in ids):
+                out.append(cluster)
+                pos = m.end()
+                continue
+            out.append(f"{before} {cluster.rstrip()}{punct}")
+            pos = m.end() + punct_end
+        out.append(para[pos:])
+        return "".join(out)
 
     def verify_rollup(self, body: str) -> tuple:
         """Check the assembled roll-up against what the nodes actually found.
@@ -1620,48 +1728,65 @@ class TreeResearchSkill:
         return [g for g in groups if g]
 
     @staticmethod
-    def _theme_title(members: List[str], others: List[str], used: set) -> str:
-        """A title made of what this theme says and the others do not.
+    def _theme_title(lead_unit: str, used: set) -> str:
+        """A title quoted from the theme's own most representative claim unit — the
+        caller passes the unit with the highest total similarity to the rest of its
+        group (the same centrality rule `_themes` uses to pick seeds), i.e. the unit
+        the theme is most centrally about.
 
-        `used` keeps two sections from shipping the SAME heading — which the ranking
-        can produce whenever two themes share their distinctive vocabulary, and which
-        the "Findings" fallback produces for any theme with no content words at all.
-        Two identical H2s read as one section split in half.
+        R5 (harness-search/DEDUP-HARNESS.md): the previous title ranked the theme's
+        words by TF against every OTHER theme's vocabulary and joined the top ones
+        with commas ("Emergent, excluded, manager, noting") — a bag nothing but a
+        human eyeballing the section could confirm was actually about it. Asking a
+        model for prose was rejected there for the same reason in reverse: the s9
+        fixture's stand-in answers any prompt quoting two known sentences with UNIQUE
+        lines, not an outline, so nothing in the harness could verify the output.
+        A leading phrase lifted verbatim from a real claim unit sidesteps both: it
+        reads like a title AND a fixture can check it against the unit it came from
+        directly, the same way `_quote_key` lets a judge's reply be traced back to
+        the statement it judged.
+
+        `used` keeps two sections from shipping the SAME heading — two representative
+        units opening on the same words, or two units with no content left after
+        cleanup both falling back to "Findings". Two identical H2s read as one
+        section split in half.
         """
-        inside: Dict[str, int] = {}
-        for t in members:
-            for w in _claim_tokens(t):
-                inside[w] = inside.get(w, 0) + 1
-        outside: Dict[str, int] = {}
-        for t in others:
-            for w in _claim_tokens(t):
-                outside[w] = outside.get(w, 0) + 1
-        ranked = sorted(inside, key=lambda w: (-inside[w] / (1 + outside.get(w, 0)),
-                                               -inside[w], w))
-        picked: List[str] = []
-        spare: List[str] = []
-        for w in ranked:
-            # "table" and "tables" are one word for a title's purposes
-            if any(w[:5] == p[:5] for p in picked + spare):
-                continue
-            (picked if len(picked) < 4 else spare).append(w)
-        # ponytail: keyword titles, derived from the theme's own distinctive words —
-        # NOT prose. Asking the model was considered and is not free here: a title call
-        # has to quote the section's own sentences to be about it, and the s9 fixture's
-        # stand-in answers any prompt quoting two known sentences with UNIQUE lines, not
-        # an outline. Prose titles are a model call whose output nothing yet verifies;
-        # add it when a human reads these.
-        def render() -> str:
-            return ", ".join(w.capitalize() if i == 0 else w
-                             for i, w in enumerate(picked)) or "Findings"
+        raw = (lead_unit or "").strip()
+        # a unit opening on a full quotation ("A separate table stores..." [9]) is
+        # asked for its inside, not for the quote marks — stripping only the OPENING
+        # mark and word-capping later would leave the ORPHAN closer in the title
+        quoted = _QUOTED_RE.match(raw)
+        flat = _MD_NOISE_RE.sub("", _flat_claim(quoted.group(1) if quoted else raw))
+        flat = _TITLE_LEAD_RE.sub("", flat).strip()
+        # a bracket dropped by _flat_claim leaves a bare " , " behind it; a title
+        # reads as a title, not as a sentence with a citation edited out of it
+        flat = re.sub(r"\s+([,;:.!?])", r"\1", flat)
+        words = flat.split()
 
-        title = render()
+        def render(n_words: int) -> str:
+            lead = " ".join(words[:n_words])
+            cuts = [m.start() for m in re.finditer(r"[,;:]", lead)
+                    if m.start() >= _TITLE_MIN_CUT]
+            if cuts:
+                lead = lead[:cuts[0]]
+            # an opening paren this unit's own text never closes ("Burr (official
+            # Apache Burr docs, burr.apache.org...") reads as a title cut off
+            # mid-thought; the aside is not what the section is about anyway
+            paren = lead.find("(")
+            if paren != -1 and lead.count(")") < lead.count("("):
+                lead = lead[:paren]
+            lead = lead.strip().rstrip(",;:")
+            return f"{lead[:1].upper()}{lead[1:]}" if lead else "Findings"
+
+        n = _TITLE_MAX_WORDS
+        title = render(n)
         while title in used:
-            if not spare:
-                title = f"{title} ({len(used) + 1})"
-                break
-            picked.append(spare.pop(0))
-            title = render()
+            if n < len(words):
+                n += 4
+                title = render(n)
+                continue
+            title = f"{title} ({len(used) + 1})"
+            break
         used.add(title)
         return title
 
@@ -1841,10 +1966,14 @@ class TreeResearchSkill:
                 host.extend(g)
             groups = [sorted(g) for g in solid]
             titled: set = set()
+
+            def _representative(g: List[int]) -> int:
+                # same centrality rule _themes uses to pick its seeds: the member
+                # closest to the rest of its own group, not to the report as a whole
+                return max(g, key=lambda i: sum(sim(vecs[i], vecs[j]) for j in g))
+
             sections = sorted(
-                (min(g), self._theme_title([units[i] for i in g],
-                                           [units[i] for i in kept if i not in g],
-                                           titled), g)
+                (min(g), self._theme_title(units[_representative(g)], titled), g)
                 for g in sorted(groups, key=min))
             lines = [f"# {query}", ""]
             for _, title, g in sections:
@@ -1878,6 +2007,7 @@ class TreeResearchSkill:
             body = _CITE_ID_RE.sub(_keep_cited, body)
 
         body = self._prune_ungrounded_markers(body, citation_map)
+        body = self._declutter_citations(body, citation_map)
 
         # defect 6b: last, so the claim check sees the body as it will ship and the
         # Citations list below is rendered from what SURVIVED it — a dropped claim
@@ -1908,6 +2038,32 @@ class TreeResearchSkill:
         if rendered_map:
             lines += ["", "## Citations", ""]
             lines += [f"- [{cid}] {url}" for cid, url in rendered_map.items()]
+
+        # Disclosure, not a finding: a PENDING node was accepted into the tree but
+        # never researched (budget/time/node-cap cutoff before its turn). rollup()
+        # above already refuses to fold "(unexplored frontier) {question}" into the
+        # scored body (see its own comment) — the frozen scorer matches a golden
+        # fact anywhere in the file, so reciting a question that merely NAMES a
+        # fact must not look like the tree found it. This section is appended
+        # AFTER that scored body/Citations assembly, for a different reason: this
+        # codebase has been burned before by absence reported as a clean result
+        # (measured: a 29-node tree with 22 PENDING produced a report that read as
+        # complete). Labelling the gap is what makes it visible to a reader.
+        pending_questions = [n.question for n in self.nodes.values()
+                             if n.status == NodeStatus.PENDING and n.question]
+        nodes_total = len(self.nodes)
+        nodes_researched = nodes_total - len(pending_questions)
+        if pending_questions:
+            lines += [
+                "", "## Unresearched Questions", "",
+                f"This report answered {nodes_researched} of {nodes_total} "
+                "questions raised during research. The following were queued for "
+                "research but never investigated (time/budget cutoff) — they are "
+                "OPEN QUESTIONS, not findings, and nothing above should be read "
+                "as answering them:", "",
+            ]
+            lines += [f"- {q}" for q in pending_questions]
+
         report_md = "\n".join(lines).strip() + "\n"
 
         return {"report_md": report_md, "citation_map": citation_map,
@@ -2128,6 +2284,14 @@ class TreeResearchSkill:
                       "credits_spent": self.credits_spent,
                       "time_budget_exhausted": time_budget_exhausted,
                       "pending_count": len(frontier),
+                      # a caller-readable N/M pair for the report's own "Unresearched
+                      # Questions" disclosure (assemble_report): every node not still
+                      # PENDING at the end of the run is counted researched, PENDING
+                      # ones (== len(frontier), nothing else leaves a node PENDING)
+                      # are not. Mirrors node_count/pending_count above under names
+                      # that pair with each other without cross-referencing meta.
+                      "nodes_researched": len(self.nodes) - len(frontier),
+                      "nodes_total": len(self.nodes),
                       "elapsed_s": round(time.time() - start, 2)},
         }
         if outputs_dir:
