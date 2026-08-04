@@ -24,6 +24,46 @@ from .costs import estimate_llm_cost
 from .validators import Subtopics
 
 
+# Raised by ChatClaudeAgent._run_query (gpt_researcher/llm_provider/claude_agent/
+# chat_model.py) only after it has already classified the CLI's stdout as a refusal
+# banner (spent weekly quota / invalid key / not logged in), never an actual model
+# reply. Matched by prefix instead of re-deriving the classification: chat_model.py
+# owns the "is this a refusal" judgement, this only recognizes its verdict.
+_CLI_REFUSAL_PREFIX = "[claude_agent] the CLI refused the request instead of answering:"
+
+# Same shape as retrievers.utils.is_retryable_error: whitelist what is NOT retryable,
+# default everything else to retryable so an error with no evidence either way is not
+# silently made fatal. 401/403 are HTTP auth/authz semantics — the identical request
+# meets the identical rejection, same reasoning the retriever layer already applies to
+# 401/403 (see retrievers/utils.py _NON_RETRYABLE_STATUS).
+_LLM_NON_RETRYABLE_STATUS = {401, 403}
+
+
+def is_llm_retryable_error(exc: BaseException) -> bool:
+    """True if retrying `exc` from create_chat_completion could plausibly succeed.
+
+    Measured live 2026-08-04 (harness-search/no_read/tmp/probe_node_timing_result.json):
+    one `conduct_research()` call spent 395.19s wall for zero usable context. All 50 LLM
+    calls failed with the identical CLI refusal (spent weekly quota) across 5
+    `create_chat_completion()` invocations, each burning a full 10-attempt exponential
+    backoff (55s of asyncio.sleep) on a condition no retry could ever clear — 271 of the
+    395s (69%) was sleep between doomed retries, not work.
+    """
+    if str(exc).startswith(_CLI_REFUSAL_PREFIX):
+        return False
+    # openai/anthropic SDK APIStatusError exposes status_code directly on the exception;
+    # requests.HTTPError nests it under .response.status_code; urllib.error.HTTPError
+    # uses .code. Check all three, same fallback order as is_retryable_error.
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is None:
+        status = getattr(exc, "code", None)
+    if status is None:
+        return True
+    return status not in _LLM_NON_RETRYABLE_STATUS
+
+
 def get_llm(llm_provider: str, **kwargs):
     """Get an LLM provider instance.
 
@@ -110,6 +150,12 @@ async def create_chat_completion(
             logging.getLogger(__name__).warning(
                 f"LLM request failed (attempt {attempt}/{max_attempts}): {exc}"
             )
+            if not is_llm_retryable_error(exc):
+                logging.getLogger(__name__).warning(
+                    f"LLM error is not retryable, failing fast without a wasted "
+                    f"retry (attempt {attempt}/{max_attempts}): {exc}"
+                )
+                break
             if attempt < max_attempts:
                 await asyncio.sleep(min(2 ** (attempt - 1), 8))
                 continue
