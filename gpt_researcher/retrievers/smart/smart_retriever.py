@@ -106,6 +106,12 @@ _RETRIEVER_TIMEOUT_S: float = float(os.getenv("SMART_RETRIEVER_TIMEOUT_S", "60")
 # sub-query in the run re-pays the full timeout for the same dead service.
 _TIMED_OUT_ONCE: set[str] = set()
 
+# How many live retrievers a routed bundle must have before it is allowed to stand on
+# its own. Below this it is topped up from general_web — see _route_to_retrievers. Three
+# is what the smallest hand-written bundle in ROUTING_TABLE has, so this asks a degraded
+# route for no more breadth than a healthy one already provides.
+_MIN_ROUTED_RETRIEVERS = int(os.getenv("SMART_RETRIEVER_MIN_BUNDLE", "3"))
+
 
 class SmartRetriever:
     """LLM-routed multi-retriever that selects optimal search engines per query."""
@@ -233,6 +239,29 @@ class SmartRetriever:
                 available.append(entry)
             else:
                 logger.info(f"Skipping retriever '{name}': API key not configured")
+
+        # A routed bundle that lost most of its members is worse than no routing at all.
+        # Measured 2026-09-05: with smart routing restored, `code_technical` came down to
+        # serper alone — exa retired itself ("Unable to import exa-py") and github
+        # contributed nothing — so a technical query read 4 sources where the
+        # general_web bundle had given it 10, and the report's citations fell from 11
+        # to 4. Routing is supposed to make the search sharper, not narrower.
+        #
+        # So top the bundle up from general_web rather than replacing it: the routed
+        # retrievers keep their priority and their specialism, and the breadth floor is
+        # met by whatever else can actually serve (duckduckgo needs no key, so there is
+        # always something). The existing fallback below only fires when the route
+        # returns ZERO results, which is far too late to help here.
+        if category != "general_web" and len(available) < _MIN_ROUTED_RETRIEVERS:
+            routed = {entry[0] for entry in available}
+            for entry in ROUTING_TABLE["general_web"]:
+                if len(available) >= _MIN_ROUTED_RETRIEVERS:
+                    break
+                if entry[0] in routed or not self._check_retriever_availability(entry[0]):
+                    continue
+                logger.info("Topping up the '%s' bundle with '%s': only %d of its own "
+                            "retrievers can serve", category, entry[0], len(routed))
+                available.append(entry)
 
         return available
 
