@@ -13,8 +13,11 @@ So this pins the attribution, not the total:
 
   - `agent_purpose(site)` tags every `note_agent_call()` made under it,
   - the tag rides a ContextVar, so concurrently-researched sibling nodes cannot be
-    charged to each other's site and the retriever's ThreadPoolExecutor + asyncio.run
-    hop still lands on the right site,
+    charged to each other's site — while the retriever's ThreadPoolExecutor hop lands on
+    the right site ONLY once `_run_coro_blocking` copies the context at the submit site.
+    `ThreadPoolExecutor.submit` alone starts the worker with an EMPTY context (measured
+    2026-09-05: the var reads None there), so a plain ContextVar charges every production
+    classify to 'untagged',
   - `agent_calls_this_run()` / `agent_calls_by_site()` are DELTAS re-baselined by
     `begin_agent_run()`, while `agent_calls_spent()` / `agent_budget_limit()` keep the
     cumulative, POOLING semantics that `tests/test_agent_budget_reserve.py` freezes —
@@ -27,11 +30,15 @@ directly, which is the same seam `chat_model._run_query` uses.
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+import contextlib
+import importlib
+import sys
+import threading
 
 import pytest
 
 from gpt_researcher.llm_provider.claude_agent import _subscription as sub
+from gpt_researcher.retrievers.smart.smart_retriever import _run_coro_blocking
 
 
 # Big enough that no test here can trip AgentBudgetExceeded; the budget itself is
@@ -50,6 +57,11 @@ def armed_run(monkeypatch):
     monkeypatch.setattr(sub, "prune_cli_sessions", lambda *a, **k: 0)
     sub.begin_agent_run(ALLOWANCE)
     yield
+    # Disarm. The budget is process-wide and s11 sorts BEFORE s2..s9 and
+    # tests/search_quality/test_*.py, so an allowance left armed here silently converts
+    # every later tree run from unbounded to bounded (ceiling = spent + 1000, synthesis
+    # reserve 150) and changes what those stages measure.
+    sub.begin_agent_run(0)
 
 
 def test_a_call_is_charged_to_the_purpose_that_wraps_it():
@@ -205,35 +217,143 @@ async def test_concurrent_siblings_are_not_charged_to_each_others_site():
     )
 
 
-async def test_a_purpose_entered_in_a_worker_thread_is_seen_there_and_stays_there():
-    """`smart_retriever` classifies from a sync `search()` called out of a running loop,
-    so `_run_coro_blocking` hops through ThreadPoolExecutor + `asyncio.run`. The purpose
-    is entered INSIDE the worker thread, around that hop: `asyncio.run` copies the
-    calling THREAD's context into its task, so the tag must reach the call there — and
-    must not follow the result back to the caller."""
-    async def charge() -> dict:
+async def test_a_purpose_survives_the_retrievers_real_thread_hop():
+    """The topology production actually has, driven through the REAL `_run_coro_blocking`.
+
+    `SmartRetriever.search()` is synchronous but is called from a thread that ALREADY
+    owns a running loop — the MCP server, and the direct `retriever_instance.search(...)`
+    calls at researcher.py:656 and :1001. So `_run_coro_blocking` takes its second
+    branch, `pool.submit(lambda: asyncio.run(coro))`, and **ThreadPoolExecutor.submit
+    does not copy contextvars**: the spawned thread starts with an EMPTY context and a
+    purpose entered by the caller is silently lost (measured 2026-09-05 — the var reads
+    None there).
+
+    The purpose is therefore entered HERE, on the calling thread, around the whole
+    blocking hop. That is the only place production can enter it (`search()` is what the
+    caller holds) and the only place it belongs — around the logical operation. A test
+    that instead enters the purpose inside its own worker thread certifies nothing: a
+    plain ContextVar passes it while production charges everything to 'untagged'.
+    """
+    caller_thread = threading.get_ident()
+    seen: dict = {}
+
+    async def charge() -> None:
+        seen["thread"] = threading.get_ident()
         sub.note_agent_call()
-        return sub.agent_calls_by_site()
 
-    def worker() -> dict:
-        with sub.agent_purpose("classify"):
-            return asyncio.run(charge())
+    with sub.agent_purpose("classify"):
+        _run_coro_blocking(charge())
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        seen_in_worker = pool.submit(worker).result(timeout=10)
-
-    assert seen_in_worker.get("classify", 0) == 1, (
-        "a purpose entered in the retriever's worker thread did not reach the call made "
-        f"on that thread's own event loop: {seen_in_worker} — classify would be the one "
-        "site that never gets attributed, and it is a site P1.1 exists to remove"
+    assert seen["thread"] != caller_thread, (
+        "this test did not cross the hop it exists for: _run_coro_blocking ran the "
+        f"coroutine on the calling thread ({caller_thread}) instead of spawning one, so "
+        "the branch the MCP path takes went untested and the assertion below would pass "
+        "vacuously"
     )
 
-    sub.note_agent_call()
     by_site = sub.agent_calls_by_site()
-    assert by_site.get("classify", 0) == 1 and by_site.get("untagged", 0) == 1, (
-        "the worker thread's purpose leaked back to the caller — the main-thread call "
-        f"made after the hop must be 'untagged', got {by_site}"
+    assert by_site.get("classify", 0) == 1, (
+        "a call made under agent_purpose('classify') across the retriever's thread hop "
+        f"was charged elsewhere: by_site={by_site}. ThreadPoolExecutor.submit does not "
+        "copy contextvars, so the spawned thread starts with an empty context and EVERY "
+        "production classify lands under 'untagged' — which makes the gate "
+        "'classify + choose_agent <= 2 per run' pass vacuously by reading 0. The fix "
+        "belongs at the submit site in smart_retriever._run_coro_blocking: "
+        "ctx = contextvars.copy_context(); pool.submit(lambda: ctx.run(asyncio.run, coro))"
     )
+    assert by_site.get("untagged", 0) == 0, (
+        f"the tag was dropped somewhere across the hop: by_site={by_site}"
+    )
+
+
+def test_the_branch_that_does_not_hop_keeps_the_purpose_too():
+    """`_run_coro_blocking`'s other branch: no loop on this thread, so it drives
+    `asyncio.run` in place, which copies the CALLING thread's context into its task.
+
+    This half is already correct today — it is pinned because the fix for the hopping
+    branch edits this same function, and a `copy_context()` bolted on carelessly (e.g.
+    entering the copied context around the wrong call, or reusing one context for both
+    branches) is exactly how it would regress.
+    """
+    caller_thread = threading.get_ident()
+    seen: dict = {}
+
+    async def charge() -> None:
+        seen["thread"] = threading.get_ident()
+        sub.note_agent_call()
+
+    with sub.agent_purpose("plan"):
+        _run_coro_blocking(charge())
+
+    assert seen["thread"] == caller_thread, (
+        "a loop was running on this thread after all, so this test drove the hopping "
+        "branch and duplicates the previous test instead of covering the other one"
+    )
+    by_site = sub.agent_calls_by_site()
+    assert by_site.get("plan", 0) == 1 and by_site.get("untagged", 0) == 0, (
+        "the no-running-loop branch of _run_coro_blocking lost the purpose: "
+        f"by_site={by_site} — asyncio.run copies the calling thread's context, so this "
+        "branch must attribute correctly both before and after the submit-site fix"
+    )
+
+
+@contextlib.contextmanager
+def _never_armed_copy():
+    """Yield a fresh import of the counter module — i.e. a process that imported
+    `gpt_researcher` and never called `begin_agent_run()`.
+
+    That state cannot be faked from here: the baseline globals are the implementation's
+    business, not the spec's, and `begin_agent_run(0)` would not reproduce it either —
+    disarming is still an arming, while rule 4c is about the baseline BEFORE the first
+    one. A second module object IS process start, and it is isolated from the module the
+    autouse fixture armed, so this cannot disturb the other tests. Restored in `finally`
+    so a failure cannot leave a hole in `sys.modules`.
+    """
+    name = sub.__name__
+    pkg, attr = name.rsplit(".", 1)
+    original = sys.modules[name]
+    del sys.modules[name]
+    try:
+        yield importlib.import_module(name)
+    finally:
+        sys.modules[name] = original
+        setattr(sys.modules[pkg], attr, original)
+
+
+def test_an_unarmed_process_reports_its_whole_spend_as_this_run():
+    """Rule 4c: before any `begin_agent_run()`, the baseline is process start.
+
+    This is not a corner case — it is how the measurement is actually taken. The
+    search-quality harness imports `gpt_researcher` directly and never arms; only the
+    MCP tools call `begin_agent_run()`. A delta that stays 0 (or a breakdown that stays
+    empty) until somebody arms would report zero for every harness run, and the calls/node
+    and `classify + choose_agent` gates would be graded on a number nothing ever moved.
+    """
+    with _never_armed_copy() as fresh:
+        assert fresh.agent_budget_limit() == 0 and fresh.agent_calls_spent() == 0, (
+            "precondition failed — this copy is not a never-armed process start: "
+            f"limit={fresh.agent_budget_limit()} spent={fresh.agent_calls_spent()}"
+        )
+
+        with fresh.agent_purpose("plan"):
+            fresh.note_agent_call()
+        fresh.note_agent_call()
+
+        assert fresh.agent_calls_this_run() == fresh.agent_calls_spent() == 2, (
+            "with no begin_agent_run() in this process the run delta must equal the "
+            f"pooled spend: this_run={fresh.agent_calls_this_run()} "
+            f"spent={fresh.agent_calls_spent()} — a delta that only starts counting once "
+            "somebody arms reads 0 for the whole harness, which never arms"
+        )
+
+        by_site = fresh.agent_calls_by_site()
+        assert sum(by_site.values()) == fresh.agent_calls_spent(), (
+            f"the unarmed breakdown must cover every call so far: {by_site} sums to "
+            f"{sum(by_site.values())} against {fresh.agent_calls_spent()} calls spent"
+        )
+        assert by_site.get("plan", 0) == 1 and by_site.get("untagged", 0) == 1, (
+            f"the unarmed breakdown lost the tagged/untagged split: {by_site}"
+        )
 
 
 def test_leaving_a_purpose_restores_the_one_it_was_nested_in():

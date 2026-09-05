@@ -8,7 +8,7 @@ plan, so both are paid for a decomposition that is thrown away.
 
 P1.3 therefore gives `GPTResearcher` a `preset_sub_queries` list, and
 `ResearchConductor._get_context_by_web_search` researches it INSTEAD of calling
-`plan_research`. Two properties are easy to get wrong and are pinned here:
+`plan_research`. Three properties are easy to get wrong and are pinned here:
 
   - it must be a NAMED constructor parameter. Anything reaching `**kwargs` lands in
     `self.kwargs`, and `plan_research` splats `**self.researcher.kwargs` straight into
@@ -17,6 +17,13 @@ P1.3 therefore gives `GPTResearcher` a `preset_sub_queries` list, and
     `report_type != "subtopic_report"`. With a preset the researcher's query IS the node
     question, so a naive `sub_queries = preset; sub_queries.append(query)` researches
     that string twice — buying back one of the searches the bypass was meant to save.
+  - it must be read with `getattr(..., "preset_sub_queries", None)`. Callers that
+    predate P1.3 hand the conductor a researcher with no such attribute at all —
+    `tests/search_quality/s10/merge_bench.py` is one — and a bare attribute read
+    kills them with an AttributeError. Every fake below sets the attribute
+    explicitly, so only
+    `test_a_researcher_that_never_defines_the_attribute_plans_instead_of_raising`
+    can see that.
 
 Hermetic: no network, no LLM, no embeddings service. The planner's probe search
 (`get_search_results`) and the planner LLM call (`plan_research_outline`) are recorded at
@@ -272,4 +279,159 @@ async def test_an_empty_preset_falls_back_to_planning_while_a_non_empty_one_does
         f"{plans_after_empty} planner call(s) for the empty preset and "
         f"{len(planner_probes.plans) - plans_after_empty} for the non-empty one, which "
         f"researched {filled_researched}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_researcher_that_never_defines_the_attribute_plans_instead_of_raising(
+        monkeypatch, planner_probes):
+    """The preset must be read with `getattr(..., "preset_sub_queries", None)`.
+
+    Every other test in this file hands the conductor a fake that sets the attribute
+    explicitly, so none of them can tell a bare `self.researcher.preset_sub_queries`
+    read from a defaulted one. `tests/search_quality/s10/merge_bench.py` can: it drives
+    this same method over a `SimpleNamespace` researcher that never defines the
+    attribute, so a bare read takes the s10 bench down with an AttributeError - a
+    green-looking s11 paid for by a broken s10.
+    """
+    # Precondition. A code path that reads the attribute nowhere cannot trip over its
+    # absence, so the absence rule is unfalsifiable until the preset branch exists.
+    preset_conductor = ResearchConductor(_fake_researcher(preset_sub_queries=list(PRESET)))
+    _record_sub_queries(preset_conductor, monkeypatch)
+    await preset_conductor._get_context_by_web_search(QUERY, [], [])
+    assert planner_probes.plans == [] and planner_probes.probes == [], (
+        "P1.3 is not implemented: the planner still ran for a researcher carrying a "
+        "preset, so nothing reads `preset_sub_queries` yet and a bare attribute read is "
+        f"indistinguishable from a getattr here. measured {len(planner_probes.probes)} "
+        f"probe search(es) and {len(planner_probes.plans)} planner call(s)"
+    )
+
+    bare = _fake_researcher()
+    del bare.preset_sub_queries
+    assert not hasattr(bare, "preset_sub_queries"), (
+        "fixture check: this researcher must genuinely lack the attribute, mirroring "
+        "s10's SimpleNamespace - setting it to None would test nothing"
+    )
+    conductor = ResearchConductor(bare)
+    researched = _record_sub_queries(conductor, monkeypatch)
+
+    try:
+        await conductor._get_context_by_web_search(QUERY, [], [])
+    except AttributeError as exc:
+        if "preset_sub_queries" not in str(exc):
+            raise
+        pytest.fail(
+            "`preset_sub_queries` is read as a bare attribute, so a researcher that "
+            "never defines it dies instead of planning. Any caller that predates P1.3 "
+            "has this shape, s10/merge_bench.py included. raised: "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    assert planner_probes.probes == [QUERY] and len(planner_probes.plans) == 1, (
+        "a researcher without the attribute must plan exactly as today: one probe "
+        f"search for the query and one planning call. measured probes "
+        f"{planner_probes.probes} and {len(planner_probes.plans)} planner call(s) - "
+        "zero of each means the AttributeError was swallowed by the gather's "
+        "`except Exception: return []` rather than propagating"
+    )
+    assert researched == PLANNED + [QUERY], (
+        "a researcher without the attribute must research the planned sub-queries plus "
+        f"the original query, byte for byte as today. expected {PLANNED + [QUERY]}, "
+        f"measured {researched}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The tree side of P1.3
+# ---------------------------------------------------------------------------
+# Everything above drives the constructor and the conductor in isolation. That is
+# necessary but not sufficient: an implementation can add the named parameter, add the
+# conductor branch, go green on every test in this file — and never pass a preset from
+# the only caller the saving is about. The tree would keep buying a probe search and a
+# planner LLM call per node, which is 2 of the 8-9 sessions P1 exists to remove.
+#
+# So this pins the wiring: `research_node` hands each node its OWN question as the preset.
+
+TREE_ROOT_Q = "What are the practical failure modes of the transactional outbox pattern?"
+TREE_CHILD_QS = ["How is outbox table growth bounded in production?",
+                 "Which brokers deduplicate replayed outbox messages?"]
+TREE_ANSWER = ("ANSWER: outbox answer body\nDIGEST: outbox digest\n"
+               "LEARNINGS:\n- one claim\n")
+TREE_DOC_URL = "https://example.test/outbox"
+
+
+def _tree_cfg():
+    return SimpleNamespace(
+        fast_llm_provider="fake", fast_llm_model="fast-sentinel",
+        strategic_llm_provider="fake", strategic_llm_model="strategic-sentinel",
+        smart_llm_provider="fake", smart_llm_model="smart-sentinel",
+        llm_kwargs={}, smart_retriever_config=None,
+        smart_retriever_force_category=None, config_path=None)
+
+
+@pytest.mark.asyncio
+async def test_every_node_researcher_is_handed_its_own_question_as_the_preset():
+    """P1.3 wired to its only caller: each node's researcher is built with
+    `preset_sub_queries=[that node's question]`, so no node pays for planning."""
+    import gpt_researcher.skills.tree_research as tr
+
+    # research_node fails a node closed below MIN_CONTEXT_CHARS, and a FAILED root is
+    # never expanded, so the stand-in context has to be a plausible size.
+    context = ("The transactional outbox writes the message and the row in one commit. "
+               * (tr.MIN_CONTEXT_CHARS // 40))
+    built: list = []
+
+    class _FakeNodeResearcher:
+        def __init__(self, query=None, **kwargs):
+            self.query = query
+            self.ctor_kwargs = kwargs
+            self.cfg = _tree_cfg()
+            self.visited_urls = set()
+            built.append(self)
+
+        async def conduct_research(self):
+            return context
+
+        def get_research_sources(self):
+            return [{"url": TREE_DOC_URL, "raw_content": context}]
+
+        def get_costs(self):
+            return 0.0
+
+    emb = {TREE_ROOT_Q: [1.0, 0.0, 0.0, 0.0],
+           TREE_CHILD_QS[0]: [0.0, 1.0, 0.0, 0.0],
+           TREE_CHILD_QS[1]: [0.0, 0.0, 1.0, 0.0]}
+
+    async def _embed(text):
+        return list(emb.get(text, [0.0, 0.0, 0.0, 1.0]))
+
+    async def _children(node):
+        return list(TREE_CHILD_QS) if node.depth == 0 else []
+
+    parent = SimpleNamespace(query=TREE_ROOT_Q, cfg=_tree_cfg(), tone=None,
+                             websocket=None, headers={}, visited_urls=set())
+    skill = tr.TreeResearchSkill(parent)
+    skill.embed_question = _embed
+
+    from unittest import mock
+    with mock.patch.object(tr, "GPTResearcher", _FakeNodeResearcher), \
+         mock.patch.object(tr, "create_chat_completion",
+                           new=mock.AsyncMock(return_value=TREE_ANSWER)), \
+         mock.patch.object(skill, "generate_child_questions", side_effect=_children):
+        await skill.run(query=TREE_ROOT_Q, max_depth=1, max_breadth=2,
+                        max_nodes=3, node_concurrency=3)
+
+    node_builds = [r for r in built if r.query in [TREE_ROOT_Q] + TREE_CHILD_QS]
+    assert len(node_builds) == 3, (
+        "fixture precondition: one researcher per node for three nodes, got "
+        f"{len(node_builds)}")
+
+    missing = [r.query for r in node_builds
+               if r.ctor_kwargs.get("preset_sub_queries") != [r.query]]
+    assert not missing, (
+        f"{len(missing)} of {len(node_builds)} node researchers were built without "
+        "`preset_sub_queries=[<the node's own question>]`, so each of them still runs "
+        "the planner: one probe search plus one planning LLM call per node, which is "
+        "the 2-of-8 sessions P1.3 exists to remove. measured presets: "
+        f"{[(r.query[:40], r.ctor_kwargs.get('preset_sub_queries')) for r in node_builds]}"
     )

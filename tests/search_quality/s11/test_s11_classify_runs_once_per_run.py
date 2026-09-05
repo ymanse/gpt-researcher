@@ -179,11 +179,18 @@ async def test_a_tree_run_pays_for_classification_once_not_once_per_sub_query_pe
     assert len(built) == 3, (
         f"the fixture must research three nodes for the per-node cost to be visible, "
         f"got {len(built)} node researchers")
-    assert len(boundary.classify_calls) <= 1, (
+    # EXACTLY one, not "at most one". `<= 1` admits ZERO, and zero is a different
+    # implementation the spec explicitly rejects: `self._category = "academic"` hardcoded
+    # (or any keyword rule) would satisfy an at-most bound while silently changing which
+    # retrievers every node routes to. Routing quality is the whole point of the category,
+    # and one call per run fits inside every tier budget, so the run must actually ask.
+    assert len(boundary.classify_calls) == 1, (
         f"{len(boundary.classify_calls)} FAST_LLM classifications for one run of "
-        f"{len(built)} nodes x {len(SUB_QUERIES)} sub-queries -- the routing category is "
-        "re-derived for every sub-query of every node instead of once for the run, and "
-        "each of those is a `claude` CLI session charged against the run's cap")
+        f"{len(built)} nodes x {len(SUB_QUERIES)} sub-queries -- expected exactly 1. "
+        "More than one means the routing category is re-derived per sub-query per node, "
+        "each a `claude` CLI session charged against the run's cap; ZERO means the "
+        "category was not resolved by the classifier at all, which changes every node's "
+        "retriever bundle without measuring anything")
 
 
 async def test_every_node_researcher_is_handed_the_category_the_run_resolved():

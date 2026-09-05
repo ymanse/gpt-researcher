@@ -32,6 +32,7 @@ from unittest import mock
 import pytest
 
 import gpt_researcher.skills.tree_research as tr
+import gpt_researcher.utils.llm as llm_module
 from gpt_researcher import GPTResearcher
 from gpt_researcher.actions import agent_creator
 from gpt_researcher.prompts import PromptFamily
@@ -147,10 +148,19 @@ async def _run_tree(parent, tmp_path):
         return [C1, C2] if node.depth == 0 else []
 
     skill.embed_question = _embed
+    # HERMETIC TRIPWIRE, closed before the feature that needs it arrives.
+    # `_classify_query` resolves `create_chat_completion` out of gpt_researcher.utils.llm
+    # at CALL time, and no patch below covers that binding. The day P1.1 lands and
+    # TreeResearchSkill resolves the run's routing category through it, this fixture stops
+    # being hermetic — and on a machine where the claude_agent CLI is live it does not
+    # raise, it SUCCEEDS: real `claude` sessions spawned per suite run, charged to the
+    # subscription, with the test passing either way. Silent is the problem, not slow.
+    classify_llm = mock.AsyncMock(return_value="general_web")
     with mock.patch.object(tr, "GPTResearcher", _node_researcher_class(built)), \
          mock.patch.object(skill, "generate_child_questions", side_effect=_children), \
          mock.patch.object(tr, "create_chat_completion",
                            new=mock.AsyncMock(return_value=ANSWER_BLOB)), \
+         mock.patch.object(llm_module, "create_chat_completion", new=classify_llm), \
          mock.patch.object(ResearchConductor, "_get_context_by_web_search",
                            new=mock.AsyncMock(return_value=[CONTEXT])), \
          mock.patch.object(agent_creator, "create_chat_completion", new=agent_llm):
