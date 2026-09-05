@@ -61,3 +61,6 @@ harness/.gralph/
 # search-quality harness runtime state (never commit)
 harness-search/no_read/
 harness-search/.gralph/
+
+# per-session agent state (kg edit queues) — never commit
+.claude/state/
