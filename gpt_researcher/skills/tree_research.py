@@ -24,10 +24,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import GPTResearcher
+from ..actions.agent_creator import choose_agent
 from ..llm_provider.claude_agent._subscription import (
     agent_budget_exhausted,
     agent_budget_limit,
+    agent_calls_by_site,
     agent_calls_spent,
+    agent_calls_this_run,
     agent_synthesis_reserve,
 )
 from ..utils.agent_purpose import agent_purpose
@@ -596,6 +599,58 @@ class TreeResearchSkill:
         self._embedded_units = 0
         self.tokens_spent = 0
         self.credits_spent = 0.0
+        # Resolved ONCE per run by _resolve_run_context(), then handed to every node.
+        # These three are the whole of P1: routing category, agent+role, and the fact
+        # that a node's sub-query list is its own question. Together they take a node
+        # from 8-9 CLI sessions to 2 — see harness-search/spec/p0-p1-slimming.md.
+        self._category: Optional[str] = None
+        self._agent: Optional[str] = None
+        self._role: Optional[str] = None
+
+    async def _resolve_run_context(self, query: str) -> None:
+        """Decide once, for the whole run, what every node would otherwise re-decide.
+
+        Two CLI sessions here replace 5-6 per node. Both are best-effort: a research run
+        must not die because a routing hint or a role prompt could not be produced — it
+        just falls back to today's per-node behaviour for whichever one failed.
+        """
+        # Routing category. Deliberately through the real classifier and not a constant:
+        # the category selects which retriever bundle every node searches with, so a
+        # hardcoded value would silently change what the tree reads. One call per run
+        # fits inside every budget.
+        if self._category is None:
+            try:
+                from ..retrievers.smart.smart_retriever import SmartRetriever
+
+                category = await asyncio.to_thread(
+                    SmartRetriever(query, cfg=self.researcher.cfg)._classify_query)
+                self._category = str(category) if category else None
+                logger.info("tree run routing category resolved once: %s", self._category)
+            except Exception as e:
+                # _classify_query swallows its own errors and answers "general_web", so
+                # reaching here means the construction failed, not the classification.
+                logger.warning("run-level classification failed, nodes classify "
+                               "themselves as before: %s", e)
+                self._category = None
+
+        # Agent + role. conduct_research's guard is an AND, so a half-resolved pair is
+        # the same as none: keep both or neither.
+        if not (self._agent and self._role):
+            try:
+                agent, role = await choose_agent(
+                    query=query,
+                    cfg=self.researcher.cfg,
+                    parent_query=getattr(self.researcher, "parent_query", "") or "",
+                    cost_callback=getattr(self.researcher, "add_costs", None),
+                    headers=self.headers,
+                    prompt_family=getattr(self.researcher, "prompt_family", None),
+                )
+                if agent and role:
+                    self._agent, self._role = agent, role
+                    logger.info("tree run agent resolved once: %s", agent)
+            except Exception as e:
+                logger.warning("run-level agent selection failed, nodes choose their "
+                               "own as before: %s", e)
 
     # ------------------------------------------------------------------ seams
     # Each of these is a deterministic-test seam: unit tests replace them on the
@@ -613,7 +668,24 @@ class TreeResearchSkill:
             config_path=self.config_path,
             headers=self.headers,
             visited_urls=self.visited_urls,
+            # P1.2: both, or conduct_research's guard (`if not (agent and role)`) does
+            # not fire and the node re-chooses a role prompt the run already picked.
+            agent=self._agent,
+            role=self._role,
+            # P1.3: the node's question IS its plan. Skips the planner LLM call and the
+            # probe search that feeds it — two of the node's sessions.
+            preset_sub_queries=[node.question],
         )
+        # P1.1: the routing category is a property of the RUN, not of each sub-query.
+        # _classify_query short-circuits on this without asking the FAST_LLM, which is
+        # where 4-5 of a node's sessions used to go. Set after construction because
+        # Config builds its own instance; an unresolved category leaves it None, which
+        # is what default.py ships and means "classify normally".
+        if self._category:
+            try:
+                researcher.cfg.smart_retriever_force_category = self._category
+            except AttributeError:  # a cfg that refuses attributes is not worth failing on
+                logger.warning("could not stamp the run category onto node %s", node.id)
         context = await researcher.conduct_research()
         try:
             self.visited_urls.update(researcher.visited_urls)
@@ -2100,6 +2172,15 @@ class TreeResearchSkill:
         self._root_query = str(query or "")
         self._max_breadth = max_breadth
         start = time.time()
+        # Baseline for THIS run's measured per-node cost. agent_calls_spent() is the
+        # pooled process counter, so only the delta against this snapshot belongs to
+        # the tree — a concurrent run's spend must not inflate our cost estimate.
+        calls_at_start = agent_calls_spent()
+
+        # Decide the routing category and the agent+role ONCE, before any node is built.
+        # Every node researcher is handed both, so what used to be 5-6 sessions per node
+        # is now 2 for the whole run.
+        await self._resolve_run_context(str(query or ""))
 
         root = ResearchNode(id="0", question=query, parent_id=None, depth=0)
         root.priority = 1.0
@@ -2203,6 +2284,47 @@ class TreeResearchSkill:
 
                 if node.depth >= max_depth:
                     continue
+
+                # P1.4: do not pay for an expansion the budget can never research.
+                #
+                # generate_child_questions is ONE CLI session that returns every
+                # candidate at once, so the saving is skipping the CALL — not accepting
+                # fewer children. Clamping the accepted count was tried and is wrong
+                # twice: it saves three embeddings, and it deletes the PENDING questions
+                # assemble_report publishes under "## Unresearched Questions".
+                # Measured on the last 5 production runs, 67-80% of created nodes ended
+                # PENDING; every one of those expansions was bought and thrown away.
+                #
+                # Capacity is in whole nodes, the minimum over the terms that can
+                # actually be evaluated. A term whose per-node cost measures 0 is
+                # UNMEASURABLE, not "nothing is affordable" — reading it the other way
+                # makes a bounded run skip every expansion it has the nodes and the
+                # clock to pay for.
+                elapsed = time.time() - start
+                capacity = max_nodes - researched
+                limit = agent_budget_limit()
+                if limit:
+                    spent_here = agent_calls_spent() - calls_at_start
+                    # round the average UP: underestimating what a node costs would let
+                    # expansion outbid the synthesis reserve the merge judge lives on
+                    per_node_calls = -(-spent_here // researched) if researched else 0
+                    if per_node_calls > 0:
+                        calls_left = limit - agent_calls_spent() - synthesis_reserve
+                        capacity = min(capacity, max(0, calls_left) // per_node_calls)
+                per_node_seconds = elapsed / researched if researched else 0.0
+                if per_node_seconds > 0:
+                    time_left = time_budget_s - elapsed
+                    capacity = min(capacity, int(max(0.0, time_left) / per_node_seconds)
+                                   * max(1, node_concurrency))
+                # Nodes already queued are ahead of anything this expansion could add,
+                # so they are what the remaining capacity will be spent on.
+                if capacity - len(frontier) <= 0:
+                    logger.info(
+                        "tree node %s not expanded: capacity %d node(s) against %d "
+                        "already queued — children would only end the run PENDING",
+                        node.id, capacity, len(frontier))
+                    continue
+
                 try:
                     candidates = await self.generate_child_questions(node)
                 except Exception as e:
@@ -2315,6 +2437,12 @@ class TreeResearchSkill:
                       # cost nothing else here reports, and the one that made the
                       # account's agent list unreadable before it was bounded.
                       "agent_calls_spent": agent_calls_spent(),
+                      # What THIS run spent, and on what. agent_calls_spent is the pooled
+                      # process total, so it cannot show a slimming: a fourth tree run in
+                      # the same process reports a four-run figure. These two are the
+                      # numbers the P0/P1 gates read.
+                      "agent_calls_this_run": agent_calls_this_run(),
+                      "agent_calls_by_site": agent_calls_by_site(),
                       "agent_budget_limit": agent_budget_limit(),
                       # reported WITH the reserve the expansion loop actually tests
                       # against — the bare call reads False whenever the reserve alone

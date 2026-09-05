@@ -80,6 +80,7 @@ class GPTResearcher:
         mcp_configs: list[dict] | None = None,
         mcp_max_iterations: int | None = None,
         mcp_strategy: str | None = None,
+        preset_sub_queries: list[str] | None = None,
         **kwargs
     ):
         """
@@ -156,6 +157,11 @@ class GPTResearcher:
         self.websocket = websocket
         self.agent = agent
         self.role = role
+        # Sub-queries the CALLER already knows, used instead of planning them. A named
+        # parameter and not a **kwarg on purpose: self.kwargs is forwarded verbatim into
+        # plan_research_outline, so a kwargs-carried value would leak into the very LLM
+        # call this exists to avoid. None (the default) plans exactly as before.
+        self.preset_sub_queries = preset_sub_queries
         self.parent_query = parent_query
         self.subtopics = subtopics or []
         self.visited_urls = visited_urls or set()

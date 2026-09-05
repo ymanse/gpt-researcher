@@ -353,9 +353,25 @@ class ResearchConductor:
                 self._mcp_results_cache = mcp_context
                 self.logger.info(f"MCP results cached: {len(mcp_context)} total context entries")
 
-        # Generate Sub-Queries including original query
-        sub_queries = await self.plan_research(query, query_domains)
-        self.logger.info(f"Generated sub-queries: {sub_queries}")
+        # Sub-queries the caller already knows beat planning them. The tree hands each
+        # node its own question here, which skips TWO CLI sessions per node: the planner's
+        # own LLM call and the probe search plan_research runs to feed it.
+        #
+        # getattr, not a bare read: callers that predate this parameter exist and must not
+        # die on it — harness-search's own rig (tests/search_quality/s10/merge_bench.py)
+        # drives this method over a SimpleNamespace researcher that has no such attribute.
+        preset = getattr(self.researcher, "preset_sub_queries", None)
+        if preset:
+            # A preset is the whole plan. The original query is NOT appended: with a
+            # preset the researcher's query IS the node question the caller passed in, so
+            # appending would research the same string twice.
+            sub_queries = list(preset)
+            self.logger.info(f"Using {len(sub_queries)} preset sub-quer"
+                             f"{'y' if len(sub_queries) == 1 else 'ies'}, skipping the planner")
+        else:
+            # Generate Sub-Queries including original query
+            sub_queries = await self.plan_research(query, query_domains)
+            self.logger.info(f"Generated sub-queries: {sub_queries}")
 
         # B-tier permanent patch: plan_research may return str (raw LLM output) or
         # None when the strategic LLM falls back to AFC mode and JSON parsing fails.
@@ -372,8 +388,10 @@ class ResearchConductor:
         elif not isinstance(sub_queries, list):
             sub_queries = [str(sub_queries)]
 
-        # If this is not part of a sub researcher, add original query to research for better results
-        if self.researcher.report_type != "subtopic_report":
+        # If this is not part of a sub researcher, add original query to research for better results.
+        # Not for a preset: the caller supplied the complete list, and with the tree the
+        # researcher's own query IS one of its entries, so appending researches it twice.
+        if not preset and self.researcher.report_type != "subtopic_report":
             sub_queries.append(query)
 
         if self.researcher.verbose:
