@@ -30,6 +30,7 @@ from ..llm_provider.claude_agent._subscription import (
     agent_calls_spent,
     agent_synthesis_reserve,
 )
+from ..utils.agent_purpose import agent_purpose
 from ..utils.llm import create_chat_completion
 from ..utils.enum import ReportType, ReportSource
 from .citation_verification import CitationAgent, text_supported
@@ -671,30 +672,33 @@ class TreeResearchSkill:
         # 33 against the baseline's 52. Hence the explicit both-sides rule below,
         # and the wider word budget it needs to hold both (60k chars of context
         # squeezed into 400 words has no room for a minority view).
-        response = await create_chat_completion(
-            messages=[
-                {"role": "system",
-                 "content": "You are an expert researcher answering one focused question from collected context."},
-                {"role": "user",
-                 "content": (
-                     f"Question: {node.question}\n\nContext:\n{context}\n\n"
-                     "Write three sections:\n"
-                     "ANSWER: a markdown answer (<=900 words). Wherever the context "
-                     "DISAGREES with itself — two sources giving different figures "
-                     "for the same quantity, or taking opposing positions on the "
-                     "same question — state EVERY side explicitly and name who "
-                     "reports which. Never average or range-merge disagreeing "
-                     "figures, and never drop the minority view. Do not add citation "
-                     "markers, footnotes, or bracketed references of any kind — "
-                     "citations are attached separately from the real source list.\n"
-                     "DIGEST: a <=120-word summary of the answer.\n"
-                     "LEARNINGS: 3-6 bullet lines, one atomic factual claim each."
-                 )},
-            ],
-            llm_provider=self.researcher.cfg.strategic_llm_provider,
-            model=self.researcher.cfg.strategic_llm_model,
-            temperature=0.3,
-        )
+        # The one CLI session a node genuinely needs. Tagged so the rest of a node's
+        # 8-9 sessions can be told apart from it and slimmed.
+        with agent_purpose("answer"):
+            response = await create_chat_completion(
+                messages=[
+                    {"role": "system",
+                     "content": "You are an expert researcher answering one focused question from collected context."},
+                    {"role": "user",
+                     "content": (
+                         f"Question: {node.question}\n\nContext:\n{context}\n\n"
+                         "Write three sections:\n"
+                         "ANSWER: a markdown answer (<=900 words). Wherever the context "
+                         "DISAGREES with itself — two sources giving different figures "
+                         "for the same quantity, or taking opposing positions on the "
+                         "same question — state EVERY side explicitly and name who "
+                         "reports which. Never average or range-merge disagreeing "
+                         "figures, and never drop the minority view. Do not add citation "
+                         "markers, footnotes, or bracketed references of any kind — "
+                         "citations are attached separately from the real source list.\n"
+                         "DIGEST: a <=120-word summary of the answer.\n"
+                         "LEARNINGS: 3-6 bullet lines, one atomic factual claim each."
+                     )},
+                ],
+                llm_provider=self.researcher.cfg.strategic_llm_provider,
+                model=self.researcher.cfg.strategic_llm_model,
+                temperature=0.3,
+            )
         response = str(response or "")
         parts = {"ANSWER": "", "DIGEST": "", "LEARNINGS": ""}
         current = None
@@ -786,41 +790,45 @@ class TreeResearchSkill:
         (40) nodes, so a 30-item slice hid real coverage from the model that is
         supposed to steer around it.
         """
-        response = await create_chat_completion(
-            messages=[
-                {"role": "system",
-                 "content": "You are an expert researcher generating disjoint follow-up research questions."},
-                {"role": "user",
-                 "content": (
-                     f"Root research query: {self._root_query or node.question}\n\n"
-                     f"Just researched: {node.question}\n"
-                     f"Answer digest: {node.answer_digest}\n\n"
-                     "Ground this research tree has ALREADY covered — each question "
-                     "and what researching it found:\n"
-                     + "\n".join(self._covered_ground())
-                     + self._queued_ground()
-                     + f"\n\nGenerate up to {self._max_breadth} follow-up questions that carry "
-                       "the root research query into ground the list above does NOT yet cover. "
-                       "Target what is missing, not variations of what was already found. Each "
-                       "must be disjoint from the others and from the covered questions. If you "
-                       "know the specific project, product, company, standard, or author that "
-                       "originated this topic, name that entity by its proper name in the "
-                       "question itself (e.g. 'What does the <project>'s own blog/documentation "
-                       "say about X' rather than a generic phrasing of the same question), so "
-                       "the search targets that primary source directly instead of generic "
-                       "secondary commentary. At least one question must address the entity "
-                       "that DEFINES the root topic — the standards body, specification "
-                       "author, or originating vendor whose own site is the authority on it, "
-                       "not only the tools built on top of it — and ask for that entity's own "
-                       "documentation, specification, or filings by name. Return "
-                       "0 questions if the root query is fully covered. "
-                       "Format each on its own line as 'Question: <question>'."
-                 )},
-            ],
-            llm_provider=self.researcher.cfg.strategic_llm_provider,
-            model=self.researcher.cfg.strategic_llm_model,
-            temperature=0.4,
-        )
+        # One CLI session per EXPANSION, not per child: this call returns every
+        # candidate at once. That is why P1.4 saves by skipping the call outright when
+        # the budget can research nothing more, and not by accepting fewer children.
+        with agent_purpose("children"):
+            response = await create_chat_completion(
+                messages=[
+                    {"role": "system",
+                     "content": "You are an expert researcher generating disjoint follow-up research questions."},
+                    {"role": "user",
+                     "content": (
+                         f"Root research query: {self._root_query or node.question}\n\n"
+                         f"Just researched: {node.question}\n"
+                         f"Answer digest: {node.answer_digest}\n\n"
+                         "Ground this research tree has ALREADY covered — each question "
+                         "and what researching it found:\n"
+                         + "\n".join(self._covered_ground())
+                         + self._queued_ground()
+                         + f"\n\nGenerate up to {self._max_breadth} follow-up questions that carry "
+                           "the root research query into ground the list above does NOT yet cover. "
+                           "Target what is missing, not variations of what was already found. Each "
+                           "must be disjoint from the others and from the covered questions. If you "
+                           "know the specific project, product, company, standard, or author that "
+                           "originated this topic, name that entity by its proper name in the "
+                           "question itself (e.g. 'What does the <project>'s own blog/documentation "
+                           "say about X' rather than a generic phrasing of the same question), so "
+                           "the search targets that primary source directly instead of generic "
+                           "secondary commentary. At least one question must address the entity "
+                           "that DEFINES the root topic — the standards body, specification "
+                           "author, or originating vendor whose own site is the authority on it, "
+                           "not only the tools built on top of it — and ask for that entity's own "
+                           "documentation, specification, or filings by name. Return "
+                           "0 questions if the root query is fully covered. "
+                           "Format each on its own line as 'Question: <question>'."
+                     )},
+                ],
+                llm_provider=self.researcher.cfg.strategic_llm_provider,
+                model=self.researcher.cfg.strategic_llm_model,
+                temperature=0.4,
+            )
         questions = [l.split(":", 1)[1].strip()
                      for l in str(response or "").splitlines()
                      if l.strip().lower().startswith("question:") and ":" in l]
@@ -1306,12 +1314,16 @@ class TreeResearchSkill:
             self._merge_judge_ok = False
             return {}
         try:
-            reply = await asyncio.wait_for(
-                create_chat_completion(
-                    messages=[{"role": "user", "content":
-                               self._equivalence_prompt(flats)}],
-                    llm_provider=provider, model=model, temperature=0),
-                timeout=MERGE_VERDICT_TIMEOUT_S)
+            # The synthesis site agent_synthesis_reserve() holds calls back for. Tagged
+            # so a run that spent its budget on expansion and left the judge broke is
+            # visible as a shape in the breakdown, not just as a worse report.
+            with agent_purpose("merge"):
+                reply = await asyncio.wait_for(
+                    create_chat_completion(
+                        messages=[{"role": "user", "content":
+                                   self._equivalence_prompt(flats)}],
+                        llm_provider=provider, model=model, temperature=0),
+                    timeout=MERGE_VERDICT_TIMEOUT_S)
         except Exception as exc:
             # CONSECUTIVE failures, not cumulative. A slow judge times out here and
             # there — measured 2026-07-29, 3 of 13 screens on one query — and a

@@ -11,6 +11,7 @@ import re
 import json_repair
 
 from ..prompts import PromptFamily
+from ..utils.agent_purpose import agent_purpose
 from ..utils.llm import create_chat_completion
 
 logger = logging.getLogger(__name__)
@@ -42,18 +43,21 @@ async def choose_agent(
     response = None  # Initialize response to ensure it's defined
 
     try:
-        response = await create_chat_completion(
-            model=cfg.smart_llm_model,
-            messages=[
-                {"role": "system", "content": f"{prompt_family.auto_agent_instructions()}"},
-                {"role": "user", "content": f"task: {query}"},
-            ],
-            temperature=0.15,
-            llm_provider=cfg.smart_llm_provider,
-            llm_kwargs=cfg.llm_kwargs,
-            cost_callback=cost_callback,
-            **kwargs
-        )
+        # One CLI session per node today, for a role prompt the tree could resolve once
+        # for the whole run — see P1.2. Tagged so the saving is measurable either way.
+        with agent_purpose("choose_agent"):
+            response = await create_chat_completion(
+                model=cfg.smart_llm_model,
+                messages=[
+                    {"role": "system", "content": f"{prompt_family.auto_agent_instructions()}"},
+                    {"role": "user", "content": f"task: {query}"},
+                ],
+                temperature=0.15,
+                llm_provider=cfg.smart_llm_provider,
+                llm_kwargs=cfg.llm_kwargs,
+                cost_callback=cost_callback,
+                **kwargs
+            )
 
         # B-tier permanent patch: some LLM providers (Gemini AFC, multi-LLM review)
         # return `list[ContentPart]` or `list[str]` instead of `str`.

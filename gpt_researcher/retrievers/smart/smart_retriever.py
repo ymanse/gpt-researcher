@@ -177,6 +177,7 @@ class SmartRetriever:
 
         try:
             from gpt_researcher.utils.llm import create_chat_completion
+            from gpt_researcher.utils.agent_purpose import agent_purpose
 
             prompt = CLASSIFICATION_PROMPT.format(query=self.query)
             messages = [{"role": "user", "content": prompt}]
@@ -186,16 +187,20 @@ class SmartRetriever:
             # `loop.run_until_complete` raised "This event loop is already
             # running" — making classification ALWAYS fail and silently fall
             # back to general_web. `_run_coro_blocking` works in both contexts.
-            response = _run_coro_blocking(
-                create_chat_completion(
-                    model=self.cfg.fast_llm_model,
-                    messages=messages,
-                    temperature=0.1,
-                    max_tokens=20,
-                    llm_provider=self.cfg.fast_llm_provider,
-                    llm_kwargs=self.cfg.llm_kwargs,
+            # Tag OUTSIDE _run_coro_blocking, which copies this context into the worker
+            # thread it spawns. This is the site the slimming targets: today it fires
+            # once per sub-query per node, which is 4-5 of a node's 8-9 CLI sessions.
+            with agent_purpose("classify"):
+                response = _run_coro_blocking(
+                    create_chat_completion(
+                        model=self.cfg.fast_llm_model,
+                        messages=messages,
+                        temperature=0.1,
+                        max_tokens=20,
+                        llm_provider=self.cfg.fast_llm_provider,
+                        llm_kwargs=self.cfg.llm_kwargs,
+                    )
                 )
-            )
 
             category = str(response).strip().lower().replace(" ", "_")
             if category in ROUTING_TABLE:
@@ -449,6 +454,20 @@ def _run_coro_blocking(coro):
     # A loop is already running in this thread: execute in a worker thread that
     # owns its own event loop so we don't touch the running one.
     from concurrent.futures import ThreadPoolExecutor
+    import contextvars
 
+    # Carry the caller's context across by hand. `ThreadPoolExecutor.submit` does NOT
+    # copy contextvars, so the worker would otherwise start with an EMPTY context and
+    # silently drop anything the caller set on one -- including the agent_purpose tag
+    # that says which call site is spending the run's CLI-session budget. Measured
+    # 2026-09-05: without this the var reads None in the worker, so every production
+    # `classify` charge lands under "untagged" and the "classify + choose_agent <= 2
+    # per run" gate passes vacuously by reading zero.
+    #
+    # This is the choke point all three branch-B callers route through (the MCP server
+    # path plus the direct retriever_instance.search() calls in ResearchConductor), so
+    # one copy here covers them. A future caller that spawns its own thread WITHOUT
+    # coming through here would reintroduce the loss.
+    ctx = contextvars.copy_context()
     with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(lambda: asyncio.run(coro)).result()
+        return pool.submit(lambda: ctx.run(asyncio.run, coro)).result()

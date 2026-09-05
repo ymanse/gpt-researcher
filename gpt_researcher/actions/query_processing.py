@@ -1,6 +1,7 @@
 import json_repair
 
 from gpt_researcher.llm_provider.generic.base import ReasoningEfforts
+from ..utils.agent_purpose import agent_purpose
 from ..utils.llm import create_chat_completion
 from ..prompts import PromptFamily
 from typing import Any, List, Dict
@@ -163,15 +164,19 @@ async def plan_research_outline(
             # If MCP is one of multiple retrievers, generate sub-queries for the others
             logger.info("Using MCP with other retrievers - generating sub-queries for non-MCP retrievers")
 
-    # Generate sub-queries for research outline
-    sub_queries = await generate_sub_queries(
-        query,
-        parent_query,
-        report_type,
-        search_results,
-        cfg,
-        cost_callback,
-        **kwargs
-    )
+    # Generate sub-queries for research outline.
+    # Tagged around the whole call because generate_sub_queries has three fallback tiers
+    # (strategic, strategic with a token cap, then smart) and every attempt spawns its own
+    # CLI session — the metric is sessions, so all three belong to this site.
+    with agent_purpose("plan"):
+        sub_queries = await generate_sub_queries(
+            query,
+            parent_query,
+            report_type,
+            search_results,
+            cfg,
+            cost_callback,
+            **kwargs
+        )
 
     return sub_queries

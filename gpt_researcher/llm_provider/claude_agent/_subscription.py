@@ -23,6 +23,16 @@ import time
 import weakref
 from pathlib import Path
 
+# Re-exported so callers that already depend on this module get the tag from one import.
+# It LIVES in utils because importing this package reaches chat_model and the Agent SDK,
+# and the sites that need tagging (the retriever's classifier, the planner, the agent
+# chooser) also run on the OpenRouter rollback path where the SDK need not be installed.
+from gpt_researcher.utils.agent_purpose import (  # noqa: F401
+    SITES,
+    agent_purpose,
+    current_purpose,
+)
+
 logger = logging.getLogger(__name__)
 
 # ── Process-level env neutralization (run once at import) ─────────────
@@ -197,8 +207,15 @@ def get_concurrency_semaphore() -> asyncio.Semaphore:
 # quantities a CLI spawn does not move. So the spawn count gets a budget of its own.
 #
 # Scope is the process, not a task/context: the calls to bound come from asyncio tasks
-# AND from retriever worker threads, and a ContextVar does not survive the
-# ThreadPoolExecutor hop. A plain lock-guarded counter sees all of them.
+# AND from retriever worker threads, and the BUDGET has to be one shared number across
+# both — a per-context allowance would let a run spawn its limit once per task. A plain
+# lock-guarded counter sees all of them.
+#
+# (The attribution that rides alongside it is the opposite shape and IS context state:
+# utils/agent_purpose.py. A ContextVar does not cross ThreadPoolExecutor.submit on its
+# own, which is why smart_retriever's submit site copies the context across by hand
+# rather than why the counter is a global. Do not read this paragraph as "context state
+# cannot work here" — measured 2026-09-05, it works everywhere the submit sites carry it.)
 #
 # fail-open by default: the budget applies only after an explicit begin_agent_run(),
 # which the MCP tools call on entry. Library callers (the search-quality harness
@@ -208,6 +225,15 @@ def get_concurrency_semaphore() -> asyncio.Semaphore:
 _CALL_LOCK = threading.Lock()
 _calls_spent = 0
 _call_limit = 0  # 0 → unbounded; set by begin_agent_run()
+# Per-site breakdown of the same spend, keyed by utils.agent_purpose.SITES. Cumulative
+# like _calls_spent; the per-run view is the delta against the baselines below.
+_calls_by_site: dict[str, int] = {}
+# Snapshots taken by begin_agent_run(), so agent_calls_this_run/by_site can answer
+# "what did THIS arming spend" without disturbing the pooled counter the budget needs.
+# Both start empty, which makes the unarmed process report its whole spend as this run —
+# the right answer for library callers (the search-quality harness) that never arm.
+_run_start_spent = 0
+_run_start_by_site: dict[str, int] = {}
 # THIS run's own allowance, not the pooled ceiling. The synthesis reserve is a
 # fraction of it — see agent_synthesis_reserve for why the pooled ceiling is the
 # wrong denominator.
@@ -273,9 +299,9 @@ def begin_agent_run(limit: int | None = None) -> int:
     A limit of 0 or less disarms the budget (unbounded).
 
     The allowance is ADDED to the ceiling, never reset onto it. Resetting was the
-    bug: the counter is process-wide on purpose (a ContextVar cannot follow the
-    retriever's ThreadPoolExecutor hop -- see above), so a second concurrent run
-    arriving here erased what the first had already spent. Measured 2026-08-06:
+    bug: the counter is process-wide on purpose (one shared number is the only thing
+    that can bound tasks and retriever worker threads together -- see above), so a
+    second concurrent run arriving here erased what the first had already spent. Measured 2026-08-06:
     four MCP streams armed two minutes apart (13:51/13:53/13:55/13:57) ended up
     sharing ONE 100-session allowance, burned it in 12 minutes, and failed together.
 
@@ -285,7 +311,7 @@ def begin_agent_run(limit: int | None = None) -> int:
     isolation needs a run id threaded through the thread hop, which is a much
     bigger change than this failure justifies.
     """
-    global _call_limit, _run_allowance
+    global _call_limit, _run_allowance, _run_start_spent, _run_start_by_site
     if limit is None:
         try:
             limit = int(os.environ.get(
@@ -296,6 +322,11 @@ def begin_agent_run(limit: int | None = None) -> int:
     with _CALL_LOCK:
         _call_limit = (_calls_spent + limit) if limit else 0
         _run_allowance = limit
+        # Re-baseline the per-run view. The budget's own counter keeps pooling; only the
+        # reporting delta restarts here, so "what did this tool call spend, and on what"
+        # is answerable without weakening the ceiling that protects the account.
+        _run_start_spent = _calls_spent
+        _run_start_by_site = dict(_calls_by_site)
         ceiling, spent = _call_limit, _calls_spent
     logger.info("Claude Agent call budget armed: +%s (ceiling=%s, already spent=%s)",
                 limit or "unbounded", ceiling or "unbounded", spent)
@@ -313,6 +344,9 @@ def note_agent_call() -> int:
     run still synthesizes a report from what it already gathered.
     """
     global _calls_spent
+    # Read the tag OUTSIDE the lock: it is context state belonging to this caller, and
+    # holding a process-wide lock across it would serialise nothing useful.
+    site = current_purpose()
     with _CALL_LOCK:
         if _call_limit and _calls_spent >= _call_limit:
             raise AgentBudgetExceeded(
@@ -321,6 +355,9 @@ def note_agent_call() -> int:
                 f"raise CLAUDE_AGENT_MAX_CALLS_PER_RUN or narrow the research scope"
             )
         _calls_spent += 1
+        # A refused call spawns nothing, so the site is charged only after the budget
+        # check passes — by_site must add up to what was actually spent.
+        _calls_by_site[site] = _calls_by_site.get(site, 0) + 1
         return _calls_spent
 
 
@@ -330,6 +367,36 @@ def agent_calls_spent() -> int:
     number alone (the counter no longer restarts at each begin_agent_run)."""
     with _CALL_LOCK:
         return _calls_spent
+
+
+def agent_calls_this_run() -> int:
+    """CLI sessions spawned since the last ``begin_agent_run()``.
+
+    The figure the gates read. ``agent_calls_spent()`` cannot serve here: it pools across
+    every run the process has armed, so a fourth tree run in the same process reports a
+    four-run total and no slimming is visible in it.
+
+    Per-ARMING, not per-run: two CONCURRENT armings re-baseline each other, exactly as the
+    ceiling pools rather than isolates. Measured 2026-09-02, seven armings in twelve
+    minutes shared one ceiling of 171 and each researched a single node — so read this
+    number against a serialized run, and read tier budgets (not this) as the fix for
+    concurrency.
+    """
+    with _CALL_LOCK:
+        return _calls_spent - _run_start_spent
+
+
+def agent_calls_by_site() -> dict[str, int]:
+    """This run's spend broken down by call site; sites that never fired are absent.
+
+    The whole point of the attribution: a total says a run was expensive, this says which
+    of the seven sites to slim. A large ``untagged`` share means a site is not wrapped,
+    not that the work was anonymous.
+    """
+    with _CALL_LOCK:
+        return {site: count - _run_start_by_site.get(site, 0)
+                for site, count in _calls_by_site.items()
+                if count - _run_start_by_site.get(site, 0) > 0}
 
 
 def agent_budget_limit() -> int:
