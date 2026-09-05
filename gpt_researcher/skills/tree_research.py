@@ -686,6 +686,29 @@ class TreeResearchSkill:
                 researcher.cfg.smart_retriever_force_category = self._category
             except AttributeError:  # a cfg that refuses attributes is not worth failing on
                 logger.warning("could not stamp the run category onto node %s", node.id)
+
+        # P1.3's other half, and it is not optional. SmartRetriever fans out to 3-6
+        # retrievers (15-24 URLs for most categories) and then TRUNCATES the union to
+        # cfg.max_search_results_per_query. The planner path ran max_iterations + 1
+        # sub-queries, so a node read up to 4x that cap; the preset runs ONE, so without
+        # this it reads a quarter of the evidence for the same answer.
+        #
+        # Measured live 2026-09-05, which is how this was found: per-node context fell
+        # from 45,712-60,118 chars (2026-09-02 production) to 15,387 and 13,463, and
+        # citations from 20-26 to 9. Nothing caught it — 14k is far above
+        # MIN_CONTEXT_CHARS, so no node FAILED and every gate stayed green while the
+        # evidence behind every claim thinned out.
+        #
+        # It costs no CLI session: those URLs were already retrieved and this cap is
+        # only what discards them.
+        try:
+            base_cap = int(getattr(researcher.cfg, "max_search_results_per_query", 0) or 0)
+            replaced = int(getattr(researcher.cfg, "max_iterations", 0) or 0) + 1
+            if base_cap > 0 and replaced > 1:
+                researcher.cfg.max_search_results_per_query = base_cap * replaced
+        except (AttributeError, TypeError, ValueError):
+            logger.warning("could not widen the result cap for node %s; it will read "
+                           "one sub-query's worth of documents", node.id)
         context = await researcher.conduct_research()
         try:
             self.visited_urls.update(researcher.visited_urls)

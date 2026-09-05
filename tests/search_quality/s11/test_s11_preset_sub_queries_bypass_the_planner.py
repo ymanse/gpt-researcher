@@ -435,3 +435,84 @@ async def test_every_node_researcher_is_handed_its_own_question_as_the_preset():
         "the 2-of-8 sessions P1.3 exists to remove. measured presets: "
         f"{[(r.query[:40], r.ctor_kwargs.get('preset_sub_queries')) for r in node_builds]}"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_preset_widens_the_per_query_result_cap_it_replaces():
+    """Bypassing the planner must not quietly cut the node's evidence by 4x.
+
+    Measured 2026-09-05, live, the defect this pins. SmartRetriever fans out to 3-6
+    retrievers (15-24 URLs for most categories) and then TRUNCATES to
+    cfg.max_search_results_per_query, which defaults to 5. The planner path ran
+    MAX_ITERATIONS + 1 = 4 sub-queries, so a node read up to 20 documents; the preset
+    path runs ONE, so it read 5. Context per node fell from 45,712-60,118 chars across
+    the 2026-09-02 production runs to 15,387 and 13,463 on the first slimmed run, and
+    citations with it (9 against 20-26).
+
+    Nothing caught it: 14k is far above MIN_CONTEXT_CHARS, so no node FAILED and the
+    failed-ratio gate stayed green while the evidence behind every claim thinned out.
+
+    The compensation costs no CLI session at all — the retrievers already returned those
+    URLs and the cap is what throws them away. So a node researching one preset query
+    must be allowed the documents the sub-queries it replaced would have been allowed.
+    """
+    import gpt_researcher.skills.tree_research as tr
+    from unittest import mock
+
+    context = ("The transactional outbox writes the message and the row in one commit. "
+               * (tr.MIN_CONTEXT_CHARS // 40))
+    built: list = []
+    BASE_CAP = 5
+    MAX_ITERATIONS = 3
+
+    def _cfg():
+        c = _tree_cfg()
+        c.max_search_results_per_query = BASE_CAP
+        c.max_iterations = MAX_ITERATIONS
+        return c
+
+    class _FakeNodeResearcher:
+        def __init__(self, query=None, **kwargs):
+            self.query = query
+            self.ctor_kwargs = kwargs
+            self.cfg = _cfg()
+            self.visited_urls = set()
+            built.append(self)
+
+        async def conduct_research(self):
+            return context
+
+        def get_research_sources(self):
+            return [{"url": TREE_DOC_URL, "raw_content": context}]
+
+        def get_costs(self):
+            return 0.0
+
+    async def _embed(text):
+        return [1.0, 0.0, 0.0, 0.0] if text == TREE_ROOT_Q else [0.0, 1.0, 0.0, 0.0]
+
+    async def _children(node):
+        return []
+
+    parent = SimpleNamespace(query=TREE_ROOT_Q, cfg=_cfg(), tone=None,
+                             websocket=None, headers={}, visited_urls=set())
+    skill = tr.TreeResearchSkill(parent)
+    skill.embed_question = _embed
+
+    with mock.patch.object(tr, "GPTResearcher", _FakeNodeResearcher), \
+         mock.patch.object(tr, "create_chat_completion",
+                           new=mock.AsyncMock(return_value=TREE_ANSWER)), \
+         mock.patch.object(skill, "generate_child_questions", side_effect=_children):
+        await skill.run(query=TREE_ROOT_Q, max_depth=0, max_nodes=1)
+
+    assert len(built) == 1, f"fixture precondition: one node researcher, got {len(built)}"
+    caps = [r.cfg.max_search_results_per_query for r in built]
+    expected = BASE_CAP * (MAX_ITERATIONS + 1)
+    assert caps == [expected], (
+        f"the node researching ONE preset query kept the per-sub-query cap {caps[0]}, so "
+        f"it reads at most {caps[0]} documents where the {MAX_ITERATIONS + 1} sub-queries "
+        f"it replaced would have read up to {expected}. That is the measured 4x context "
+        f"collapse (45-60k chars before, 13-15k after) — and it costs nothing to avoid, "
+        f"because the retrievers already returned those URLs and this cap is what "
+        f"discards them"
+    )
