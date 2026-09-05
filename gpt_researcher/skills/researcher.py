@@ -8,7 +8,9 @@ and context gathering.
 import asyncio
 import logging
 import os
+import inspect
 import random
+from functools import lru_cache
 
 from ..actions.agent_creator import choose_agent
 from ..actions.query_processing import get_search_results, plan_research_outline
@@ -17,6 +19,27 @@ from ..context.compression import merge_sub_query_contexts
 from ..document import DocumentLoader, LangChainDocumentLoader, OnlineDocumentLoader
 from ..utils.enum import ReportSource
 from ..utils.logging_config import get_json_handler
+
+
+@lru_cache(maxsize=64)
+def _accepts_researcher(retriever_class) -> bool:
+    """Whether a retriever's constructor can be handed the researcher.
+
+    SmartRetriever needs it — that is where it gets `cfg`, and without cfg its
+    classifier short-circuits to "general_web" and the whole routing table goes unused.
+    The stock retrievers (tavily, duckduckgo, exa, arxiv, ...) take no such argument and
+    would raise TypeError. Cached because this is asked once per sub-query.
+
+    Signature introspection, not a name match: a retriever that declares `researcher` or
+    accepts **kwargs can take it, whatever it is called. Unintrospectable callables get
+    False, which is the old behaviour.
+    """
+    try:
+        params = inspect.signature(retriever_class).parameters
+    except (TypeError, ValueError):
+        return False
+    return ("researcher" in params
+            or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()))
 
 
 class ResearchConductor:
@@ -868,8 +891,25 @@ class ResearchConductor:
                 continue
 
             try:
-                # Instantiate the retriever with the sub-query
-                retriever = retriever_class(query, query_domains=query_domains)
+                # Instantiate the retriever with the sub-query.
+                # researcher= is not optional: SmartRetriever resolves its config as
+                # `researcher.cfg if researcher else kwargs.get("cfg")`, so omitting it
+                # left cfg None, and _classify_query then returned "general_web" on its
+                # very first branch without asking anything. Two things were broken by
+                # that on this, the main web-search path: the fork's own smart routing
+                # never fired (arxiv/semantic_scholar/github/exa unreachable no matter
+                # what the question was), and a category the caller had already resolved
+                # could not be honoured. Found 2026-09-05 by reading the P0 attribution
+                # against a live run that logged "resolved once: code_technical" and then
+                # "classified query as: general_web" one second later.
+                # Only the retrievers that declare it (SmartRetriever, MCP) get it —
+                # tavily/duckduckgo/exa and friends take no such argument and would
+                # raise TypeError. Signature introspection rather than a name match,
+                # because a third-party retriever that accepts it deserves it too.
+                retriever_kwargs = {"query_domains": query_domains}
+                if _accepts_researcher(retriever_class):
+                    retriever_kwargs["researcher"] = self.researcher
+                retriever = retriever_class(query, **retriever_kwargs)
 
                 # Perform the search using the current retriever
                 search_results = await asyncio.to_thread(
