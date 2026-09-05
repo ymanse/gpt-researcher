@@ -24,6 +24,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .. import GPTResearcher
+from ..llm_provider.claude_agent._subscription import (
+    agent_budget_exhausted,
+    agent_budget_limit,
+    agent_calls_spent,
+    agent_synthesis_reserve,
+)
 from ..utils.llm import create_chat_completion
 from ..utils.enum import ReportType, ReportSource
 from .citation_verification import CitationAgent, text_supported
@@ -2113,9 +2119,19 @@ class TreeResearchSkill:
         # concurrently. Scoring/expansion bookkeeping stays sequential in priority
         # order, so novelty and covered ground see exactly what they saw before.
         worst_node_tokens = 0
+        # agent budget: each node's research spawns 8-15 `claude` CLI sessions, so the
+        # spawn count runs out long before tokens or credits do on a subscription-backed
+        # run. Checked here with the other budgets so a spent allowance ends EXPANSION
+        # (leftover nodes stay PENDING and the report is still synthesized) rather than
+        # surfacing as AgentBudgetExceeded from whichever LLM call happened to be next.
+        # The reserve keeps the roll-up's claim-equivalence judge solvent — expansion
+        # spending the last call leaves the merge to degrade to word-overlap, which is a
+        # SECOND degradation nobody asked for on top of the shallower tree.
+        synthesis_reserve = agent_synthesis_reserve()
         while (len(frontier) and researched < max_nodes
                and self.tokens_spent < token_budget
                and self.credits_spent < credit_budget
+               and not agent_budget_exhausted(reserve=synthesis_reserve)
                and time.time() - start < time_budget_s):
             batch_size = min(node_concurrency, len(frontier), max_nodes - researched)
             if worst_node_tokens:
@@ -2283,6 +2299,16 @@ class TreeResearchSkill:
                       "tokens_spent": self.tokens_spent,
                       "credits_spent": self.credits_spent,
                       "time_budget_exhausted": time_budget_exhausted,
+                      # CLI sessions this run spawned against the subscription — the
+                      # cost nothing else here reports, and the one that made the
+                      # account's agent list unreadable before it was bounded.
+                      "agent_calls_spent": agent_calls_spent(),
+                      "agent_budget_limit": agent_budget_limit(),
+                      # reported WITH the reserve the expansion loop actually tests
+                      # against — the bare call reads False whenever the reserve alone
+                      # stopped expansion, which hid exactly that on 2026-08-16
+                      "agent_budget_exhausted": agent_budget_exhausted(
+                          reserve=synthesis_reserve),
                       "pending_count": len(frontier),
                       # a caller-readable N/M pair for the report's own "Unresearched
                       # Questions" disclosure (assemble_report): every node not still

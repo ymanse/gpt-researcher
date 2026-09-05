@@ -34,6 +34,7 @@ from gpt_researcher.llm_provider.claude_agent._subscription import (
     _get_cli_env,
     _resolve_cli_path,
     get_concurrency_semaphore,
+    note_agent_call,
 )
 from gpt_researcher.llm_provider.generic.base import GenericLLMProvider
 
@@ -159,6 +160,11 @@ class ChatClaudeAgent(BaseChatModel):
         text_parts: list[str] = []
         result_text: str | None = None
 
+        # One CLI subprocess == one subscription session; charge it before spawning
+        # (see the per-run budget in _subscription). Raises AgentBudgetExceeded once
+        # the run is spent — the backstop for callers that cannot degrade.
+        note_agent_call()
+
         async with get_concurrency_semaphore():
             try:
                 async with asyncio.timeout(self.timeout_seconds):
@@ -227,6 +233,8 @@ class ChatClaudeAgent(BaseChatModel):
         system_prompt, prompt = self._to_sdk_inputs(messages)
         options = self._build_options(system_prompt)
         got_any = False
+
+        note_agent_call()  # same budget as _run_query — a stream is one session too
 
         async with get_concurrency_semaphore():
             try:

@@ -18,6 +18,8 @@ import asyncio
 import logging
 import os
 import shutil
+import threading
+import time
 import weakref
 from pathlib import Path
 
@@ -177,3 +179,193 @@ def get_concurrency_semaphore() -> asyncio.Semaphore:
         _semaphores[loop] = sem
         logger.debug("Claude Agent SDK concurrency semaphore initialized: limit=%d", limit)
     return sem
+
+
+# ── Per-run agent-call budget ─────────────────────────────────────────
+#
+# Every generation spawns its own `claude` CLI subprocess (chat_model._run_query),
+# and each subprocess registers as a SEPARATE Claude Code session against the
+# subscription. Measured 2026-08-05: the container's /root/.claude/projects/-app
+# gained 42 session files during the 10 minutes of one research round (11:13-11:23,
+# peaking at 9 in a single minute). At tree scale — max_nodes 20, each node running
+# its own GPTResearcher for 8-15 calls — a single deep_tree_research is a few
+# hundred sessions, which is what shows up on the account as "agents".
+#
+# Nothing above bounds that count. The semaphore caps how many run AT ONCE (and only
+# per event loop: smart_retriever's ThreadPoolExecutor + asyncio.run gives each worker
+# thread its own allowance), while the tree's token/credit budgets are denominated in
+# quantities a CLI spawn does not move. So the spawn count gets a budget of its own.
+#
+# Scope is the process, not a task/context: the calls to bound come from asyncio tasks
+# AND from retriever worker threads, and a ContextVar does not survive the
+# ThreadPoolExecutor hop. A plain lock-guarded counter sees all of them.
+#
+# fail-open by default: the budget applies only after an explicit begin_agent_run(),
+# which the MCP tools call on entry. Library callers (the search-quality harness
+# imports gpt_researcher directly) keep the old unbounded behaviour and just get a
+# counter they can read.
+
+_CALL_LOCK = threading.Lock()
+_calls_spent = 0
+_call_limit = 0  # 0 → unbounded; set by begin_agent_run()
+# THIS run's own allowance, not the pooled ceiling. The synthesis reserve is a
+# fraction of it — see agent_synthesis_reserve for why the pooled ceiling is the
+# wrong denominator.
+_run_allowance = 0
+
+DEFAULT_MAX_CALLS_PER_RUN = 100
+
+
+class AgentBudgetExceeded(RuntimeError):
+    """A run tried to spawn more CLI sessions than its budget allows."""
+
+
+DEFAULT_SESSION_RETENTION_DAYS = 2
+
+
+def prune_cli_sessions(retention_days: float | None = None) -> int:
+    """Delete `claude` CLI session transcripts older than the retention window.
+
+    Every LLM call here spawns a CLI subprocess, and each one leaves a transcript
+    under ~/.claude/projects/<slug>/*.jsonl that NOTHING ever removes. Measured
+    2026-08-19 on the MCP container: 3013 files / 148 MB over 14 days, and — because
+    the CLI authenticates with the operator's own CLAUDE_CODE_OAUTH_TOKEN — every one
+    of them also shows up in that account's agent list, which is what made a single
+    100-call run read as "100 agents appeared".
+
+    mtime-based on purpose: a transcript still being appended to by a live session is
+    younger than the window and survives. Best-effort — a run must never fail because
+    housekeeping could not delete a file.
+    """
+    if retention_days is None:
+        try:
+            retention_days = float(os.environ.get(
+                "CLAUDE_AGENT_SESSION_RETENTION_DAYS",
+                str(DEFAULT_SESSION_RETENTION_DAYS)))
+        except ValueError:
+            retention_days = DEFAULT_SESSION_RETENTION_DAYS
+    if retention_days <= 0:  # explicit opt-out
+        return 0
+
+    root = Path(os.path.expanduser("~")) / ".claude" / "projects"
+    if not root.is_dir():
+        return 0
+
+    cutoff = time.time() - retention_days * 86400
+    removed = 0
+    for transcript in root.glob("*/*.jsonl"):
+        try:
+            if transcript.stat().st_mtime < cutoff:
+                transcript.unlink()
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        logger.info("Pruned %s claude CLI session transcript(s) older than %sd",
+                    removed, retention_days)
+    return removed
+
+
+def begin_agent_run(limit: int | None = None) -> int:
+    """Grant one run its allowance of CLI sessions. Returns the limit.
+
+    ``limit=None`` reads ``CLAUDE_AGENT_MAX_CALLS_PER_RUN`` (default 100).
+    A limit of 0 or less disarms the budget (unbounded).
+
+    The allowance is ADDED to the ceiling, never reset onto it. Resetting was the
+    bug: the counter is process-wide on purpose (a ContextVar cannot follow the
+    retriever's ThreadPoolExecutor hop -- see above), so a second concurrent run
+    arriving here erased what the first had already spent. Measured 2026-08-06:
+    four MCP streams armed two minutes apart (13:51/13:53/13:55/13:57) ended up
+    sharing ONE 100-session allowance, burned it in 12 minutes, and failed together.
+
+    Ceiling: allowances POOL rather than isolate. A runaway run can still eat a
+    concurrent one's share -- it just can no longer delete the record of its own
+    spend, so N runs get N*limit instead of collapsing to one. True per-run
+    isolation needs a run id threaded through the thread hop, which is a much
+    bigger change than this failure justifies.
+    """
+    global _call_limit, _run_allowance
+    if limit is None:
+        try:
+            limit = int(os.environ.get(
+                "CLAUDE_AGENT_MAX_CALLS_PER_RUN", str(DEFAULT_MAX_CALLS_PER_RUN)))
+        except ValueError:
+            limit = DEFAULT_MAX_CALLS_PER_RUN
+    limit = max(0, limit)
+    with _CALL_LOCK:
+        _call_limit = (_calls_spent + limit) if limit else 0
+        _run_allowance = limit
+        ceiling, spent = _call_limit, _calls_spent
+    logger.info("Claude Agent call budget armed: +%s (ceiling=%s, already spent=%s)",
+                limit or "unbounded", ceiling or "unbounded", spent)
+    # housekeeping at the one point every run passes through — see prune_cli_sessions
+    prune_cli_sessions()
+    return limit
+
+
+def note_agent_call() -> int:
+    """Charge one CLI spawn to the budget. Returns the new spend.
+
+    Raises ``AgentBudgetExceeded`` when the run is already at its limit. This is the
+    fail-closed backstop — callers that can degrade gracefully (the tree's batch loop)
+    should test ``agent_budget_exhausted()`` first and stop expanding instead, so the
+    run still synthesizes a report from what it already gathered.
+    """
+    global _calls_spent
+    with _CALL_LOCK:
+        if _call_limit and _calls_spent >= _call_limit:
+            raise AgentBudgetExceeded(
+                f"[claude_agent] CLI-session budget is spent "
+                f"({_calls_spent}/{_call_limit} across the runs armed so far); "
+                f"raise CLAUDE_AGENT_MAX_CALLS_PER_RUN or narrow the research scope"
+            )
+        _calls_spent += 1
+        return _calls_spent
+
+
+def agent_calls_spent() -> int:
+    """CLI sessions spawned in this process. Read against ``agent_budget_limit()``,
+    which rises by one allowance per run: the pair is what has meaning, not either
+    number alone (the counter no longer restarts at each begin_agent_run)."""
+    with _CALL_LOCK:
+        return _calls_spent
+
+
+def agent_budget_limit() -> int:
+    """Current per-run limit; 0 when unbounded."""
+    with _CALL_LOCK:
+        return _call_limit
+
+
+def agent_budget_exhausted(reserve: int = 0) -> bool:
+    """True when the next call would raise. Always False when unbounded.
+
+    ``reserve`` holds back that many calls: a caller that still has work to do AFTER
+    it stops expanding passes the size of that tail, so the tail is not left broke.
+    """
+    with _CALL_LOCK:
+        return bool(_call_limit) and _calls_spent >= max(0, _call_limit - reserve)
+
+
+def agent_synthesis_reserve() -> int:
+    """Calls to keep back from expansion for the synthesis that follows it.
+
+    Measured 2026-08-05 with a limit of 20: expansion spent all 20, and the roll-up's
+    claim-equivalence judge then failed 4 calls in a row and the merge fell back to
+    word-overlap — a report that is both shallow AND badly merged, when only the first
+    was asked for. Proportional so it scales with the limit rather than starving small
+    test budgets: 15%, floor 5.
+
+    Denominated in THIS run's allowance, not the pooled ceiling. The ceiling was the
+    bug: allowances pool (see begin_agent_run), so a fourth 100-call run in the same
+    process saw a ceiling of 595 and held back 89 — against a spend already at 495,
+    that left ELEVEN calls for expansion. Measured 2026-08-16: four sequential tree
+    runs got 47/35/21/11 calls of expansion headroom and researched 8/8/7/4 nodes,
+    the last stopping on a reserve meant to protect a synthesis that needs ~15.
+    """
+    with _CALL_LOCK:
+        allowance = _run_allowance
+    if not allowance:
+        return 0
+    return max(5, allowance * 15 // 100)

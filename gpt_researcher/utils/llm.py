@@ -51,6 +51,21 @@ def is_llm_retryable_error(exc: BaseException) -> bool:
     """
     if str(exc).startswith(_CLI_REFUSAL_PREFIX):
         return False
+    # Same shape as the refusal above, and it cost the same way: the per-run CLI-session
+    # budget is spent, and no amount of backoff refills it. Measured 2026-08-06: four MCP
+    # research streams each burned 10 attempts (55s of sleep) per call against an
+    # exhausted budget, which is what turned one spent budget into 3 client timeouts and
+    # 1 surfaced error. Imported here rather than at module scope: claude_agent drags the
+    # Agent SDK in on package import, and this module is loaded by every provider.
+    try:
+        from gpt_researcher.llm_provider.claude_agent._subscription import (
+            AgentBudgetExceeded,
+        )
+    except ImportError:
+        pass
+    else:
+        if isinstance(exc, AgentBudgetExceeded):
+            return False
     # openai/anthropic SDK APIStatusError exposes status_code directly on the exception;
     # requests.HTTPError nests it under .response.status_code; urllib.error.HTTPError
     # uses .code. Check all three, same fallback order as is_retryable_error.
