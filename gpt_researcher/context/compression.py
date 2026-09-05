@@ -15,7 +15,9 @@ Classes:
 """
 
 import asyncio
+import logging
 import os
+import re
 from typing import Optional
 
 from langchain_classic.retrievers import ContextualCompressionRetriever
@@ -53,6 +55,79 @@ def spread_across_sources(docs: list[Document]) -> list[Document]:
     for rank in range(max((len(chunks) for chunks in by_source.values()), default=0)):
         spread.extend(chunks[rank] for chunks in by_source.values() if rank < len(chunks))
     return spread
+
+
+logger = logging.getLogger(__name__)
+
+# One pretty_print_docs block: "Source: …\nTitle: …\nContent: …\n".
+_CONTEXT_BLOCK = re.compile(r"(?m)^(?=Source: )")
+
+# Bound on the merged context. Above tree_research's own 60k per-node clip on
+# purpose, so tree research is unaffected and only the unbounded case — a wide
+# sub-query fan on a plain report — is capped.
+_MERGE_MAX_CHARS = int(os.environ.get("MERGE_CONTEXT_MAX_CHARS", "120000"))
+
+
+def merge_sub_query_contexts(contexts: list[str], max_chars: int | None = None) -> str:
+    """Merge the per-sub-query contexts into one: drop repeats, interleave, cap.
+
+    The sub-queries of one pass are rephrasings of the same question, so they
+    overlap by design and the same page reaches several of them. Chunking is
+    deterministic per document, so when two sub-queries retain the same chunk the
+    text is byte-identical — ` `.join() paid for it once per sub-query that found
+    it, and no downstream stage removes it.
+
+    Concatenation also decides the truncation order: whatever clips the context
+    later (tree_research at 60k, a model's window) keeps a prefix, so a long early
+    sub-query can consume the whole budget before a later one contributes anything.
+    Interleaving is the same rule spread_across_sources applies to chunks, one
+    level up: every sub-query's first block comes before any sub-query's second.
+
+    ponytail: exact-duplicate blocks only. Two sources paraphrasing one fact is a
+    claim-level judgement — that lives in tree_research's merge, not here.
+    """
+    if max_chars is None:
+        max_chars = _MERGE_MAX_CHARS
+
+    # Non-default prompt families (granite) do not emit "Source:" blocks; there the
+    # split yields one block per sub-query and this degrades to today's behaviour
+    # plus whole-context dedup.
+    groups: list[list[str]] = []
+    seen: set[str] = set()
+    for context in contexts:
+        kept = []
+        for block in _CONTEXT_BLOCK.split(context or ""):
+            if not block.strip():
+                continue
+            key = " ".join(block.split())
+            if key in seen:
+                continue
+            seen.add(key)
+            kept.append(block.strip("\n"))
+        if kept:
+            groups.append(kept)
+
+    merged: list[str] = []
+    used = 0
+    truncated = False
+    for rank in range(max((len(group) for group in groups), default=0)):
+        for group in groups:
+            if rank >= len(group):
+                continue
+            block = group[rank]
+            if 0 < max_chars < used + len(block):
+                truncated = True
+                break
+            merged.append(block)
+            used += len(block) + 2
+        if truncated:
+            break
+
+    if truncated:
+        logger.warning(
+            "Merged context hit MERGE_CONTEXT_MAX_CHARS=%d; kept %d of %d blocks",
+            max_chars, len(merged), sum(len(group) for group in groups))
+    return "\n\n".join(merged)
 
 
 class VectorstoreCompressor:
@@ -183,10 +258,18 @@ class ContextCompressor:
         # If total content is small, skip expensive compression and return directly
         if total_chars < chunk_threshold and len(self.documents) <= max_results:
             # Fast path: no compression needed
+            # Same metadata shape SearchAPIRetriever builds on the standard path.
+            # Passing the raw page dict through instead left pretty_print_docs
+            # reading metadata["source"]/["title"], which a scraped page spells
+            # "url"/"title" — so every block on this path printed "Source: None"
+            # and the whole pass collapsed to one indistinguishable source.
             direct_docs = [
                 Document(
                     page_content=doc.get('raw_content', ''),
-                    metadata=doc
+                    metadata={
+                        "title": doc.get("title", ""),
+                        "source": doc.get("url", ""),
+                    },
                 )
                 for doc in self.documents[:max_results]
             ]

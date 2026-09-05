@@ -58,7 +58,7 @@ async def test_prefetched_url_is_marked_visited():
     researcher.add_research_sources = (
         lambda sources: researcher.research_sources.extend(sources))
 
-    new_urls, prefetched, _ = await ResearchConductor(
+    new_urls, prefetched, _, _claimed_elsewhere = await ResearchConductor(
         researcher)._search_relevant_source_urls("q")
 
     # dedup/scraping behaviour unchanged: prefetched results are never re-scraped

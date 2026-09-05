@@ -13,6 +13,7 @@ import random
 from ..actions.agent_creator import choose_agent
 from ..actions.query_processing import get_search_results, plan_research_outline
 from ..actions.utils import stream_output
+from ..context.compression import merge_sub_query_contexts
 from ..document import DocumentLoader, LangChainDocumentLoader, OnlineDocumentLoader
 from ..utils.enum import ReportSource
 from ..utils.logging_config import get_json_handler
@@ -44,6 +45,10 @@ class ResearchConductor:
         self._mcp_results_cache = None
         # Track MCP query count for balanced mode
         self._mcp_query_count = 0
+        # url -> future resolved once whoever claimed the url has scraped it. A
+        # sibling sub-query that finds the url already visited waits here instead
+        # of losing the page (see _pages_already_scraped).
+        self._page_claims: dict[str, asyncio.Future] = {}
 
     async def plan_research(self, query, query_domains=None):
         """Gets the sub-queries from the query
@@ -233,10 +238,13 @@ class ResearchConductor:
 
         # browse_urls([]) is the true-zero error signal; an all-already-visited
         # source_urls pass is dedup, not a scrape failure.
-        if new_search_urls or not urls:
-            scraped_content = await self.researcher.scraper_manager.browse_urls(new_search_urls)
-        else:
-            scraped_content = []
+        try:
+            if new_search_urls or not urls:
+                scraped_content = await self.researcher.scraper_manager.browse_urls(new_search_urls)
+            else:
+                scraped_content = []
+        finally:
+            self._resolve_page_claims(new_search_urls)
         self.logger.info(f"Scraped content from {len(scraped_content)} URLs")
 
         if self.researcher.vector_store:
@@ -390,7 +398,7 @@ class ResearchConductor:
             # Filter out empty results and join the context
             context = [c for c in context if c]
             if context:
-                combined_context = " ".join(context)
+                combined_context = merge_sub_query_contexts(context)
                 self.logger.info(f"Combined context size: {len(combined_context)}")
                 return combined_context
             return []
@@ -768,6 +776,11 @@ class ResearchConductor:
         for url in url_set_input:
             if url not in self.researcher.visited_urls:
                 self.researcher.visited_urls.add(url)
+                # Claim and promise in the same tick. Registering the promise any
+                # later leaves a window where a concurrent sibling sees "visited"
+                # with nothing to wait on, and the page drops out of its context.
+                self._page_claims.setdefault(
+                    url, asyncio.get_running_loop().create_future())
                 new_urls.append(url)
                 if self.researcher.verbose:
                     await stream_output(
@@ -780,6 +793,48 @@ class ResearchConductor:
                     )
 
         return new_urls
+
+    def _resolve_page_claims(self, urls) -> None:
+        """Release every sibling waiting on these urls.
+
+        Must run even when the scrape raised or was skipped: an unresolved claim is
+        a sub-query that never returns.
+        """
+        for url in urls:
+            future = self._page_claims.get(url)
+            if future is not None and not future.done():
+                future.set_result(None)
+
+    async def _pages_already_scraped(self, urls: list) -> list:
+        """Serve pages a sibling sub-query claimed first, instead of skipping them.
+
+        visited_urls has to stay a "don't fetch this twice" set. It had become a
+        "only the first sub-query may READ this" lock: the sub-queries of one pass
+        run concurrently (asyncio.gather in _get_context_by_web_search), the first
+        to reach _get_new_urls took the url, and every sibling that had found the
+        same page dropped it — compressing against whatever was left, or, when its
+        whole result set was claimed, against nothing at all. Worse than the miss:
+        the page was then compressed once against the CLAIMER's query, so the
+        passage the sibling needed was already cut at SIMILARITY_THRESHOLD before
+        the sibling could ask for it.
+
+        The same call was already made for prefetched content one branch over
+        ("their content must still flow on a repeat pass",
+        _search_relevant_source_urls); scraped pages just never got it.
+        """
+        if not urls:
+            return []
+        wanted = set(urls)
+        waiting = [self._page_claims[url] for url in wanted if url in self._page_claims]
+        if waiting:
+            # No cycle: a claimer resolves its own urls before it waits on anyone.
+            await asyncio.gather(*waiting, return_exceptions=True)
+        by_url: dict[str, dict] = {}
+        for page in self.researcher.research_sources:
+            url = page.get("url")
+            if url in wanted and url not in by_url and page.get("raw_content"):
+                by_url[url] = page
+        return list(by_url.values())
 
     async def _search_relevant_source_urls(self, query, query_domains: list | None = None):
         new_search_urls = []
@@ -840,13 +895,19 @@ class ResearchConductor:
         # A prefetched document was read as surely as a scraped one, so it belongs in
         # visited_urls: report references (get_source_urls), cross-node dedup and the
         # tree narrowing all read that set, and this branch used to bypass it entirely.
-        # Return value ignored on purpose — prefetched results need no scraping, and
-        # their content must still flow on a repeat pass.
-        await self._get_new_urls([p["url"] for p in prefetched_content])
+        # Their content needs no scraping and must still flow on a repeat pass, so
+        # the claim is released immediately — a sibling waiting on one of these
+        # urls can read it out of research_sources right now.
+        self._resolve_page_claims(
+            await self._get_new_urls([p["url"] for p in prefetched_content]))
+        candidate_urls = list(dict.fromkeys(new_search_urls))
         new_search_urls = await self._get_new_urls(new_search_urls)
+        # Candidates THIS sub-query found that a sibling (or an earlier node) had
+        # already claimed. Not fetched again; read back in _scrape_data_by_urls.
+        claimed_elsewhere = [u for u in candidate_urls if u not in set(new_search_urls)]
         random.shuffle(new_search_urls)
 
-        return new_search_urls, prefetched_content, found_any
+        return new_search_urls, prefetched_content, found_any, claimed_elsewhere
 
     async def _scrape_data_by_urls(self, sub_query, query_domains: list | None = None):
         """
@@ -863,7 +924,8 @@ class ResearchConductor:
         if query_domains is None:
             query_domains = []
 
-        new_search_urls, prefetched_content, found_any = await self._search_relevant_source_urls(sub_query, query_domains)
+        new_search_urls, prefetched_content, found_any, claimed_elsewhere = \
+            await self._search_relevant_source_urls(sub_query, query_domains)
 
         # Log the research process if verbose mode is on
         if self.researcher.verbose:
@@ -879,13 +941,20 @@ class ResearchConductor:
         # back empty-handed: a pass where every result was prefetched (e.g. arxiv /
         # semantic_scholar abstracts) or already visited (dedup) is a success, not
         # a zero-scrape failure — browse_urls([]) is reserved for the true zero.
-        if new_search_urls or not found_any:
-            scraped_content = await self.researcher.scraper_manager.browse_urls(new_search_urls)
-        else:
-            scraped_content = []
+        try:
+            if new_search_urls or not found_any:
+                scraped_content = await self.researcher.scraper_manager.browse_urls(new_search_urls)
+            else:
+                scraped_content = []
+        finally:
+            # Before waiting on anyone else's claims, so two sub-queries that each
+            # hold a url the other wants cannot wait on each other.
+            self._resolve_page_claims(new_search_urls)
 
         # Merge pre-fetched content from retrievers that already provide full text
         scraped_content.extend(prefetched_content)
+        # ...and the pages a sibling sub-query claimed first. Read, not re-fetched.
+        scraped_content.extend(await self._pages_already_scraped(claimed_elsewhere))
 
         if self.researcher.vector_store:
             self.researcher.vector_store.load(scraped_content)

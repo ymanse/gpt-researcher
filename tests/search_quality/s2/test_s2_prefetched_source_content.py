@@ -44,7 +44,8 @@ def _make_conductor():
 async def test_prefetched_source_is_recorded_with_its_content():
     conductor, researcher = _make_conductor()
 
-    new_urls, prefetched, found_any = await conductor._search_relevant_source_urls("q")
+    new_urls, prefetched, found_any, _claimed_elsewhere = \
+        await conductor._search_relevant_source_urls("q")
 
     assert found_any
     assert new_urls == [URL_NEEDS_SCRAPING]
