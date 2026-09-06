@@ -415,6 +415,19 @@ def agent_budget_exhausted(reserve: int = 0) -> bool:
         return bool(_call_limit) and _calls_spent >= max(0, _call_limit - reserve)
 
 
+def agent_run_allowance() -> int:
+    """What THIS run asked for; 0 when unbounded.
+
+    The only honest denominator for any "share of the budget" rule. ``agent_budget_limit()``
+    is the POOLED ceiling — it sums every allowance the process has granted and climbs for
+    the life of the container (651 observed before a restart) — so a share of it grows
+    every time any call arms a budget. That was the 2026-08-16 defect in the synthesis
+    reserve, and the merge ceiling reproduced it on its very first live run.
+    """
+    with _CALL_LOCK:
+        return _run_allowance
+
+
 def agent_synthesis_reserve() -> int:
     """Calls to keep back from expansion for the synthesis that follows it.
 

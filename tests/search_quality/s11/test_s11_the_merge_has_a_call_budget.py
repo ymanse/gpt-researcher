@@ -132,3 +132,32 @@ async def test_an_unbounded_run_is_not_capped(monkeypatch):
         "gets a different de-duplication than the one s9 froze")
     assert calls["screen"] >= 1 and skill._merge_calls["budget_exhausted"] is False, (
         f"an unbounded merge reported itself truncated: {skill._merge_calls}")
+
+
+@pytest.mark.asyncio
+async def test_the_ceiling_is_denominated_in_this_runs_allowance_not_the_pool():
+    """The same defect the synthesis reserve already had, caught live on the first
+    tiered run.
+
+    Allowances POOL: `agent_budget_limit()` is the sum of every allowance the process has
+    granted, so it climbs for the life of the container (observed: 651 before a restart).
+    A merge ceiling denominated in it grows without bound — a `standard` call that asked
+    for 25 was measured getting a merge budget of 7, because a `light` call had run first
+    and the pooled ceiling was 30.
+
+    THIS run's allowance is the only denominator that means anything: the ceiling has to
+    say "a quarter of what I asked for", not "a quarter of everything anyone asked for".
+    """
+    sub.begin_agent_run(12)          # a light call
+    for _ in range(5):
+        sub.note_agent_call()
+    sub.begin_agent_run(25)          # then a standard one, pooling on top of it
+
+    assert sub.agent_budget_limit() > 25, (
+        "fixture precondition: the ceiling must have pooled above this run's allowance")
+    assert tr.merge_call_budget() == max(tr.MERGE_CALL_FLOOR,
+                                         25 * tr.MERGE_CALL_PCT // 100), (
+        f"the merge ceiling is {tr.merge_call_budget()} — derived from the pooled "
+        f"ceiling {sub.agent_budget_limit()} rather than from this run's allowance of 25. "
+        f"It therefore grows every time any call arms a budget, which is exactly the bug "
+        f"agent_synthesis_reserve was already fixed for")

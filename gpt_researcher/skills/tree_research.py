@@ -32,6 +32,7 @@ from ..llm_provider.claude_agent._subscription import (
     agent_calls_by_site,
     agent_calls_spent,
     agent_calls_this_run,
+    agent_run_allowance,
     agent_synthesis_reserve,
 )
 from ..utils.agent_purpose import agent_purpose
@@ -484,7 +485,13 @@ def merge_call_budget() -> int:
     search-quality harness imports gpt_researcher directly and never arms a run) on
     exactly the de-duplication s9 froze.
     """
-    allowance = agent_budget_limit()
+    # THIS run's allowance, never agent_budget_limit(). That is the pooled ceiling: it
+    # sums every allowance the process has granted and climbs for the life of the
+    # container, so a share of it grows every time any call arms a budget. Caught live on
+    # the first tiered run — a `standard` call that asked for 25 derived a merge ceiling
+    # of 7 because a `light` call had run before it. Same defect agent_synthesis_reserve
+    # was fixed for on 2026-08-16.
+    allowance = agent_run_allowance()
     if not allowance:
         return 0
     return max(MERGE_CALL_FLOOR, allowance * MERGE_CALL_PCT // 100)
