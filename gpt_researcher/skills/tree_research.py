@@ -15,6 +15,7 @@ import itertools
 import json
 import logging
 import math
+import os
 import re
 import time
 import uuid
@@ -459,6 +460,34 @@ MERGE_VERDICT_TIMEOUT_S = 300.0
 MERGE_JUDGE_FAILURES = 3    # transient errors happen; a dead judge answers none
 MERGE_CONCURRENCY = 4       # verdicts in flight at once
 EMBED_CONCURRENCY = 16      # embeddings in flight at once — an HTTP call, not a process
+
+# Share of a run's own allowance the roll-up's de-duplication may spend on CLI sessions.
+# Measured 2026-09-05 over four live runs of one 3-node query, after P1 made the research
+# cheap: merge took 12 of 18 sessions (67%) and bought a 7% shorter report — 3 of 59 claim
+# units. It scales with CLAIM COUNT rather than nodes (the harness recorded 22 screens on
+# a 167-unit tree), so on a full run it is the run.
+#
+# A ceiling, not a change of operator: the harness already established that strict
+# equivalence can only remove a few percent, and s9 freezes what it does remove. Groups
+# are grown around the closest pair and verdict pairs are ordered by score, so a bounded
+# merge spends on the strongest candidates first — and running out is safe, because
+# merging only ever deletes text. An unscreened unit simply survives into the report;
+# stopping early costs redundancy, never a fact.
+MERGE_CALL_PCT = int(os.environ.get("MERGE_CALL_PCT", "25"))
+MERGE_CALL_FLOOR = int(os.environ.get("MERGE_CALL_FLOOR", "4"))
+
+
+def merge_call_budget() -> int:
+    """CLI sessions the roll-up de-duplication may spend; 0 when the run is unbounded.
+
+    Unbounded means no ceiling at all, which is what keeps library callers (the
+    search-quality harness imports gpt_researcher directly and never arms a run) on
+    exactly the de-duplication s9 froze.
+    """
+    allowance = agent_budget_limit()
+    if not allowance:
+        return 0
+    return max(MERGE_CALL_FLOOR, allowance * MERGE_CALL_PCT // 100)
 # Units per SCREENING call. One judge call is a whole model round trip — measured on
 # this deployment (claude_agent) at 142-320s for a group of 16 — and the captured
 # goldens offer 111-294 candidate pairs each, which is hours per query and, at 175
@@ -1621,8 +1650,12 @@ class TreeResearchSkill:
         """
         # cleared FIRST: an early return used to leave the previous assembly's screen and
         # verdict counts in place, so _merge_stats reported work this run did not do
+        # The ceiling is reported even on an early return, so a consumer never has to ask
+        # whether the key exists before asking whether the merge was truncated.
         self._merge_calls = {"screens": 0, "candidate_pairs": 0, "verdicts": 0,
-                             "verdict_pairs": 0, "screened_out": 0}
+                             "verdict_pairs": 0, "screened_out": 0,
+                             "call_budget": merge_call_budget(),
+                             "budget_exhausted": False}
         n = len(texts)
         if n < 2:
             return {}
@@ -1636,6 +1669,21 @@ class TreeResearchSkill:
         # say WHICH of the others covers this one, and collapsing the whole answer-none
         # set is how a closure-table DEFINITION and its TRADE-OFF become one statement.
         groups, floor = self._merge_groups(n, vecs, sim)
+        # Spend the ceiling on the strongest candidates. _merge_groups grows each cluster
+        # around the closest unassigned pair, so the groups arrive in descending strength
+        # already; truncating from the end drops the weakest. Half the ceiling is held
+        # back for verdicts, because a screen with no verdict behind it merges nothing —
+        # paying for screens until the budget is gone would buy zero de-duplication.
+        budget = merge_call_budget()
+        budget_exhausted = False
+        if budget:
+            screen_cap = max(1, budget // 2)
+            if len(groups) > screen_cap:
+                logger.info("merge screening %d of %d candidate groups: the run's "
+                            "de-duplication ceiling is %d call(s)",
+                            screen_cap, len(groups), budget)
+                groups = groups[:screen_cap]
+                budget_exhausted = True
         screened = await self._judged_in_waves(
             [[texts[i] for i in g] for g in groups], self._covered)
         # THE VERDICT PAIRS COME FROM THE SCREEN'S OWN GROUP, not from a global
@@ -1683,14 +1731,26 @@ class TreeResearchSkill:
         # both ends is what left ~0 pairs to judge (4 covered units in 32 screened).
         order = [p for p, _ in sorted(scored_pairs.items(), key=lambda kv: (-kv[1], kv[0]))]
         verdicts_asked = 0
+        # What the screens left of the ceiling. Checked per wave rather than per pair so
+        # a wave already in flight is never half-charged.
+        verdicts_left = (budget - len(groups)) if budget else None
         for w in range(0, len(order), MERGE_CONCURRENCY):
             if not self._merge_judge_ok:
+                break
+            if verdicts_left is not None and verdicts_left <= 0:
+                logger.info("merge stopped after %d verdict(s): de-duplication ceiling "
+                            "of %d call(s) reached; %d candidate pair(s) left unjudged, "
+                            "and every unit they hold survives into the report",
+                            verdicts_asked, budget, len(order) - verdicts_asked)
+                budget_exhausted = True
                 break
             wave = [(i, j) for i, j in order[w:w + MERGE_CONCURRENCY]
                     if i not in absorbed and j not in absorbed]
             if not wave:
                 continue
             verdicts_asked += len(wave)
+            if verdicts_left is not None:
+                verdicts_left -= len(wave)
             sides = await asyncio.gather(
                 *(self._droppable(texts[i], texts[j]) for i, j in wave))
             for (i, j), side in zip(wave, sides):
@@ -1714,7 +1774,12 @@ class TreeResearchSkill:
                              # screening call, so no floor was needed). Recorded because
                              # it now varies with the embedder: nothing else downstream
                              # can tell a healthy band from a degenerate one.
-                             "candidate_floor": round(floor, 4)}
+                             "candidate_floor": round(floor, 4),
+                             # Without these, a run that de-duplicated every candidate
+                             # and one that stopped a third of the way through report
+                             # the same numbers.
+                             "call_budget": budget,
+                             "budget_exhausted": budget_exhausted}
         return {k: sorted(v) for k, v in merged.items()}
 
     @staticmethod
