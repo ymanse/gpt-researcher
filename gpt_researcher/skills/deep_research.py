@@ -8,11 +8,26 @@ from gpt_researcher.llm_provider.generic.base import ReasoningEfforts
 from ..utils.llm import create_chat_completion
 from ..utils.enum import ReportType, ReportSource
 from ..actions.query_processing import get_search_results
+from ..actions.agent_creator import choose_agent
 
 logger = logging.getLogger(__name__)
 
 # Maximum words allowed in context (25k words for safety margin)
 MAX_CONTEXT_WORDS = 25000
+
+# Appended to the context of a run that stopped expanding on a spent CLI-session
+# allowance. A partial answer presented as a complete one is worse than the
+# AgentBudgetExceeded it replaces: the reader cannot tell, and neither can the report
+# writer downstream.
+BUDGET_TRUNCATION_NOTICE = """
+
+## Incomplete Research
+This research stopped early: the run's CLI-session budget was spent before every
+planned query and follow-up depth had been researched. The findings above are PARTIAL
+— questions that were planned but never investigated are missing entirely, and nothing
+above should be read as a complete answer to the original query.
+"""
+
 
 def count_words(text) -> int:
     """Count words in a text string. Handles both strings and lists."""
@@ -62,6 +77,21 @@ class DeepResearchSkill:
         self.research_sources = []  # Track all research sources
         self.context = []  # Track all context
         self.scope_brief = None  # Set by run(scope=True): {"query", "questions", "scope_statement"}
+        # Resolved ONCE per run by _resolve_run_context(), then handed to every nested
+        # researcher. Measured 2026-09-09 on a breadth=2/depth=2 run: without them the
+        # 6 nested researchers pay 6 choose_agent sessions and 12 routing
+        # classifications, against a pooled ceiling that was 53 that day.
+        self._category = None
+        self._agent = None
+        self._role = None
+        self._run_context_resolved = False
+        # True once the CLI-session allowance stopped this run expanding. Travels out
+        # in deep_research()'s result and as a disclosure in the context run() returns.
+        self.budget_exhausted = False
+        # Whether ANY sub-query has produced research this run. The budget gate
+        # reads it so a run that has gathered nothing never reports itself as
+        # "partial" — see process_query.
+        self._researched_any = False
 
     async def generate_search_queries(self, query: str, num_queries: int = 3) -> List[Dict[str, str]]:
         """Generate SERP queries for research"""
@@ -232,6 +262,69 @@ Format each question on a new line starting with 'Question: '"""}
             CitationAgent().verify, citations, self.scraped_documents()
         )
 
+    async def _resolve_run_context(self, query: str) -> None:
+        """Decide once, for the whole run, what every nested researcher re-decides.
+
+        Two CLI sessions here replace one choose_agent per nested researcher plus one
+        routing classification per sub-query of each of them.
+
+        The classification half is a REGRESSION, not an old cost: until 2026-09-06 the
+        retriever was constructed without the researcher, so SmartRetriever.cfg was
+        None and _classify_query answered "general_web" on its very first branch for
+        ZERO sessions. Passing the researcher fixed smart routing — a real bug — and
+        switched those sessions on. The tree caps them at one per run by forcing the
+        category; until now the linear path had no such cap.
+
+        Best-effort, both halves: a research run must not die because a routing hint or
+        a role prompt could not be produced. Whichever one fails falls back to today's
+        per-researcher behaviour.
+        """
+        # The original question, not the follow-up blob run() assembles around it
+        # ("Q: ... / A: Automatically proceeding with research" x3): this decides the
+        # retriever bundle and the role prompt for the whole run, and the boilerplate is
+        # not what the run is about. Same input the tree resolves against.
+        query = str(getattr(self.researcher, 'query', '') or query)
+        if self._run_context_resolved:
+            return
+        # Set BEFORE resolving: the recursion re-enters deep_research once per depth
+        # level, and a failed resolution must be paid for at most once per run.
+        self._run_context_resolved = True
+
+        # Through the real classifier and not a constant: the category selects which
+        # retriever bundle every sub-query searches with, so a hardcoded value would
+        # silently change what the run reads. One call per run fits in every budget.
+        try:
+            from ..retrievers.smart.smart_retriever import SmartRetriever
+
+            category = await asyncio.to_thread(
+                SmartRetriever(query, cfg=self.researcher.cfg)._classify_query)
+            self._category = str(category) if category else None
+            logger.info("deep research routing category resolved once: %s",
+                        self._category)
+        except Exception as e:
+            # _classify_query swallows its own errors and answers "general_web", so
+            # reaching here means the construction failed, not the classification.
+            logger.warning("run-level classification failed, every sub-query classifies "
+                           "itself as before: %s", e)
+
+        # conduct_research's guard is an AND (`if not (agent and role)`), so a
+        # half-resolved pair buys nothing: keep both or neither.
+        try:
+            agent, role = await choose_agent(
+                query=query,
+                cfg=self.researcher.cfg,
+                parent_query=getattr(self.researcher, 'parent_query', '') or '',
+                cost_callback=getattr(self.researcher, 'add_costs', None),
+                headers=self.headers,
+                prompt_family=getattr(self.researcher, 'prompt_family', None),
+            )
+            if agent and role:
+                self._agent, self._role = agent, role
+                logger.info("deep research agent resolved once: %s", agent)
+        except Exception as e:
+            logger.warning("run-level agent selection failed, every sub-query chooses "
+                           "its own as before: %s", e)
+
     async def deep_research(
             self,
             query: str,
@@ -256,6 +349,35 @@ Format each question on a new line starting with 'Question: '"""}
         if on_progress:
             on_progress(progress)
 
+        # Idempotent, so the recursion below pays nothing for it.
+        await self._resolve_run_context(query)
+
+        # The linear path has no way to come back shallower, so a spent allowance used
+        # to surface as AgentBudgetExceeded from whichever LLM call happened to be
+        # next — and generate_search_queries, the first thing the recursion does, sits
+        # outside every `except`. Measured 2026-09-09: the whole call died as "Failed
+        # to get response from claude_agent API", 22 error rounds, no partial answer,
+        # while a tree run four minutes earlier shared the same pooled ceiling of 53.
+        # So the budget is tested BEFORE further work is started instead, and what has
+        # already been gathered is kept. The reserve leaves the write-up solvent, the
+        # same way the tree's expansion loop holds calls back for its roll-up.
+        #
+        # ponytail: the run's OWN first query is not gated. There is no partial result
+        # to protect before any query has run, and an empty context handed to the report
+        # writer is worse than an exception — it gets written up from prior knowledge.
+        #
+        # Imported here rather than at module scope: agent.py imports this module while
+        # the package is initialising, and claude_agent/__init__ pulls in
+        # claude_agent_sdk (0.27s, and an ImportError in any environment that installed
+        # the fork without it). generic/base.py already loads that provider on demand
+        # behind _check_pkg; a budget read must not be the thing that makes it eager.
+        from ..llm_provider.claude_agent._subscription import (
+            agent_budget_exhausted,
+            agent_synthesis_reserve,
+        )
+
+        synthesis_reserve = agent_synthesis_reserve()
+
         # Generate search queries
         print(f"🔎 Generating {breadth} search queries...", flush=True)
         serp_queries = await self.generate_search_queries(query, num_queries=breadth)
@@ -273,6 +395,28 @@ Format each question on a new line starting with 'Question: '"""}
 
         async def process_query(serp_query: Dict[str, str]) -> Optional[Dict[str, Any]]:
             async with semaphore:
+                # Checked inside the semaphore, so a query queued behind the ones that
+                # spent the allowance sees the spend rather than the state at gather().
+                #
+                # `self._researched_any` is the half that was missing, and its absence
+                # was worse than the exception it replaced. Allowances POOL, so a
+                # concurrent run can leave this one exhausted before its FIRST sub-query:
+                # gating unconditionally then researched nothing, appended the
+                # "Incomplete Research" banner to an EMPTY context, and handed that to
+                # the report writer — which writes a confident-looking report out of
+                # prior knowledge. Measured over allowances 3/5/6/7: 0 of 6 researchers
+                # ran, 0 learnings, 0 context items, truncated=True every time.
+                #
+                # Degrading is only honest when there is something to degrade TO. With
+                # nothing gathered yet, let the query run and let a spent budget raise:
+                # a clear failure beats a fabricated answer.
+                if self._researched_any and agent_budget_exhausted(reserve=synthesis_reserve):
+                    self.budget_exhausted = True
+                    logger.warning(
+                        "CLI-session allowance spent: sub-query %r is left "
+                        "unresearched and the research already done is kept",
+                        serp_query['query'])
+                    return None
                 try:
                     progress.current_query = serp_query['query']
                     if on_progress:
@@ -288,10 +432,34 @@ Format each question on a new line starting with 'Question: '"""}
                         config_path=self.config_path,
                         headers=self.headers,
                         visited_urls=self.visited_urls,
+                        # Both, or conduct_research's guard (`if not (agent and role)`)
+                        # does not fire and this researcher re-chooses a role prompt the
+                        # run already picked. None for either is exactly today's cost.
+                        agent=self._agent,
+                        role=self._role,
+                        # NOT preset_sub_queries, and that is deliberate. A tree node IS
+                        # one question, so presetting costs it nothing; a linear
+                        # sub-query is not — this researcher's own planning is the
+                        # SECOND level of decomposition, and it is what linear `depth`
+                        # is made of. Presetting it would quietly redefine depth=2.
                         # Propagate MCP configuration to nested researchers
                         mcp_configs=self.researcher.mcp_configs,
                         mcp_strategy=self.researcher.mcp_strategy
                     )
+                    # The routing category is a property of the RUN, not of the
+                    # sub-query: _classify_query short-circuits on it without asking the
+                    # FAST_LLM. Stamped after construction because Config builds its own
+                    # cfg instance; an unresolved category leaves it None, which is what
+                    # default.py ships and means "classify normally".
+                    if self._category:
+                        try:
+                            researcher.cfg.smart_retriever_force_category = self._category
+                        # a cfg that refuses the attribute is not worth failing a
+                        # research run over: the sub-query classifies itself instead
+                        except AttributeError:
+                            logger.warning(
+                                "could not stamp the run category onto the researcher "
+                                "for %r", serp_query['query'])
 
                     # Conduct research
                     context = await researcher.conduct_research()
@@ -342,6 +510,8 @@ Format each question on a new line starting with 'Question: '"""}
         # Collect all results
         for result in results:
             all_learnings.extend(result['learnings'])
+            # This run has something to degrade to from here on.
+            self._researched_any = True
             all_visited_urls.update(result['visited_urls'])
             all_citations.update(result['citations'])
             if result['context']:
@@ -358,6 +528,15 @@ Format each question on a new line starting with 'Question: '"""}
 
             # Continue deeper if needed
             if depth > 1:
+                # `continue`, not `break`: the shallow results of the remaining
+                # queries are already gathered above and must still be collected.
+                if agent_budget_exhausted(reserve=synthesis_reserve):
+                    self.budget_exhausted = True
+                    logger.warning(
+                        "CLI-session allowance spent: not recursing to depth %s. The "
+                        "learnings gathered so far are kept and reported as partial.",
+                        depth - 1)
+                    continue
                 new_breadth = max(2, breadth // 2)
                 new_depth = depth - 1
                 progress.current_depth += 1
@@ -400,7 +579,10 @@ Format each question on a new line starting with 'Question: '"""}
             'visited_urls': list(all_visited_urls),
             'citations': all_citations,
             'context': trimmed_context,
-            'sources': all_sources
+            'sources': all_sources,
+            # A caller cannot otherwise tell a budget-truncated result from a complete
+            # one — which is worse than the exception this replaces.
+            'agent_budget_exhausted': self.budget_exhausted,
         }
 
     async def run(self, on_progress=None, scope: bool = False) -> str:
@@ -520,6 +702,24 @@ Format each question on a new line starting with 'Question: '"""}
             else str(item)
             for item in final_context
         )
+        # BUDGET_TRUNCATION_NOTICE goes into the context, not just the log: this
+        # string is what the report is written from, so it is the only place a reader
+        # can still be told. The linear equivalent of the tree's "## Unresearched
+        # Questions" section — without it a run that stopped on a spent allowance is
+        # indistinguishable from one that answered the question.
+        # Only when there IS a partial result. An empty context with a "partial"
+        # banner reads to the report writer as "research happened, here is some of it",
+        # and it answers from prior knowledge instead of saying it has nothing. A run
+        # that gathered nothing is a failure, not a shorter success.
+        if results.get('agent_budget_exhausted') and self.researcher.context:
+            logger.warning(
+                "deep research stopped expanding on a spent CLI-session allowance; "
+                "the context below is partial and says so.")
+            self.researcher.context += BUDGET_TRUNCATION_NOTICE
+        elif results.get('agent_budget_exhausted'):
+            logger.error(
+                "deep research gathered NO context before the CLI-session allowance "
+                "was spent — reporting nothing rather than writing from prior knowledge")
         self.researcher.visited_urls = results['visited_urls']
 
         # (research_sources is assigned above, before verify_citations needs it)

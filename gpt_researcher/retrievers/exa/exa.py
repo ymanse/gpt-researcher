@@ -1,5 +1,28 @@
+import inspect
 import os
+
 from ..utils import check_pkg
+
+
+def _accepted_by(fn, kwargs):
+    """Drop the kwargs `fn` does not declare, rather than forwarding them blindly.
+
+    exa-py's parameter set moves between releases. 2.20.0 (in the image since
+    2026-09-06) no longer takes `use_autoprompt`, so on 2026-09-09 every exa call died
+    with "Exa.search() got an unexpected keyword argument 'use_autoprompt'" - twice in a
+    row, which retires exa from SmartRetriever routing for the rest of the process.
+    Re-pinning the retriever to 2.20.0's argument list would just move that break to the
+    next release, so read the signature off the client we were actually handed.
+
+    A client declaring **kwargs gets everything: `Exa.search_and_contents` is
+    `(self, query, **kwargs)` in 2.20.0, and filtering that by name would silently strip
+    the search mode, the result limit and the domain filter, leaving unfiltered defaults
+    - a quieter failure than the loud one this replaces.
+    """
+    params = inspect.signature(fn).parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return kwargs
+    return {name: value for name, value in kwargs.items() if name in params}
 
 
 class ExaSearch:
@@ -38,30 +61,30 @@ class ExaSearch:
             )
         return api_key
 
-    def search(
-        self, max_results=10, use_autoprompt=False, search_type="neural", **filters
-    ):
+    def search(self, max_results=10, search_type="neural", **filters):
         """
         Searches the query using the Exa API.
         Args:
             max_results: The maximum number of results to return.
-            use_autoprompt: Whether to use autoprompting.
             search_type: The type of search (e.g., "neural", "keyword").
             **filters: Additional filters (e.g., date range, domains).
         Returns:
             A list of search results.
         """
-        results = self.client.search(
-            self.query,
-            type=search_type,
-            use_autoprompt=use_autoprompt,
-            num_results=max_results,
-            include_domains=self.query_domains,
-            **filters
-        )
+        # `search_type` keeps its name because SmartRetriever routes the code_technical
+        # bundle by inspecting this method for exactly that parameter.
+        results = self.client.search(self.query, **_accepted_by(self.client.search, {
+            "type": search_type,
+            "num_results": max_results,
+            "include_domains": self.query_domains,
+            **filters,
+        }))
 
+        # `Result.text` is None unless contents were requested, and every other retriever
+        # here returns a string body: SmartRetriever._deduplicate_results calls len() on
+        # it, and since the key exists its "" default never fires.
         search_response = [
-            {"href": result.url, "body": result.text} for result in results.results
+            {"href": result.url, "body": result.text or ""} for result in results.results
         ]
         return search_response
 
@@ -75,12 +98,15 @@ class ExaSearch:
         Returns:
             A list of similar documents.
         """
-        results = self.client.find_similar(
-            url, exclude_source_domain=exclude_source_domain, **filters
-        )
+        # 2.20.0 still declares exclude_source_domain, but the blind **filters forwarding
+        # is the same defect that killed search(), so it goes through the same gate.
+        results = self.client.find_similar(url, **_accepted_by(self.client.find_similar, {
+            "exclude_source_domain": exclude_source_domain,
+            **filters,
+        }))
 
         similar_response = [
-            {"href": result.url, "body": result.text} for result in results.results
+            {"href": result.url, "body": result.text or ""} for result in results.results
         ]
         return similar_response
 

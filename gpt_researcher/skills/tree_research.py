@@ -57,6 +57,36 @@ DEDUP_COSINE = 0.92
 # ponytail: one global floor; scale it by depth if deep leaves start failing.
 MIN_CONTEXT_CHARS = 8000
 
+# P1.3 gives a node its own question as its sub-query list, on the argument that the
+# question is already a plan. That holds for a CHILD question, which an LLM wrote to be
+# searchable; it does not hold for the ROOT question, which is whatever the user typed.
+# Above this many characters the preset is withheld and the planner decomposes the
+# question as it did before P1.3.
+#
+# Where 350 comes from. Measured over the 100 tree.json runs in
+# D:/dev_ext/gptr-mcp/outputs (2522 child questions) plus the s11 fixtures:
+#   - the root that failed on 2026-09-09 was 390 chars — four numbered Korean parts naming
+#     a company, a jobs site, an aptitude test and an AI platform strategy. Handed to the
+#     retrievers verbatim as one search string it drew 2 serper results and 3 firecrawl
+#     ones, landed under MIN_CONTEXT_CHARS and failed the node closed: node_count 1,
+#     status failed, 0 citations, 3 CLI sessions spent.
+#   - the 12 child questions that have actually run as presets (2026-09-05, 2026-09-06)
+#     span 141-288 chars, and the 8 from the 2026-09-02 pre-slimming baseline 194-306.
+#     So 350 clears every child the slimmed path has actually run and still catches that
+#     root. (The s11 fixtures are 45-75 chars — toy sizes, which is why the tree.json
+#     runs had to be measured instead.)
+#   - the other 2500 children reach p50 245 / p99 410 / max 515, but they ran through the
+#     PLANNER, so they say nothing about what a preset tolerates. At 350 the 5.9% of them
+#     above the line would plan — which is the intent, not a regression: a 350-char child
+#     is just as unsearchable as a 350-char root.
+# Length is a proxy, and a coarse one: Korean packs more meaning per character, so an
+# English question of the same complexity is LONGER and is caught too. The proxy errs
+# toward planning, which is the safe side — planning costs 2 CLI sessions, a node that
+# researches nothing costs the whole subtree.
+# ponytail: raw len(), not tokens or clause count; reach for a tokenizer only if a
+# language turns up where characters stop tracking how searchable a question is.
+PRESET_MAX_QUESTION_CHARS = int(os.environ.get("PRESET_MAX_QUESTION_CHARS", "350"))
+
 
 class NodeStatus(Enum):
     PENDING = "pending"
@@ -695,6 +725,17 @@ class TreeResearchSkill:
     async def research_node(self, node: ResearchNode) -> None:
         """Research one node with a dedicated GPTResearcher; mutates the node."""
         node.status = NodeStatus.RESEARCHING
+        # Checked on every node, not just the root: children are shorter than the root
+        # that failed, so this is a no-op for them, and it self-protects if the child
+        # generator ever returns a long one.
+        # `or ""` because run() takes the root question straight from an Optional[str]
+        # query; a None there used to preset [None] and must not start raising TypeError.
+        question_chars = len(node.question or "")
+        use_preset = question_chars <= PRESET_MAX_QUESTION_CHARS
+        if not use_preset:
+            logger.info("node %s: question is %d chars, over the %d-char search limit; "
+                        "planning it instead of presetting it",
+                        node.id, question_chars, PRESET_MAX_QUESTION_CHARS)
         researcher = GPTResearcher(
             query=node.question,
             report_type=ReportType.ResearchReport.value,
@@ -709,8 +750,10 @@ class TreeResearchSkill:
             agent=self._agent,
             role=self._role,
             # P1.3: the node's question IS its plan. Skips the planner LLM call and the
-            # probe search that feeds it — two of the node's sessions.
-            preset_sub_queries=[node.question],
+            # probe search that feeds it — two of the node's sessions. Withheld above
+            # PRESET_MAX_QUESTION_CHARS, where the question is too long to work as one
+            # search string: two sessions is cheaper than a node that researches nothing.
+            preset_sub_queries=[node.question] if use_preset else None,
         )
         # P1.1: the routing category is a property of the RUN, not of each sub-query.
         # _classify_query short-circuits on this without asking the FAST_LLM, which is
@@ -737,14 +780,21 @@ class TreeResearchSkill:
         #
         # It costs no CLI session: those URLs were already retrieved and this cap is
         # only what discards them.
-        try:
-            base_cap = int(getattr(researcher.cfg, "max_search_results_per_query", 0) or 0)
-            replaced = int(getattr(researcher.cfg, "max_iterations", 0) or 0) + 1
-            if base_cap > 0 and replaced > 1:
-                researcher.cfg.max_search_results_per_query = base_cap * replaced
-        except (AttributeError, TypeError, ValueError):
-            logger.warning("could not widen the result cap for node %s; it will read "
-                           "one sub-query's worth of documents", node.id)
+        #
+        # Gated on the same flag as the preset, because it exists solely to compensate for
+        # it. A node that fell back to the planner runs max_iterations + 1 sub-queries
+        # again; widening the per-query cap on top of that would let it read 16x the cap,
+        # 4x what the planner path ever read before P1.3.
+        if use_preset:
+            try:
+                base_cap = int(
+                    getattr(researcher.cfg, "max_search_results_per_query", 0) or 0)
+                replaced = int(getattr(researcher.cfg, "max_iterations", 0) or 0) + 1
+                if base_cap > 0 and replaced > 1:
+                    researcher.cfg.max_search_results_per_query = base_cap * replaced
+            except (AttributeError, TypeError, ValueError):
+                logger.warning("could not widen the result cap for node %s; it will read "
+                               "one sub-query's worth of documents", node.id)
         context = await researcher.conduct_research()
         try:
             self.visited_urls.update(researcher.visited_urls)
