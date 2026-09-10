@@ -7,6 +7,7 @@ Routes search queries to optimal retriever combinations based on query type
 import logging
 import math
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 
@@ -124,11 +125,22 @@ CATEGORY_PROTOTYPES = {
 # accuracy with sessions, lower it to buy sessions with accuracy, set 0 to never ask.
 _EMBED_MARGIN = float(os.getenv("SMART_RETRIEVER_EMBED_MARGIN", "0.05"))
 
-# {(provider, model) -> {category: centroid}}. Module-level: the centroids depend only
-# on CATEGORY_PROTOTYPES, so a process embeds them once and every later query in every
-# later run reuses them. Keyed by the encoder because a different one puts the
-# prototypes somewhere else entirely.
+# {(provider, model) -> (embedder, {category: centroid})}. Module-level: the centroids
+# depend only on CATEGORY_PROTOTYPES, so a process embeds them once and every later
+# query in every later run reuses them. Keyed by the encoder because a different one
+# puts the prototypes somewhere else entirely.
 _CENTROID_CACHE = {}
+
+# {(provider, model) -> monotonic deadline} for encoders that failed to build. Without
+# it a misconfigured encoder is far WORSE than no encoder: building the centroids is 25
+# prototype embeddings, and an unremembered failure re-attempts all 25 on every query,
+# forever, in front of the LLM call it was supposed to replace. Measured against an
+# out-of-credit OpenAI endpoint, every query paid a fresh failing round trip.
+#
+# A deadline rather than a permanent tombstone: the encoder is a separate service, and a
+# blip during one query must not disable routing until the process restarts.
+_ROUTER_RETRY_AFTER = {}
+_ROUTER_COOLDOWN_S = float(os.getenv("SMART_RETRIEVER_ROUTER_COOLDOWN_S", "300"))
 
 
 def _mean(vectors):
@@ -167,13 +179,21 @@ def _router(cfg):
     key = (provider, model)
     if key in _CENTROID_CACHE:
         return _CENTROID_CACHE[key]
+    if time.monotonic() < _ROUTER_RETRY_AFTER.get(key, 0.0):
+        return None, None                    # failed recently; do not re-pay the build
 
-    from ...memory.embeddings import Memory
-    embedder = Memory(provider, model,
-                      **getattr(cfg, "embedding_kwargs", {})).get_embeddings()
-    # One batch call for all 25 prototypes rather than 25 round trips.
-    flat = [q for cat in CATEGORY_PROTOTYPES for q in CATEGORY_PROTOTYPES[cat]]
-    vectors = embedder.embed_documents(flat)
+    try:
+        from ...memory.embeddings import Memory
+        embedder = Memory(provider, model,
+                          **getattr(cfg, "embedding_kwargs", {})).get_embeddings()
+        # One batch call for all 25 prototypes rather than 25 round trips.
+        flat = [q for cat in CATEGORY_PROTOTYPES for q in CATEGORY_PROTOTYPES[cat]]
+        vectors = embedder.embed_documents(flat)
+    except Exception as exc:
+        _ROUTER_RETRY_AFTER[key] = time.monotonic() + _ROUTER_COOLDOWN_S
+        logger.warning(f"embedding router unavailable ({exc}); routing by FAST_LLM for "
+                       f"the next {_ROUTER_COOLDOWN_S:.0f}s")
+        return None, None
 
     centroids, at = {}, 0
     for cat, prompts in CATEGORY_PROTOTYPES.items():

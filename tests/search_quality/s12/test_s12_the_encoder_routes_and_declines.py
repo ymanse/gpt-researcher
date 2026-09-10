@@ -181,6 +181,60 @@ def test_a_forced_category_still_beats_the_encoder(monkeypatch):
         f"{len(boundary.calls)} LLM calls; it has to cost neither")
 
 
+def test_a_failing_encoder_is_not_rebuilt_on_every_query(monkeypatch):
+    """Building the centroids is 25 prototype embeddings. An unremembered failure
+    re-attempts all 25 for every query, forever, IN FRONT OF the LLM call it was meant
+    to replace -- which makes a misconfigured encoder strictly worse than none.
+
+    Measured against a real out-of-credit OpenAI endpoint before this cooldown existed:
+    three queries, three full failing builds.
+    """
+    attempts = []
+
+    class _DeadMemory:
+        def __init__(self, *a, **kw):
+            attempts.append(1)
+            raise ConnectionError("no route to the embedding server")
+
+    monkeypatch.setattr(sr, "_CENTROID_CACHE", {})
+    monkeypatch.setattr(sr, "_ROUTER_RETRY_AFTER", {})
+    monkeypatch.setattr("gpt_researcher.memory.embeddings.Memory", _DeadMemory)
+
+    for _ in range(5):
+        assert sr._router(SimpleNamespace(**EMBED_CFG)) == (None, None)
+
+    assert len(attempts) == 1, (
+        f"the dead encoder was rebuilt {len(attempts)} times over 5 queries -- a failure "
+        "has to be remembered for SMART_RETRIEVER_ROUTER_COOLDOWN_S, not re-paid")
+
+
+def test_the_cooldown_expires_so_a_blip_does_not_disable_routing_until_restart(monkeypatch):
+    """The encoder is a separate service. A tombstone that never expires would turn one
+    bad second into LLM routing for the life of the MCP process."""
+    attempts = []
+
+    class _DeadMemory:
+        def __init__(self, *a, **kw):
+            attempts.append(1)
+            raise ConnectionError("blip")
+
+    monkeypatch.setattr(sr, "_CENTROID_CACHE", {})
+    monkeypatch.setattr(sr, "_ROUTER_RETRY_AFTER", {})
+    monkeypatch.setattr("gpt_researcher.memory.embeddings.Memory", _DeadMemory)
+
+    sr._router(SimpleNamespace(**EMBED_CFG))
+    assert len(attempts) == 1
+
+    # walk past the deadline rather than sleeping through it
+    monkeypatch.setattr(sr.time, "monotonic",
+                        lambda: sr._ROUTER_RETRY_AFTER[_CACHE_KEY] + 1.0)
+    sr._router(SimpleNamespace(**EMBED_CFG))
+
+    assert len(attempts) == 2, (
+        "the encoder was never retried after the cooldown expired -- one blip would "
+        "disable routing until the process restarts")
+
+
 # ------------------------------------------------------------- the prototypes
 
 def test_every_category_has_prototypes_and_they_are_all_routable():
