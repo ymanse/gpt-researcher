@@ -8,8 +8,9 @@ wrong rather than the ones it is certain to get right.
 
 Deliberately hard entries, by category:
 
-- ``news_current`` is about RECENCY, not topic. "nvidia earnings" and "nvidia cuda
-  cores" differ only by which is time-sensitive, so both appear.
+- ``news_current`` is about RECENCY, not topic. "nvidia earnings this quarter" is here
+  while the same company's technical questions are not -- what puts it in this category
+  is the time-bound clause, not the subject.
 - ``comprehensive`` is about the SHAPE of the question. Its entries are multi-clause
   surveys whose individual clauses each belong to some other category -- that is the
   trap: the encoder can match a clause instead of the shape.
@@ -21,8 +22,9 @@ Deliberately hard entries, by category:
 A label here is the routing bundle a human would pick, which is not always the only
 defensible answer; the router is scored on accuracy over the whole set, never on any
 single entry. Entries where two bundles are genuinely both fine are exactly the ones
-the margin should send to the LLM, and `test_s12_embedding_router_matches_the_llm`
-counts a decline as neither right nor wrong.
+the margin should send to the LLM, and
+`test_the_encoder_never_routes_a_labelled_query_to_the_wrong_bundle` counts a decline as
+neither right nor wrong.
 """
 
 # (query, expected_category)
