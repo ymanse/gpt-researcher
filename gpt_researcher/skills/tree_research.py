@@ -33,6 +33,8 @@ from ..llm_provider.claude_agent._subscription import (
     agent_calls_spent,
     agent_calls_this_run,
     agent_run_allowance,
+    provider_refused,
+    research_should_stop,
     agent_synthesis_reserve,
 )
 from ..utils.agent_purpose import agent_purpose
@@ -2394,7 +2396,11 @@ class TreeResearchSkill:
         while (len(frontier) and researched < max_nodes
                and self.tokens_spent < token_budget
                and self.credits_spent < credit_budget
-               and not agent_budget_exhausted(reserve=synthesis_reserve)
+               # BOTH reasons a further call cannot succeed: this run's own
+               # allowance, and a provider that has started refusing. Only the
+               # first was watched until 2026-09-10, so a session limit killed
+               # the run outright instead of ending it with what it had.
+               and not research_should_stop(reserve=synthesis_reserve)
                and time.time() - start < time_budget_s):
             batch_size = min(node_concurrency, len(frontier), max_nodes - researched)
             if worst_node_tokens:
@@ -2619,6 +2625,11 @@ class TreeResearchSkill:
                       # stopped expansion, which hid exactly that on 2026-08-16
                       "agent_budget_exhausted": agent_budget_exhausted(
                           reserve=synthesis_reserve),
+                      # Why the run stopped, when it was the provider rather than the
+                      # budget. Without it a subscription limit and a code defect are
+                      # the same opaque failure to the caller.
+                      "provider_refused": provider_refused()[0],
+                      "provider_refusal_reason": provider_refused()[1],
                       "pending_count": len(frontier),
                       # a caller-readable N/M pair for the report's own "Unresearched
                       # Questions" disclosure (assemble_report): every node not still

@@ -50,6 +50,19 @@ def is_llm_retryable_error(exc: BaseException) -> bool:
     395s (69%) was sleep between doomed retries, not work.
     """
     if str(exc).startswith(_CLI_REFUSAL_PREFIX):
+        # Record it as well as refusing to retry. Classifying a refusal without
+        # REMEMBERING it is what let the expansion loops keep going into a provider that
+        # had stopped answering, so the next call killed the whole run instead of the run
+        # finishing with what it had. Import here, not at module scope: claude_agent
+        # drags in the Agent SDK and this module is loaded by every provider.
+        try:
+            from gpt_researcher.llm_provider.claude_agent._subscription import (
+                note_provider_refusal,
+            )
+        except ImportError:
+            pass
+        else:
+            note_provider_refusal(str(exc)[len(_CLI_REFUSAL_PREFIX):].strip())
         return False
     # Same shape as the refusal above, and it cost the same way: the per-run CLI-session
     # budget is spent, and no amount of backoff refills it. Measured 2026-08-06: four MCP

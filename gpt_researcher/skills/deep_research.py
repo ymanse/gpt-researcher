@@ -374,6 +374,8 @@ Format each question on a new line starting with 'Question: '"""}
         from ..llm_provider.claude_agent._subscription import (
             agent_budget_exhausted,
             agent_synthesis_reserve,
+            provider_refused,
+            research_should_stop,
         )
 
         synthesis_reserve = agent_synthesis_reserve()
@@ -410,7 +412,7 @@ Format each question on a new line starting with 'Question: '"""}
                 # Degrading is only honest when there is something to degrade TO. With
                 # nothing gathered yet, let the query run and let a spent budget raise:
                 # a clear failure beats a fabricated answer.
-                if self._researched_any and agent_budget_exhausted(reserve=synthesis_reserve):
+                if self._researched_any and research_should_stop(reserve=synthesis_reserve):
                     self.budget_exhausted = True
                     logger.warning(
                         "CLI-session allowance spent: sub-query %r is left "
@@ -530,7 +532,7 @@ Format each question on a new line starting with 'Question: '"""}
             if depth > 1:
                 # `continue`, not `break`: the shallow results of the remaining
                 # queries are already gathered above and must still be collected.
-                if agent_budget_exhausted(reserve=synthesis_reserve):
+                if research_should_stop(reserve=synthesis_reserve):
                     self.budget_exhausted = True
                     logger.warning(
                         "CLI-session allowance spent: not recursing to depth %s. The "
@@ -583,6 +585,8 @@ Format each question on a new line starting with 'Question: '"""}
             # A caller cannot otherwise tell a budget-truncated result from a complete
             # one — which is worse than the exception this replaces.
             'agent_budget_exhausted': self.budget_exhausted,
+            'provider_refused': provider_refused()[0],
+            'provider_refusal_reason': provider_refused()[1],
         }
 
     async def run(self, on_progress=None, scope: bool = False) -> str:

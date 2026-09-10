@@ -312,6 +312,7 @@ def begin_agent_run(limit: int | None = None) -> int:
     bigger change than this failure justifies.
     """
     global _call_limit, _run_allowance, _run_start_spent, _run_start_by_site
+    global _refusal_reason
     if limit is None:
         try:
             limit = int(os.environ.get(
@@ -327,6 +328,8 @@ def begin_agent_run(limit: int | None = None) -> int:
         # is answerable without weakening the ceiling that protects the account.
         _run_start_spent = _calls_spent
         _run_start_by_site = dict(_calls_by_site)
+        # see note_provider_refusal: the limit resets on a clock this process cannot see
+        _refusal_reason = ""
         ceiling, spent = _call_limit, _calls_spent
     logger.info("Claude Agent call budget armed: +%s (ceiling=%s, already spent=%s)",
                 limit or "unbounded", ceiling or "unbounded", spent)
@@ -413,6 +416,61 @@ def agent_budget_exhausted(reserve: int = 0) -> bool:
     """
     with _CALL_LOCK:
         return bool(_call_limit) and _calls_spent >= max(0, _call_limit - reserve)
+
+
+# ── Provider-side refusal ─────────────────────────────────────────────
+#
+# The other way an LLM call stops being possible, and until 2026-09-10 the only one
+# nothing watched. A spent per-run allowance raises AgentBudgetExceeded and the tree's
+# expansion loop and the linear path both test agent_budget_exhausted() and finish with
+# a shallower report. A provider that REFUSES — "You've hit your session limit · resets
+# 5:50am (UTC)" — is the same fact from the other side: no further call will succeed.
+# But the internal counter is untouched, so those loops kept expanding and the next call
+# raised through the whole research run. Measured: 50 armed, 2 spent, dead in 16 seconds,
+# every gathered result discarded.
+#
+# Process-wide like the counter, and for the same reason: the refusal is a property of
+# the account, not of a task or a thread, and the retriever's worker threads must see it
+# too. Cleared by begin_agent_run because a limit resets on a clock this process cannot
+# see — a new tool call is the caller asserting it may have, and the only honest answer
+# is to let it find out.
+_refusal_reason: str = ""
+
+
+def note_provider_refusal(reason: str) -> None:
+    """Record that the provider refused; later calls will not succeed either."""
+    global _refusal_reason
+    with _CALL_LOCK:
+        if not _refusal_reason:
+            _refusal_reason = str(reason or "provider refused the request")
+            logger.warning("provider refusal recorded, research will stop expanding: %s",
+                           _refusal_reason)
+
+
+def clear_provider_refusal() -> None:
+    """Forget a refusal, so the next run can discover the limit has reset."""
+    global _refusal_reason
+    with _CALL_LOCK:
+        _refusal_reason = ""
+
+
+def provider_refused() -> tuple:
+    """``(refused, reason)``. The reason carries what the CLI actually said, which is
+    what lets a caller tell a subscription limit from a code defect without reading the
+    container log — the distinction that cost a debugging session on 2026-09-10."""
+    with _CALL_LOCK:
+        return bool(_refusal_reason), _refusal_reason
+
+
+def research_should_stop(reserve: int = 0) -> bool:
+    """True when no further LLM call is worth attempting, for EITHER reason.
+
+    What the expansion loops read. agent_budget_exhausted() alone answers only half the
+    question and is left untouched — tests/test_agent_budget_reserve.py freezes it, and
+    "did this run spend its allowance" is a different question from "will the provider
+    answer at all".
+    """
+    return agent_budget_exhausted(reserve=reserve) or provider_refused()[0]
 
 
 def agent_run_allowance() -> int:
