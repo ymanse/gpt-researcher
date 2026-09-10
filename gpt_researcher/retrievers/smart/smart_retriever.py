@@ -5,6 +5,7 @@ Routes search queries to optimal retriever combinations based on query type
 """
 
 import logging
+import math
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
@@ -65,6 +66,151 @@ Categories:
 
 Query: {query}
 Category:"""
+
+# Prototype queries per category, for the embedding router below.
+#
+# The category DESCRIPTIONS in CLASSIFICATION_PROMPT are written for a reader who
+# reasons; an encoder only measures topical proximity, and two of the five categories
+# are not topical at all. `news_current` is about RECENCY and `comprehensive` is about
+# the SHAPE of the question -- a description naming those properties embeds nowhere
+# near a query that has them. Prototypes carry the property itself, so the vector for
+# "comprehensive" sits where multi-clause survey questions actually land.
+#
+# Five per category, deliberately spread across sub-topics: the centroid of a narrow
+# set is a point on one topic, and every query off that topic loses to whichever
+# category happens to be broader.
+CATEGORY_PROTOTYPES = {
+    "general_web": [
+        "how do I renew my passport",
+        "what is the capital of Australia",
+        "difference between weather and climate",
+        "how does a refrigerator actually work",
+        "best way to remove a coffee stain from a carpet",
+    ],
+    "code_technical": [
+        "python asyncio gather exception handling",
+        "react useEffect infinite loop fix",
+        "how to configure nginx as a reverse proxy",
+        "typescript generic constraints example",
+        "git rebase versus merge workflow",
+    ],
+    "academic": [
+        "transformer attention mechanism original paper",
+        "meta-analysis of vitamin D supplementation trials",
+        "CRISPR off-target effects systematic review",
+        "empirical studies on reinforcement learning sample efficiency",
+        "peer-reviewed research on microplastic toxicity",
+    ],
+    "news_current": [
+        "latest AI regulation announcement this week",
+        "current stock price of Nvidia",
+        "who won the election yesterday",
+        "breaking news on the earthquake",
+        "recent developments in the trade negotiations",
+    ],
+    "comprehensive": [
+        "compare the economic, environmental and social impacts of nuclear power",
+        "full landscape of vector database vendors including pricing, benchmarks and adoption",
+        "the history, technology and market of electric vehicles",
+        "in-depth analysis of remote work effects on productivity, real estate and urban planning",
+        "overview of quantum computing hardware approaches and their tradeoffs",
+    ],
+}
+
+# How far ahead the winning category must be before the embedding router is trusted to
+# decide on its own. Below it the query sits between two bundles and the FAST_LLM is
+# asked, exactly as before -- the margin is what makes "no quality risk" a fact rather
+# than a hope. Tuned on tests/search_quality/s12/classification_set.py; raise it to buy
+# accuracy with sessions, lower it to buy sessions with accuracy, set 0 to never ask.
+_EMBED_MARGIN = float(os.getenv("SMART_RETRIEVER_EMBED_MARGIN", "0.05"))
+
+# {(provider, model) -> {category: centroid}}. Module-level: the centroids depend only
+# on CATEGORY_PROTOTYPES, so a process embeds them once and every later query in every
+# later run reuses them. Keyed by the encoder because a different one puts the
+# prototypes somewhere else entirely.
+_CENTROID_CACHE = {}
+
+
+def _mean(vectors):
+    """Centroid of equal-length vectors."""
+    n = len(vectors)
+    return [sum(col) / n for col in zip(*vectors)]
+
+
+def _cos(a, b):
+    """Cosine similarity. Local rather than imported from skills/tree_research: a
+    retriever must not depend on a skill, and this is four lines."""
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(x * x for x in b))
+    return dot / (na * nb) if na and nb else 0.0
+
+
+def _router(cfg):
+    """``(embedder, {category: centroid})``, built once per process per encoder.
+
+    The embedder is cached alongside the centroids, not rebuilt per query: constructing
+    the langchain client re-reads config and re-opens the HTTP session, and measured over
+    the 40-query set that cost 2.8s per query against 0.3s for the encode itself. The
+    centroids depend only on CATEGORY_PROTOTYPES, so they are computed on the first
+    query of the first run and reused by every query after it.
+
+    Returns ``(None, None)`` when no embedding provider is configured -- which is what
+    the unit configs present, so the classifier keeps its pre-router behaviour under test
+    without the tests having to know this path exists.
+    """
+    provider = getattr(cfg, "embedding_provider", None)
+    model = getattr(cfg, "embedding_model", None)
+    if not provider or not model:
+        return None, None
+
+    key = (provider, model)
+    if key in _CENTROID_CACHE:
+        return _CENTROID_CACHE[key]
+
+    from ...memory.embeddings import Memory
+    embedder = Memory(provider, model,
+                      **getattr(cfg, "embedding_kwargs", {})).get_embeddings()
+    # One batch call for all 25 prototypes rather than 25 round trips.
+    flat = [q for cat in CATEGORY_PROTOTYPES for q in CATEGORY_PROTOTYPES[cat]]
+    vectors = embedder.embed_documents(flat)
+
+    centroids, at = {}, 0
+    for cat, prompts in CATEGORY_PROTOTYPES.items():
+        centroids[cat] = _mean(vectors[at:at + len(prompts)])
+        at += len(prompts)
+    _CENTROID_CACHE[key] = (embedder, centroids)
+    return embedder, centroids
+
+
+def _embedding_category(cfg, query):
+    """(category, margin) from the encoder, or None when it cannot or should not decide.
+
+    None means "ask the LLM": no embedding provider, the service is down, or the top two
+    categories are within `_EMBED_MARGIN` of each other. Every failure lands here, so a
+    dead embedding server degrades to exactly the behaviour that shipped before this
+    router existed -- never to a wrong bundle.
+
+    Spawns no `claude` CLI session, so it is deliberately NOT wrapped in
+    `agent_purpose("classify")`: that site reading 0 for a routed run is the signal that
+    this router did the work.
+    """
+    embedder, centroids = _router(cfg)
+    if not centroids:
+        return None
+
+    vector = embedder.embed_query(query)
+    if not vector:
+        return None
+
+    ranked = sorted(((_cos(vector, c), cat) for cat, c in centroids.items()),
+                    reverse=True)
+    (best, category), (second, _) = ranked[0], ranked[1]
+    margin = best - second
+    if margin < _EMBED_MARGIN:
+        return None
+    return category, margin
+
 
 # Map retriever names to the API key env vars they require.
 # Retrievers not listed here (e.g. duckduckgo, arxiv, semantic_scholar) need no key.
@@ -180,6 +326,19 @@ class SmartRetriever:
 
         if not self.cfg:
             return "general_web"
+
+        # The encoder first. It costs no CLI session and no token, and it declines
+        # (returns None) whenever it is not confident or not available -- so the LLM
+        # below still runs for exactly the queries that need reasoning.
+        try:
+            routed = _embedding_category(self.cfg, self.query)
+            if routed:
+                category, margin = routed
+                logger.info(f"SmartRetriever routed '{category}' by embedding "
+                            f"(margin {margin:.3f}, no LLM call)")
+                return category
+        except Exception as e:
+            logger.warning(f"Embedding router unavailable ({e}); asking the classifier LLM")
 
         try:
             from gpt_researcher.utils.llm import create_chat_completion
