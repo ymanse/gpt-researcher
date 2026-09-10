@@ -93,6 +93,11 @@ class Config:
         self.fast_llm_provider, self.fast_llm_model = self.parse_llm(self.fast_llm)
         self.smart_llm_provider, self.smart_llm_model = self.parse_llm(self.smart_llm)
         self.strategic_llm_provider, self.strategic_llm_model = self.parse_llm(self.strategic_llm)
+        # Guarded rather than parsed unconditionally: parse_llm('') raises, and unset
+        # is the documented default meaning 'inherit STRATEGIC_LLM'.
+        self.merge_llm_provider, self.merge_llm_model = (
+            self.parse_llm(self.merge_llm) if getattr(self, 'merge_llm', '')
+            else (None, None))
         self.reasoning_effort = self.parse_reasoning_effort(os.getenv("REASONING_EFFORT"))
 
     def _handle_deprecated_attributes(self) -> None:

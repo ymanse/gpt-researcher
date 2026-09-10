@@ -655,6 +655,7 @@ class TreeResearchSkill:
         self._merge_judge_ok = True  # cleared for the run once the judge stops answering
         self._merge_judge_fails = 0
         self._strategic_llm: Optional[tuple] = None
+        self._merge_llm: Optional[tuple] = None
         # Any, not int: these are JSON payloads that travel out with the report, and
         # candidate_floor is a cosine
         self._merge_stats: Dict[str, Any] = {}
@@ -1490,7 +1491,7 @@ class TreeResearchSkill:
         flats = [_flat_claim(t) for t in texts]
         if not all(flats):
             return {}
-        provider, model = self._strategic_model()
+        provider, model = self._merge_model()
         if not provider or not model:
             self._merge_judge_ok = False
             return {}
@@ -1560,6 +1561,30 @@ class TreeResearchSkill:
         means by "whichever node's wording is chosen as canonical".
         """
         return self._droppable_side(await self._covered([a, b]))
+
+    def _merge_model(self) -> tuple:
+        """(provider, model) for the claim-equivalence judge.
+
+        MERGE_LLM when the deployment sets one, the strategic model otherwise -- which
+        is what every run did before this key existed, so an unset MERGE_LLM changes
+        nothing.
+
+        It is worth its own role because the judge is the one strategic-tier site whose
+        question is narrow: the encoder has already picked the candidate pairs, so the
+        model is only asked whether one statement says anything the others do not, over
+        text that is already in front of it. It also fails CLOSED (`_covered` returns {}
+        on any unclear outcome, and an un-merged claim costs `synthesis_ratio_pct_max`
+        while a wrongly-merged one costs a fact), so a cheaper model here degrades
+        report length rather than accuracy. Node ANSWERS, which do need the reasoning,
+        keep reading `strategic_llm_*` and are unaffected.
+        """
+        if self._merge_llm is None:
+            cfg = getattr(self.researcher, "cfg", None)
+            provider = getattr(cfg, "merge_llm_provider", None)
+            model = getattr(cfg, "merge_llm_model", None)
+            self._merge_llm = ((provider, model) if provider and model
+                               else self._strategic_model())
+        return self._merge_llm
 
     def _strategic_model(self) -> tuple:
         """(provider, model) for the merge judge, resolved once per assembly.

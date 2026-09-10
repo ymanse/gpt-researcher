@@ -7,6 +7,12 @@ DEFAULT_CONFIG: BaseConfig = {
     "FAST_LLM": "claude_agent:sonnet",  # Claude subscription via Agent SDK (no API token cost).
     "SMART_LLM": "claude_agent:sonnet",  # Flagship model, long responses (2k+ words).
     "STRATEGIC_LLM": "claude_agent:sonnet",  # Reasoning tasks.
+    # The claim-equivalence judge only. Empty = inherit STRATEGIC_LLM, which is the
+    # behaviour that shipped before this key existed. Split out because the judge asks
+    # a narrow question ("does this statement say anything the others do not") about
+    # text an encoder has already screened, and it fails CLOSED -- an unclear verdict
+    # does not merge -- so a weaker model here costs report length, never a fact.
+    "MERGE_LLM": "",
     "FAST_TOKEN_LIMIT": 3000,
     "SMART_TOKEN_LIMIT": 6000,
     "STRATEGIC_TOKEN_LIMIT": 4000,
