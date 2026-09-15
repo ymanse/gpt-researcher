@@ -693,9 +693,11 @@ class ResearchConductor:
                     self.researcher.websocket,
                 )
             
-            # Execute the two-stage MCP search
-            results = retriever_instance.search(
-                max_results=self.researcher.cfg.max_search_results_per_query
+            # Execute the two-stage MCP search -- off the loop thread, see
+            # actions/query_processing.get_search_results for why.
+            results = await asyncio.to_thread(
+                retriever_instance.search,
+                max_results=self.researcher.cfg.max_search_results_per_query,
             )
             
             if results:
@@ -1056,8 +1058,12 @@ class ResearchConductor:
             
             # Perform the search
             if hasattr(retriever_instance, 'search'):
-                results = retriever_instance.search(
-                    max_results=self.researcher.cfg.max_search_results_per_query
+                # Off the loop thread, same reason as the MCP path above: this is the
+                # main search site, so a blocking retriever here stalls every concurrent
+                # run in the process, not just this one.
+                results = await asyncio.to_thread(
+                    retriever_instance.search,
+                    max_results=self.researcher.cfg.max_search_results_per_query,
                 )
                 
                 # Log result information

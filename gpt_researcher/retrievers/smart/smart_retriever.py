@@ -158,6 +158,12 @@ def _cos(a, b):
     return dot / (na * nb) if na and nb else 0.0
 
 
+def _router_key(cfg):
+    """What the centroid cache and the cooldown are both keyed by."""
+    return (getattr(cfg, "embedding_provider", None),
+            getattr(cfg, "embedding_model", None))
+
+
 def _router(cfg):
     """``(embedder, {category: centroid})``, built once per process per encoder.
 
@@ -176,11 +182,14 @@ def _router(cfg):
     if not provider or not model:
         return None, None
 
-    key = (provider, model)
+    key = _router_key(cfg)
+    # Cooldown BEFORE the cache, not after. Centroids survive an encoder that dies later,
+    # so checking the cache first let a wedged server be re-dialled on every single query
+    # -- the per-query encode is exactly the call that has to be skipped.
+    if time.monotonic() < _ROUTER_RETRY_AFTER.get(key, 0.0):
+        return None, None                    # failed recently; do not re-pay the encode
     if key in _CENTROID_CACHE:
         return _CENTROID_CACHE[key]
-    if time.monotonic() < _ROUTER_RETRY_AFTER.get(key, 0.0):
-        return None, None                    # failed recently; do not re-pay the build
 
     try:
         from ...memory.embeddings import Memory
@@ -219,7 +228,17 @@ def _embedding_category(cfg, query):
     if not centroids:
         return None
 
-    vector = embedder.embed_query(query)
+    try:
+        vector = embedder.embed_query(query)
+    except Exception as exc:
+        # The build succeeded once and the centroids are cached, so without this the
+        # encoder's death is re-discovered per query -- and each rediscovery costs the
+        # client's full timeout before the LLM fallback even starts. Same lesson as the
+        # build path, one branch over.
+        _ROUTER_RETRY_AFTER[_router_key(cfg)] = time.monotonic() + _ROUTER_COOLDOWN_S
+        logger.warning(f"embedding router encode failed ({exc}); routing by FAST_LLM for "
+                       f"the next {_ROUTER_COOLDOWN_S:.0f}s")
+        return None
     if not vector:
         return None
 

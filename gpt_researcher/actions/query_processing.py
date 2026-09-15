@@ -6,6 +6,7 @@ from ..utils.llm import create_chat_completion
 from ..prompts import PromptFamily
 from typing import Any, List, Dict
 from ..config import Config
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,13 @@ async def get_search_results(query: str, retriever: Any, query_domains: List[str
         search_retriever = retriever(query, query_domains=query_domains)
     
     try:
-        return search_retriever.search()
+        # Off the loop thread. Every retriever here is synchronous while this function is
+        # awaited by the MCP server's event loop, so one hung HTTP read inside a retriever
+        # froze the entire process -- /health stopped answering and unrelated in-flight
+        # tool calls died with "transport dropped mid-call" (measured 2026-09-15: a wedged
+        # embedding server held the loop for 20+ minutes). `to_thread` copies contextvars,
+        # so the `agent_purpose` attribution survives the hop.
+        return await asyncio.to_thread(search_retriever.search)
     except Exception as e:
         # A failing retriever (e.g. tavily 432, now re-raised instead of being
         # swallowed) must be loud but not fatal here: plan_research falls back
