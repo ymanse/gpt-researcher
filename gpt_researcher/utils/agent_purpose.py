@@ -37,14 +37,24 @@ UNTAGGED = "untagged"
 #: The call sites a run's spend is broken down by. ``untagged`` is not a site — it is
 #: what a call that nobody wrapped is charged to, and a production run reporting a large
 #: ``untagged`` share means a site was missed, not that the work was anonymous.
+#:
+#: A site names the KIND of work, not the function, so the tree and the linear
+#: (`report_type="deep"`) paths share a key wherever they do the same job. That is what
+#: makes the two modes comparable -- and it is why `answer`/`children`/`plan` each list two
+#: homes. Only work with no counterpart gets a name of its own.
 SITES = (
     "choose_agent",   # actions/agent_creator.choose_agent
     "classify",       # retrievers/smart/smart_retriever._classify_query
     "plan",           # actions/query_processing.plan_research_outline
+                      # + skills/deep_research.generate_search_queries
     "answer",         # skills/tree_research.research_node
+                      # + skills/deep_research.process_research_results
     "children",       # skills/tree_research.generate_child_questions
+                      # + skills/deep_research.generate_research_plan
     "merge",          # skills/tree_research, the claim-equivalence judge
     "verify",         # gptr-mcp/verification.verify_research
+    "scope",          # skills/deep_research.run, the scope brief (scope=True)
+    "report",         # actions/report_generation, every call in it
     UNTAGGED,
 )
 

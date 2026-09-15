@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from gpt_researcher.llm_provider.generic.base import ReasoningEfforts
 from ..utils.llm import create_chat_completion
+from ..utils.agent_purpose import agent_purpose
 from ..utils.enum import ReportType, ReportSource
 from ..actions.query_processing import get_search_results
 from ..actions.agent_creator import choose_agent
@@ -101,13 +102,14 @@ class DeepResearchSkill:
              "content": f"Given the following prompt, generate {num_queries} unique search queries to research the topic thoroughly. For each query, provide a research goal. Format as 'Query: <query>' followed by 'Goal: <goal>' for each pair: {query}"}
         ]
 
-        response = await create_chat_completion(
-            messages=messages,
-            llm_provider=self.researcher.cfg.strategic_llm_provider,
-            model=self.researcher.cfg.strategic_llm_model,
-            reasoning_effort=self.researcher.cfg.reasoning_effort,
-            temperature=0.4
-        )
+        with agent_purpose("plan"):
+            response = await create_chat_completion(
+                messages=messages,
+                llm_provider=self.researcher.cfg.strategic_llm_provider,
+                model=self.researcher.cfg.strategic_llm_model,
+                reasoning_effort=self.researcher.cfg.reasoning_effort,
+                temperature=0.4
+            )
 
         lines = response.split('\n')
         queries = []
@@ -162,13 +164,14 @@ Based on these results, the original query, and the current time, generate {num_
 Format each question on a new line starting with 'Question: '"""}
         ]
 
-        response = await create_chat_completion(
-            messages=messages,
-            llm_provider=self.researcher.cfg.strategic_llm_provider,
-            model=self.researcher.cfg.strategic_llm_model,
-            reasoning_effort=ReasoningEfforts.High.value,
-            temperature=0.4
-        )
+        with agent_purpose("children"):
+            response = await create_chat_completion(
+                messages=messages,
+                llm_provider=self.researcher.cfg.strategic_llm_provider,
+                model=self.researcher.cfg.strategic_llm_model,
+                reasoning_effort=ReasoningEfforts.High.value,
+                temperature=0.4
+            )
 
         questions = [q.replace('Question:', '').strip()
                      for q in response.split('\n')
@@ -185,14 +188,15 @@ Format each question on a new line starting with 'Question: '"""}
              "content": f"Given the following research results for the query '{query}', extract the {num_learnings} most important key learnings and suggest follow-up questions. For each learning, include a citation to the source URL if available. Format each learning as 'Learning [source_url]: <insight>' and each question as 'Question: <question>':\n\n{context}"}
         ]
 
-        response = await create_chat_completion(
-            messages=messages,
-            llm_provider=self.researcher.cfg.strategic_llm_provider,
-            model=self.researcher.cfg.strategic_llm_model,
-            temperature=0.4,
-            reasoning_effort=ReasoningEfforts.High.value,
-            max_tokens=getattr(self.researcher.cfg, 'deep_research_learnings_tokens', 2500)
-        )
+        with agent_purpose("answer"):
+            response = await create_chat_completion(
+                messages=messages,
+                llm_provider=self.researcher.cfg.strategic_llm_provider,
+                model=self.researcher.cfg.strategic_llm_model,
+                temperature=0.4,
+                reasoning_effort=ReasoningEfforts.High.value,
+                max_tokens=getattr(self.researcher.cfg, 'deep_research_learnings_tokens', 2500)
+            )
 
         lines = response.split('\n')
         learnings = []
@@ -603,17 +607,18 @@ Format each question on a new line starting with 'Question: '"""}
             # Stage 5: 1-round scope brief — resolve the clarification questions with
             # an LLM scope statement instead of the auto-answer boilerplate.
             questions_block = "\n".join(f"- {q}" for q in follow_up_questions)
-            scope_statement = await create_chat_completion(
-                messages=[
-                    {"role": "system",
-                     "content": "You are an expert researcher. Resolve clarification questions into one concise scope statement."},
-                    {"role": "user",
-                     "content": f"Original query: {self.researcher.query}\n\nClarification questions:\n{questions_block}\n\nAnswer them with the most reasonable defaults and write a single concise scope statement pinning down the research scope."},
-                ],
-                llm_provider=self.researcher.cfg.strategic_llm_provider,
-                model=self.researcher.cfg.strategic_llm_model,
-                temperature=0.2,
-            )
+            with agent_purpose("scope"):
+                scope_statement = await create_chat_completion(
+                    messages=[
+                        {"role": "system",
+                         "content": "You are an expert researcher. Resolve clarification questions into one concise scope statement."},
+                        {"role": "user",
+                         "content": f"Original query: {self.researcher.query}\n\nClarification questions:\n{questions_block}\n\nAnswer them with the most reasonable defaults and write a single concise scope statement pinning down the research scope."},
+                    ],
+                    llm_provider=self.researcher.cfg.strategic_llm_provider,
+                    model=self.researcher.cfg.strategic_llm_model,
+                    temperature=0.2,
+                )
             self.scope_brief = {
                 "query": self.researcher.query,
                 "questions": list(follow_up_questions),

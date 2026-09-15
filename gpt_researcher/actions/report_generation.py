@@ -2,6 +2,7 @@ import asyncio
 from typing import List, Dict, Any
 from ..config.config import Config
 from ..utils.llm import create_chat_completion
+from ..utils.agent_purpose import agent_purpose
 from ..utils.logger import get_formatted_logger
 from ..prompts import PromptFamily, get_prompt_by_report_type
 from ..utils.enum import Tone
@@ -35,25 +36,26 @@ async def write_report_introduction(
         str: The generated introduction.
     """
     try:
-        introduction = await create_chat_completion(
-            model=config.smart_llm_model,
-            messages=[
-                {"role": "system", "content": f"{agent_role_prompt}"},
-                {"role": "user", "content": prompt_family.generate_report_introduction(
-                    question=query,
-                    research_summary=context,
-                    language=config.language
-                )},
-            ],
-            temperature=0.25,
-            llm_provider=config.smart_llm_provider,
-            stream=True,
-            websocket=websocket,
-            max_tokens=config.smart_token_limit,
-            llm_kwargs=config.llm_kwargs,
-            cost_callback=cost_callback,
-            **kwargs
-        )
+        with agent_purpose("report"):
+            introduction = await create_chat_completion(
+                model=config.smart_llm_model,
+                messages=[
+                    {"role": "system", "content": f"{agent_role_prompt}"},
+                    {"role": "user", "content": prompt_family.generate_report_introduction(
+                        question=query,
+                        research_summary=context,
+                        language=config.language
+                    )},
+                ],
+                temperature=0.25,
+                llm_provider=config.smart_llm_provider,
+                stream=True,
+                websocket=websocket,
+                max_tokens=config.smart_token_limit,
+                llm_kwargs=config.llm_kwargs,
+                cost_callback=cost_callback,
+                **kwargs
+            )
         return introduction
     except Exception as e:
         logger.error(f"Error in generating report introduction: {e}")
@@ -86,26 +88,27 @@ async def write_conclusion(
         str: The generated conclusion.
     """
     try:
-        conclusion = await create_chat_completion(
-            model=config.smart_llm_model,
-            messages=[
-                {"role": "system", "content": f"{agent_role_prompt}"},
-                {
-                    "role": "user",
-                    "content": prompt_family.generate_report_conclusion(query=query,
-                                                                        report_content=context,
-                                                                        language=config.language),
-                },
-            ],
-            temperature=0.25,
-            llm_provider=config.smart_llm_provider,
-            stream=True,
-            websocket=websocket,
-            max_tokens=config.smart_token_limit,
-            llm_kwargs=config.llm_kwargs,
-            cost_callback=cost_callback,
-            **kwargs
-        )
+        with agent_purpose("report"):
+            conclusion = await create_chat_completion(
+                model=config.smart_llm_model,
+                messages=[
+                    {"role": "system", "content": f"{agent_role_prompt}"},
+                    {
+                        "role": "user",
+                        "content": prompt_family.generate_report_conclusion(query=query,
+                                                                            report_content=context,
+                                                                            language=config.language),
+                    },
+                ],
+                temperature=0.25,
+                llm_provider=config.smart_llm_provider,
+                stream=True,
+                websocket=websocket,
+                max_tokens=config.smart_token_limit,
+                llm_kwargs=config.llm_kwargs,
+                cost_callback=cost_callback,
+                **kwargs
+            )
         return conclusion
     except Exception as e:
         logger.error(f"Error in writing conclusion: {e}")
@@ -136,21 +139,22 @@ async def summarize_url(
         str: The summarized content.
     """
     try:
-        summary = await create_chat_completion(
-            model=config.smart_llm_model,
-            messages=[
-                {"role": "system", "content": f"{role}"},
-                {"role": "user", "content": f"Summarize the following content from {url}:\n\n{content}"},
-            ],
-            temperature=0.25,
-            llm_provider=config.smart_llm_provider,
-            stream=True,
-            websocket=websocket,
-            max_tokens=config.smart_token_limit,
-            llm_kwargs=config.llm_kwargs,
-            cost_callback=cost_callback,
-            **kwargs
-        )
+        with agent_purpose("report"):
+            summary = await create_chat_completion(
+                model=config.smart_llm_model,
+                messages=[
+                    {"role": "system", "content": f"{role}"},
+                    {"role": "user", "content": f"Summarize the following content from {url}:\n\n{content}"},
+                ],
+                temperature=0.25,
+                llm_provider=config.smart_llm_provider,
+                stream=True,
+                websocket=websocket,
+                max_tokens=config.smart_token_limit,
+                llm_kwargs=config.llm_kwargs,
+                cost_callback=cost_callback,
+                **kwargs
+            )
         return summary
     except Exception as e:
         logger.error(f"Error in summarizing URL: {e}")
@@ -184,22 +188,23 @@ async def generate_draft_section_titles(
         List[str]: A list of generated section titles.
     """
     try:
-        section_titles = await create_chat_completion(
-            model=config.smart_llm_model,
-            messages=[
-                {"role": "system", "content": f"{role}"},
-                {"role": "user", "content": prompt_family.generate_draft_titles_prompt(
-                    current_subtopic, query, context)},
-            ],
-            temperature=0.25,
-            llm_provider=config.smart_llm_provider,
-            stream=True,
-            websocket=None,
-            max_tokens=config.smart_token_limit,
-            llm_kwargs=config.llm_kwargs,
-            cost_callback=cost_callback,
-            **kwargs
-        )
+        with agent_purpose("report"):
+            section_titles = await create_chat_completion(
+                model=config.smart_llm_model,
+                messages=[
+                    {"role": "system", "content": f"{role}"},
+                    {"role": "user", "content": prompt_family.generate_draft_titles_prompt(
+                        current_subtopic, query, context)},
+                ],
+                temperature=0.25,
+                llm_provider=config.smart_llm_provider,
+                stream=True,
+                websocket=None,
+                max_tokens=config.smart_token_limit,
+                llm_kwargs=config.llm_kwargs,
+                cost_callback=cost_callback,
+                **kwargs
+            )
         return section_titles.split("\n")
     except Exception as e:
         logger.error(f"Error in generating draft section titles: {e}")
@@ -285,27 +290,12 @@ You have the following pre-generated images available. Embed them in relevant se
 
 Place each image on its own line after the relevant section header or paragraph. Use all available images where they add value to the content."""
     try:
-        report = await create_chat_completion(
-            model=cfg.smart_llm_model,
-            messages=[
-                {"role": "system", "content": f"{agent_role_prompt}"},
-                {"role": "user", "content": content},
-            ],
-            temperature=0.35,
-            llm_provider=cfg.smart_llm_provider,
-            stream=True,
-            websocket=websocket,
-            max_tokens=cfg.smart_token_limit,
-            llm_kwargs=cfg.llm_kwargs,
-            cost_callback=cost_callback,
-            **kwargs
-        )
-    except Exception:
-        try:
+        with agent_purpose("report"):
             report = await create_chat_completion(
                 model=cfg.smart_llm_model,
                 messages=[
-                    {"role": "user", "content": f"{agent_role_prompt}\n\n{content}"},
+                    {"role": "system", "content": f"{agent_role_prompt}"},
+                    {"role": "user", "content": content},
                 ],
                 temperature=0.35,
                 llm_provider=cfg.smart_llm_provider,
@@ -316,6 +306,23 @@ Place each image on its own line after the relevant section header or paragraph.
                 cost_callback=cost_callback,
                 **kwargs
             )
+    except Exception:
+        try:
+            with agent_purpose("report"):
+                report = await create_chat_completion(
+                    model=cfg.smart_llm_model,
+                    messages=[
+                        {"role": "user", "content": f"{agent_role_prompt}\n\n{content}"},
+                    ],
+                    temperature=0.35,
+                    llm_provider=cfg.smart_llm_provider,
+                    stream=True,
+                    websocket=websocket,
+                    max_tokens=cfg.smart_token_limit,
+                    llm_kwargs=cfg.llm_kwargs,
+                    cost_callback=cost_callback,
+                    **kwargs
+                )
         except Exception as e:
             print(f"Error in generate_report: {e}")
 
