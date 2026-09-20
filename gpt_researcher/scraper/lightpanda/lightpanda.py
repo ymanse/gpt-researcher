@@ -17,6 +17,19 @@ production deployments recommends. This class is that router: Lightpanda first, 
 `Crawl4AIScraper` (Chromium, in its own container) whenever Lightpanda errors or returns
 less text than a real article would have.
 
+NOT THE DEFAULT, AND HERE IS WHY. Measured 2026-09-20 in the container over six pages,
+this router against Crawl4AI alone: 12.0s and 61,055 characters against 14.4s and
+135,879 -- 22-53% of the body per page, for 2.4s saved. The engines are not the
+difference; the EXTRACTORS are. This class parses the rendered DOM with
+BeautifulSoup text extraction, while Crawl4AI returns generated markdown that keeps
+structure, links and code blocks. This pipeline's documented failure mode is context
+starvation (node context went 1.3-8KB -> 56.9KB and that was the single biggest quality
+win), so halving the body to save a fifth of the wall clock is the wrong trade.
+
+To make it the default, close the extractor gap first: put an HTML->markdown converter
+in the image (html2text/markdownify/trafilatura are all absent today) and re-run the
+six-page comparison. Until then `SCRAPER=lightpanda` is opt-in.
+
 WHY IT CONNECTS BY IP. Lightpanda rejects a WebSocket whose Host header is a name it
 does not recognise -- DNS-rebinding protection -- and answers 403 "Host not allowed".
 `ws://lightpanda:9222/` is exactly that case, which is what stopped Crawl4AI's own
