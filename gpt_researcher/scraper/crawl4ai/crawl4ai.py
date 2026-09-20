@@ -127,11 +127,19 @@ class Crawl4AIScraper:
 
     @staticmethod
     def _images(result) -> list:
-        """Image URLs, in the shape `get_relevant_images` would have produced.
+        """``[{"url": ..., "score": ...}]``, the shape `get_relevant_images` returns.
 
-        Crawl4AI already scores images by relevance, so its own ordering is kept rather
-        than re-derived. Entries without a `src` are dropped: they are decorative
-        elements the report cannot link to.
+        NOT a list of URLs, which is what this returned when it was written. The
+        consumers index the entries: `skills/browser.py` sorts on `im["score"]` and reads
+        `img["url"]`, and `actions/report_generation.py` reads `img['url']` -- so a list
+        of strings raises `TypeError: string indices must be integers` inside the scrape
+        loop, every scraped page dies, and the node fails with "0 context chars" while
+        the retrievers report documents read. Measured 2026-09-20: one tree run,
+        8 documents read, empty report.
+
+        Crawl4AI scores its own images for relevance, so that score is carried through
+        rather than re-derived; entries without a `src` are decorative and drop out. Ten
+        is the same ceiling `get_relevant_images` applies.
         """
         media = result.get("media")
         if not isinstance(media, dict):
@@ -139,5 +147,7 @@ class Crawl4AIScraper:
         images = media.get("images")
         if not isinstance(images, list):
             return []
-        return [img["src"] for img in images
-                if isinstance(img, dict) and img.get("src")]
+        out = [{"url": img["src"], "score": img.get("score") or 0}
+               for img in images if isinstance(img, dict) and img.get("src")]
+        out.sort(key=lambda im: im["score"], reverse=True)
+        return out[:10]

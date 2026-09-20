@@ -82,8 +82,9 @@ def test_the_real_payload_yields_prose_a_title_and_images():
         f"content came back as {content[:60]!r} -- 0.9.3 nests the text under "
         "markdown.raw_markdown, and reading markdown directly hands the report a dict")
     assert title == "Example Domain", f"title was {title!r}"
-    assert images == ["https://example.com/a.png"], (
-        f"images were {images!r}; entries without a src are decorative and must drop out")
+    assert images == [{"url": "https://example.com/a.png", "score": 3}], (
+        f"images were {images!r}; entries need the {{url, score}} shape the consumers "
+        "index, and entries without a src are decorative and must drop out")
 
 
 def test_a_filtered_server_is_preferred_over_the_raw_text():
@@ -132,6 +133,21 @@ def test_the_token_is_sent_when_one_is_configured(monkeypatch):
     assert post.call_args.kwargs["headers"] == {"Authorization": "Bearer t0ken"}, (
         f"sent {post.call_args.kwargs.get('headers')!r}; without the bearer header every "
         "request to a token-enabled server is a 401")
+
+
+def test_images_survive_the_consumer_that_indexes_them():
+    """The regression that made this file necessary. `skills/browser.py` does
+    `sorted(images, key=lambda im: im["score"])` and then `img["url"]`; a list of bare
+    URL strings raises TypeError there, inside the per-document scrape loop -- so every
+    scraped page is lost and the node reports "0 context chars" while the retrievers
+    happily report documents read. The scraper's own output looked fine in isolation,
+    which is exactly why asserting the CONSUMER's access pattern is the test that counts.
+    """
+    _, images, _ = _scrape(REAL_ENVELOPE)
+
+    ranked = sorted(images, key=lambda im: im["score"], reverse=True)   # browser.py:116
+    assert [img["url"] for img in ranked] == ["https://example.com/a.png"], (
+        f"consumer-shaped access failed over {images!r}")
 
 
 # -------------------------------------------------------------------- wiring
