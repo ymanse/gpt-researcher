@@ -20,6 +20,7 @@ from . import (
     BeautifulSoupScraper,
     BrowserScraper,
     Crawl4AIScraper,
+    LightpandaScraper,
     FireCrawl,
     NoDriverScraper,
     PyMuPDFScraper,
@@ -240,6 +241,8 @@ class Scraper:
             "firecrawl": FireCrawl,
             # Local container; see docker-compose service "crawl4ai".
             "crawl4ai": Crawl4AIScraper,
+            # Lightpanda first, Crawl4AI (Chromium) when it comes back thin.
+            "lightpanda": LightpandaScraper,
         }
 
         scraper_key = None
