@@ -270,6 +270,11 @@ def test_the_encoder_never_routes_a_labelled_query_to_the_wrong_bundle():
     by halving the distance to the 0.02 cliff is the wrong side of that trade.
     """
     sr._CENTROID_CACHE.pop(_CACHE_KEY, None)      # never score against a faked router
+    # ...and never inherit a COOLDOWN from one. A failure recorded by an earlier test
+    # suppresses the rebuild for 300s, so `_router` answers (None, None) and this test
+    # skips with "embedding server unavailable" while the server is perfectly healthy --
+    # measured 2026-09-20: passes alone, skipped in the full suite.
+    sr._ROUTER_RETRY_AFTER.pop(_CACHE_KEY, None)
     try:
         embedder, centroids = sr._router(SimpleNamespace(**EMBED_CFG))
         assert embedder is not None and centroids and embedder.embed_query("probe")

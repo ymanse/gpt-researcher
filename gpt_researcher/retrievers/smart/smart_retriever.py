@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Each retriever entry: (retriever_name, max_results, extra_kwargs)
 ROUTING_TABLE = {
     "general_web": [
-        ("tavily", 7, {}),
+        ("searx", 7, {}),
         ("firecrawl", 5, {}),
         ("duckduckgo", 5, {}),
     ],
@@ -34,7 +34,7 @@ ROUTING_TABLE = {
         ("semantic_scholar", 5, {}),
     ],
     "news_current": [
-        ("tavily", 8, {"topic": "news"}),
+        ("searx", 8, {}),
         ("serper", 4, {"time_range": "qdr:w"}),
         ("hackernews", 5, {"by_date": True}),
         ("bluesky", 5, {"sort": "latest"}),
@@ -42,7 +42,7 @@ ROUTING_TABLE = {
         ("firecrawl", 5, {"tbs": "qdr:w"}),
     ],
     "comprehensive": [
-        ("tavily", 3, {}),
+        ("searx", 3, {}),
         ("exa", 2, {"search_type": "neural"}),
         ("duckduckgo", 2, {}),
         ("arxiv", 2, {}),
@@ -255,6 +255,9 @@ def _embedding_category(cfg, query):
 # Retrievers not listed here (e.g. duckduckgo, arxiv, semantic_scholar) need no key.
 _RETRIEVER_API_KEYS = {
     "tavily": "TAVILY_API_KEY",
+    # Not a key: the self-hosted instance is addressed by URL, and its absence is
+    # exactly as disqualifying as a missing key.
+    "searx": "SEARX_URL",
     "exa": "EXA_API_KEY",
     "serper": "SERPER_API_KEY",
     "bing": "BING_API_KEY",
@@ -321,8 +324,10 @@ class SmartRetriever:
                 logger.warning(f"No available retrievers for '{category}', falling back to general_web")
                 retriever_configs = self._route_to_retrievers("general_web")
             if not retriever_configs:
-                logger.warning("No available retrievers at all, trying tavily/duckduckgo as last resort")
-                if self._check_retriever_availability("tavily"):
+                logger.warning("No available retrievers at all, trying searx/duckduckgo as last resort")
+                if self._check_retriever_availability("searx"):
+                    retriever_configs = [("searx", max_results, {})]
+                elif self._check_retriever_availability("tavily"):
                     retriever_configs = [("tavily", max_results, {})]
                 else:
                     retriever_configs = [("duckduckgo", max_results, {})]
@@ -467,7 +472,10 @@ class SmartRetriever:
     # outage: tavily 432 across the whole route -> silent total loss).
     # Keyless duckduckgo first, then keyed alternates — availability-checked,
     # so only retrievers whose API key is actually configured get tried.
-    _FALLBACK_ORDER = ("duckduckgo", "tavily", "serper", "exa", "bing")
+    # searx first: it is self-hosted, so it costs nothing and cannot run out of
+    # quota. tavily stays behind it as the paid safety net for when the local
+    # instance is down.
+    _FALLBACK_ORDER = ("searx", "duckduckgo", "tavily", "serper", "exa", "bing")
 
     def _fallback_search(self, tried, max_results):
         """Route to a not-yet-tried retriever instead of returning nothing."""
