@@ -19,6 +19,7 @@ from . import (
     ArxivScraper,
     BeautifulSoupScraper,
     BrowserScraper,
+    Crawl4AIScraper,
     FireCrawl,
     NoDriverScraper,
     PyMuPDFScraper,
@@ -237,6 +238,8 @@ class Scraper:
             "nodriver": NoDriverScraper,
             "tavily_extract": TavilyExtract,
             "firecrawl": FireCrawl,
+            # Local container; see docker-compose service "crawl4ai".
+            "crawl4ai": Crawl4AIScraper,
         }
 
         scraper_key = None
