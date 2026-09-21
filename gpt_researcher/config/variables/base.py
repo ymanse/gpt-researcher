@@ -34,6 +34,7 @@ class BaseConfig(TypedDict):
     PROMPT_FAMILY: str
     LLM_KWARGS: dict
     EMBEDDING_KWARGS: dict
+    EMBEDDING_MAX_CONCURRENCY: int
     VERBOSE: bool
     DEEP_RESEARCH_CONCURRENCY: int
     DEEP_RESEARCH_DEPTH: int

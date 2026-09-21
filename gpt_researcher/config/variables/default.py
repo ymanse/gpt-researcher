@@ -37,6 +37,11 @@ DEFAULT_CONFIG: BaseConfig = {
     "PROMPT_FAMILY": "default",
     "LLM_KWARGS": {},
     "EMBEDDING_KWARGS": {},
+    # How many embedding requests may be in flight process-wide (see memory/throttle.py).
+    # Sized to the local llama.cpp server's slot count; the run's own concurrency used to
+    # put 12-16 compressions on 4 slots and lose a whole depth round to timeouts.
+    # 0 = unlimited, for a hosted embedding API that scales horizontally.
+    "EMBEDDING_MAX_CONCURRENCY": 4,
     "VERBOSE": False,
     # Deep research specific settings
     "DEEP_RESEARCH_BREADTH": 3,

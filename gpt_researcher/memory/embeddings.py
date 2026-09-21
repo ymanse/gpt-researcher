@@ -24,6 +24,7 @@ Supported providers:
 
 import os
 from typing import Any
+from .throttle import throttled
 
 OPENAI_EMBEDDING_MODEL = os.environ.get(
     "OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"
@@ -214,7 +215,11 @@ class Memory:
             case _:
                 raise Exception("Embedding not found.")
 
-        self._embeddings = _embeddings
+        # Every embedding call in this process goes through here, which makes it the
+        # one place a shared server can be protected from the run's own concurrency.
+        # See throttle.py: a paper-heavy depth-2 run produced 48 timeouts and lost a
+        # whole stage-2 round's evidence without it.
+        self._embeddings = throttled(_embeddings)
 
     def get_embeddings(self):
         """Get the configured embeddings instance.
