@@ -29,6 +29,22 @@ planned query and follow-up depth had been researched. The findings above are PA
 above should be read as a complete answer to the original query.
 """
 
+# The least a sub-query that has already started is given before it is cancelled, however
+# little of the run's time budget is left. A run can therefore overshoot its budget by
+# about this much, never by a whole sub-query.
+MIN_SUB_QUERY_TIMEOUT_S = 30.0
+
+# The wall-clock twin of BUDGET_TRUNCATION_NOTICE. Same reason it exists: the report is
+# written from the context, so the context is the only place a reader can still be told.
+TIME_TRUNCATION_NOTICE = """
+
+## Incomplete Research
+This research stopped early: the run's time budget ran out before every planned query
+and follow-up depth had been researched. The findings above are PARTIAL — questions that
+were planned but never investigated are missing entirely, and nothing above should be
+read as a complete answer to the original query.
+"""
+
 
 def count_words(text) -> int:
     """Count words in a text string. Handles both strings and lists."""
@@ -69,6 +85,16 @@ class DeepResearchSkill:
         self.breadth = getattr(researcher.cfg, 'deep_research_breadth', 4)
         self.depth = getattr(researcher.cfg, 'deep_research_depth', 2)
         self.concurrency_limit = getattr(researcher.cfg, 'deep_research_concurrency', 2)
+        self.time_budget_s = float(
+            getattr(researcher.cfg, 'deep_research_time_budget_s', 600.0) or 0.0)
+        # ONE semaphore for the whole run, not one per recursion level. Stage 2 now runs
+        # its follow-ups concurrently (see deep_research), so a per-level semaphore would
+        # let level 1 and level 2 each open `concurrency_limit` researchers -- and the
+        # bottleneck underneath is a single local embedding server, which starts dropping
+        # evidence on its own 300s request_timeout at roughly 7 concurrent compressions
+        # (measured 2026-09-20). Created here rather than lazily: on 3.10+ an
+        # asyncio.Semaphore binds to the loop on first await, not at construction.
+        self._semaphore = asyncio.Semaphore(max(1, int(self.concurrency_limit)))
         self.websocket = researcher.websocket
         self.tone = researcher.tone
         self.config_path = researcher.cfg.config_path if hasattr(researcher.cfg, 'config_path') else None
@@ -89,10 +115,26 @@ class DeepResearchSkill:
         # True once the CLI-session allowance stopped this run expanding. Travels out
         # in deep_research()'s result and as a disclosure in the context run() returns.
         self.budget_exhausted = False
+        # Wall-clock twin of budget_exhausted. Set once the deadline stopped this run
+        # expanding; travels out in the result and as a disclosure in the context.
+        self.time_exhausted = False
+        # monotonic, and None until run() starts the clock — a deep_research() called
+        # directly (the tests, the harness) is then unbounded, exactly as before.
+        self._deadline = None
         # Whether ANY sub-query has produced research this run. The budget gate
         # reads it so a run that has gathered nothing never reports itself as
         # "partial" — see process_query.
         self._researched_any = False
+
+    def _time_left(self) -> Optional[float]:
+        """Seconds until the run's deadline, or None when it has none."""
+        if self._deadline is None:
+            return None
+        return self._deadline - time.monotonic()
+
+    def _out_of_time(self) -> bool:
+        left = self._time_left()
+        return left is not None and left <= 0
 
     async def generate_search_queries(self, query: str, num_queries: int = 3) -> List[Dict[str, str]]:
         """Generate SERP queries for research"""
@@ -396,8 +438,9 @@ Format each question on a new line starting with 'Question: '"""}
         all_context = []
         all_sources = []
 
-        # Process queries with concurrency limit
-        semaphore = asyncio.Semaphore(self.concurrency_limit)
+        # Bounded by the RUN's semaphore (see __init__), so the concurrent stage-2
+        # recursions below share one allowance with the stage-1 batch above them.
+        semaphore = self._semaphore
 
         async def process_query(serp_query: Dict[str, str]) -> Optional[Dict[str, Any]]:
             async with semaphore:
@@ -422,6 +465,17 @@ Format each question on a new line starting with 'Question: '"""}
                         "CLI-session allowance spent: sub-query %r is left "
                         "unresearched and the research already done is kept",
                         serp_query['query'])
+                    return None
+                # Same shape and the same `_researched_any` guard, for the same reason:
+                # a run that has gathered nothing must not come back empty wearing a
+                # truncation notice. The first batch is therefore never gated — the
+                # deadline costs a run its DEPTH, not its result.
+                if self._researched_any and self._out_of_time():
+                    self.time_exhausted = True
+                    logger.warning(
+                        "time budget of %.0fs spent: sub-query %r is left "
+                        "unresearched and the research already done is kept",
+                        self.time_budget_s, serp_query['query'])
                     return None
                 try:
                     progress.current_query = serp_query['query']
@@ -467,8 +521,50 @@ Format each question on a new line starting with 'Question: '"""}
                                 "could not stamp the run category onto the researcher "
                                 "for %r", serp_query['query'])
 
-                    # Conduct research
-                    context = await researcher.conduct_research()
+                    # Conduct research. The gates above only decide what STARTS; this
+                    # is what bounds what is already running. Measured 2026-09-20: one
+                    # sub-query sat 5 minutes inside a single embedding call before
+                    # EMBEDDING_KWARGS' 300s request_timeout fired, so a gate alone
+                    # cannot hold a 10-minute budget. asyncio.TimeoutError is an
+                    # Exception on 3.11, so the handler below turns it into the same
+                    # "this sub-query produced nothing" as any other failure.
+                    #
+                    # ponytail: MIN_SUB_QUERY_TIMEOUT_S is the floor, so a sub-query
+                    # started just under the wire still gets a fair chance instead of
+                    # being cancelled on arrival. Cancelling also does not stop a
+                    # blocking embedding call
+                    # already running in a worker thread — that one is bounded by its
+                    # own request_timeout; what this buys is that the RUN stops waiting.
+                    time_left = self._time_left()
+                    research = researcher.conduct_research()
+                    if time_left is None:
+                        context = await research
+                    else:
+                        try:
+                            context = await asyncio.wait_for(
+                                research, timeout=max(MIN_SUB_QUERY_TIMEOUT_S, time_left))
+                        except asyncio.TimeoutError as e:
+                            # Only wait_for's OWN timeout is a spent budget, and it is
+                            # the one raised `from` the CancelledError it used to stop
+                            # the task (3.11 and 3.12+ alike). socket.timeout is
+                            # TimeoutError too, so a scraper's own timeout can surface
+                            # here — that is an ordinary sub-query failure for the
+                            # handler below. NOT decided by comparing clocks: the event
+                            # loop fires a timer up to one clock tick early (~15.6ms on
+                            # Windows), so at the deadline `_out_of_time()` can still
+                            # read False.
+                            if not isinstance(e.__cause__, asyncio.CancelledError):
+                                raise
+                            # Flagged HERE, not left to the generic handler: with depth=1
+                            # there is no recursion gate afterwards to notice, and a run
+                            # missing one of its top-level queries would otherwise come
+                            # back unmarked -- a partial presented as complete.
+                            self.time_exhausted = True
+                            logger.warning(
+                                "time budget of %.0fs spent: sub-query %r was cancelled at "
+                                "the deadline and its evidence is not in the result",
+                                self.time_budget_s, serp_query['query'])
+                            return None
 
                     # Get results and visited URLs
                     visited = researcher.visited_urls
@@ -532,45 +628,77 @@ Format each question on a new line starting with 'Question: '"""}
             if result['sources']:
                 all_sources.extend(result['sources'])
 
-            # Continue deeper if needed
-            if depth > 1:
-                # `continue`, not `break`: the shallow results of the remaining
-                # queries are already gathered above and must still be collected.
-                if research_should_stop(reserve=synthesis_reserve):
-                    self.budget_exhausted = True
-                    logger.warning(
-                        "CLI-session allowance spent: not recursing to depth %s. The "
-                        "learnings gathered so far are kept and reported as partial.",
-                        depth - 1)
-                    continue
+        # ------------------------------------------------------------------ depth
+        # ONE concurrent round, not a recursion per result in sequence.
+        #
+        # This loop used to carry the recursion inside it, so the follow-up rounds of
+        # sibling queries ran one after another. Measured 2026-09-20 on the shipped
+        # defaults: a stage-1 round of 3 queries took 8 minutes IN PARALLEL and the three
+        # stage-2 recursions it produced took 14 more, one at a time (13:52:09 /
+        # 13:55:29 / 14:02:30). The work is independent -- each recursion reads only its
+        # own result -- so the only thing the sequencing bought was wall clock.
+        #
+        # Concurrency is still bounded, by the run-level semaphore every nested
+        # researcher takes (see __init__): "parallel" here means the rounds interleave
+        # under one allowance, not that the load doubles.
+        if depth > 1 and results:
+            # Gates for the WHOLE round now, since it is dispatched at once. Same
+            # meaning as before -- a spent allowance or a spent clock costs the run its
+            # depth and keeps what stage 1 gathered.
+            if research_should_stop(reserve=synthesis_reserve):
+                self.budget_exhausted = True
+                logger.warning(
+                    "CLI-session allowance spent: not recursing to depth %s. The "
+                    "learnings gathered so far are kept and reported as partial.",
+                    depth - 1)
+            elif self._out_of_time():
+                self.time_exhausted = True
+                logger.warning(
+                    "time budget of %.0fs spent: not recursing to depth %s. The "
+                    "learnings gathered so far are kept and reported as partial.",
+                    self.time_budget_s, depth - 1)
+            else:
+                progress.current_depth += 1
                 new_breadth = max(2, breadth // 2)
                 new_depth = depth - 1
-                progress.current_depth += 1
 
-                # Create next query from research goal and follow-up questions
-                next_query = f"""
+                async def _go_deeper(result):
+                    next_query = f"""
                 Previous research goal: {result['researchGoal']}
                 Follow-up questions: {' '.join(result['followUpQuestions'])}
                 """
+                    # Empty accumulators, NOT the shared ones. Each sibling returns its
+                    # accumulator in full, so handing all of them the same prefix would
+                    # bring back N copies of it to merge. The nested researchers still
+                    # share URL dedup -- that rides `self.visited_urls`, not this.
+                    return await self.deep_research(
+                        query=next_query,
+                        breadth=new_breadth,
+                        depth=new_depth,
+                        learnings=[],
+                        citations={},
+                        visited_urls=set(),
+                        on_progress=on_progress,
+                    )
 
-                # Recursive research
-                deeper_results = await self.deep_research(
-                    query=next_query,
-                    breadth=new_breadth,
-                    depth=new_depth,
-                    learnings=all_learnings,
-                    citations=all_citations,
-                    visited_urls=all_visited_urls,
-                    on_progress=on_progress
-                )
-
-                all_learnings = deeper_results['learnings']
-                all_visited_urls.update(deeper_results['visited_urls'])
-                all_citations.update(deeper_results['citations'])
-                if deeper_results.get('context'):
-                    all_context.extend(deeper_results['context'])
-                if deeper_results.get('sources'):
-                    all_sources.extend(deeper_results['sources'])
+                # return_exceptions: one failed branch must not lose the siblings that
+                # succeeded, which is what an un-caught raise out of gather() would do.
+                deeper_all = await asyncio.gather(
+                    *(_go_deeper(r) for r in results), return_exceptions=True)
+                for deeper_results in deeper_all:
+                    if isinstance(deeper_results, BaseException):
+                        logger.error("a depth-%s branch failed and its findings are "
+                                     "missing: %s", depth - 1, deeper_results)
+                        continue
+                    if not deeper_results:
+                        continue
+                    all_learnings.extend(deeper_results['learnings'])
+                    all_visited_urls.update(deeper_results['visited_urls'])
+                    all_citations.update(deeper_results['citations'])
+                    if deeper_results.get('context'):
+                        all_context.extend(deeper_results['context'])
+                    if deeper_results.get('sources'):
+                        all_sources.extend(deeper_results['sources'])
 
         # Update class tracking
         self.context.extend(all_context)
@@ -589,14 +717,20 @@ Format each question on a new line starting with 'Question: '"""}
             # A caller cannot otherwise tell a budget-truncated result from a complete
             # one — which is worse than the exception this replaces.
             'agent_budget_exhausted': self.budget_exhausted,
+            'time_budget_exhausted': self.time_exhausted,
             'provider_refused': provider_refused()[0],
             'provider_refusal_reason': provider_refused()[1],
         }
 
     async def run(self, on_progress=None, scope: bool = False) -> str:
         """Run the deep research process and generate final report"""
-        print(f"\n🔍 DEEP RESEARCH: Starting with breadth={self.breadth}, depth={self.depth}, concurrency={self.concurrency_limit}", flush=True)
+        print(f"\n🔍 DEEP RESEARCH: Starting with breadth={self.breadth}, depth={self.depth}, concurrency={self.concurrency_limit}, time_budget={self.time_budget_s:.0f}s", flush=True)
         start_time = time.time()
+        # The clock covers the WHOLE run, planning included: that is the number the
+        # caller waits on. 0 (or negative) means unbounded, the pre-2026-09-21
+        # behaviour, and is how the search-quality harness measures a full expansion.
+        self._deadline = ((time.monotonic() + self.time_budget_s)
+                          if self.time_budget_s > 0 else None)
 
         # Log initial costs
         initial_costs = self.researcher.get_costs()
@@ -729,6 +863,13 @@ Format each question on a new line starting with 'Question: '"""}
             logger.error(
                 "deep research gathered NO context before the CLI-session allowance "
                 "was spent — reporting nothing rather than writing from prior knowledge")
+        # Same guard as the budget notice, for the same reason: a banner on an empty
+        # context reads to the report writer as "research happened, here is some of it".
+        if results.get('time_budget_exhausted') and self.researcher.context:
+            logger.warning(
+                "deep research stopped expanding on a spent time budget (%.0fs); "
+                "the context below is partial and says so.", self.time_budget_s)
+            self.researcher.context += TIME_TRUNCATION_NOTICE
         self.researcher.visited_urls = results['visited_urls']
 
         # (research_sources is assigned above, before verify_citations needs it)

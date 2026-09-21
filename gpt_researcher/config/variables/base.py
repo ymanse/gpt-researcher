@@ -40,6 +40,7 @@ class BaseConfig(TypedDict):
     DEEP_RESEARCH_BREADTH: int
     DEEP_RESEARCH_LEARNINGS: int
     DEEP_RESEARCH_LEARNINGS_TOKENS: int
+    DEEP_RESEARCH_TIME_BUDGET_S: float
     MCP_SERVERS: List[Dict[str, Any]]
     MCP_AUTO_TOOL_SELECTION: bool
     MCP_USE_LLM_ARGS: bool

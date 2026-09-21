@@ -44,6 +44,13 @@ DEFAULT_CONFIG: BaseConfig = {
     "DEEP_RESEARCH_CONCURRENCY": 4,
     "DEEP_RESEARCH_LEARNINGS": 8,
     "DEEP_RESEARCH_LEARNINGS_TOKENS": 2500,
+    # Wall clock, not calls. The CLI-session allowance bounds what a run may SPEND and
+    # nothing bounded how long it may TAKE: measured 2026-09-20, breadth=3/depth=2 ran
+    # 23m31s once and was still going at 43m on a second, because the depth-2
+    # recursions run one after another and each waits on a saturated local embedding
+    # server. Checked between sub-queries and before recursing, so hitting it yields a
+    # shallower report, not a failed one.
+    "DEEP_RESEARCH_TIME_BUDGET_S": 600.0,
     
     # MCP retriever specific settings
     "MCP_SERVERS": [],  # List of predefined MCP server configurations
