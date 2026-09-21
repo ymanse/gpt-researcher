@@ -136,12 +136,53 @@ class DeepResearchSkill:
         left = self._time_left()
         return left is not None and left <= 0
 
-    async def generate_search_queries(self, query: str, num_queries: int = 3) -> List[Dict[str, str]]:
-        """Generate SERP queries for research"""
+    async def generate_search_queries(self, query: str, num_queries: int = 3,
+                                      covered: Optional[List[str]] = None,
+                                      queued: Optional[List[str]] = None) -> List[Dict[str, str]]:
+        """Generate SERP queries for research.
+
+        `covered` is the ground the run has already researched -- "Q: ... Found: ..." per
+        sub-query, the same shape TreeResearchSkill._covered_ground hands its child
+        generator. Without it a stage-2 branch plans from its OWN follow-up questions
+        only, blind to what its siblings found, so it can spend its whole round on ground
+        a sibling already answered. With it the same call is steered into what is still
+        missing, and may plan fewer than `num_queries` -- or none -- when the root query
+        is already answered. That is the only place the linear path can shrink a round:
+        a filter AFTER this call cannot, because `num_queries` is fixed by then.
+
+        `queued` is what sibling branches of this round have ALREADY PLANNED. Kept apart
+        from `covered` on purpose, as the tree keeps _queued_ground apart: a planned
+        query is not answered ground, so the instruction is "do not restate", not
+        "already known, steer elsewhere".
+
+        None (the top level) sends exactly the prompt this method always sent.
+        """
+        if covered:
+            queued_block = (
+                "\n\nQueries sibling branches have ALREADY PLANNED for this round (not "
+                "answered yet -- they WILL be researched, so do NOT restate or reword any "
+                "of them; pick different missing ground):\n"
+                + "\n".join(f"- {q}" for q in queued)) if queued else ""
+            prompt = (
+                f"Root research query: {self.researcher.query}\n\n"
+                "Ground this research has ALREADY covered -- each question and what "
+                "researching it found:\n" + "\n".join(covered) + queued_block + "\n\n"
+                f"Given the following prompt, generate UP TO {num_queries} unique search "
+                "queries that carry the root research query into ground the list above "
+                "does NOT yet cover. Target what is missing, not variations of what was "
+                "already found; each must be disjoint from the others and from the covered "
+                "questions. If the root research query is already fully answered by the "
+                "ground above, generate none. For each query, provide a research goal. "
+                f"Format as 'Query: <query>' followed by 'Goal: <goal>' for each pair: {query}"
+            )
+        else:
+            prompt = (f"Given the following prompt, generate {num_queries} unique search "
+                      "queries to research the topic thoroughly. For each query, provide a "
+                      "research goal. Format as 'Query: <query>' followed by 'Goal: <goal>' "
+                      f"for each pair: {query}")
         messages = [
             {"role": "system", "content": "You are an expert researcher generating search queries."},
-            {"role": "user",
-             "content": f"Given the following prompt, generate {num_queries} unique search queries to research the topic thoroughly. For each query, provide a research goal. Format as 'Query: <query>' followed by 'Goal: <goal>' for each pair: {query}"}
+            {"role": "user", "content": prompt}
         ]
 
         with agent_purpose("plan"):
@@ -379,9 +420,15 @@ Format each question on a new line starting with 'Question: '"""}
             learnings: List[str] = None,
             citations: Dict[str, str] = None,
             visited_urls: Set[str] = None,
-            on_progress=None
+            on_progress=None,
+            covered: Optional[List[str]] = None,
+            planned_queries: Optional[List[Dict[str, str]]] = None,
     ) -> Dict[str, Any]:
-        """Conduct deep iterative research"""
+        """Conduct deep iterative research.
+
+        `covered`: what the levels above already researched, passed down so this
+        level's planning can steer around it (see generate_search_queries).
+        """
         print(f"\n📊 DEEP RESEARCH: depth={depth}, breadth={breadth}, query={query[:100]}...", flush=True)
         if learnings is None:
             learnings = []
@@ -426,10 +473,17 @@ Format each question on a new line starting with 'Question: '"""}
 
         synthesis_reserve = agent_synthesis_reserve()
 
-        # Generate search queries
-        print(f"🔎 Generating {breadth} search queries...", flush=True)
-        serp_queries = await self.generate_search_queries(query, num_queries=breadth)
-        print(f"✅ Generated {len(serp_queries)} queries: {[q['query'] for q in serp_queries]}", flush=True)
+        if planned_queries is None:
+            print(f"🔎 Generating {breadth} search queries...", flush=True)
+            serp_queries = await self.generate_search_queries(
+                query, num_queries=breadth, covered=covered)
+            print(f"✅ Generated {len(serp_queries)} queries: {[q['query'] for q in serp_queries]}", flush=True)
+        else:
+            # Planned by the parent, one branch after another (see the depth block).
+            # Planning again here would double the plan calls AND undo the ordering
+            # that keeps sibling branches off the same ground.
+            serp_queries = planned_queries
+            print(f"📋 Using {len(serp_queries)} pre-planned queries: {[q['query'] for q in serp_queries]}", flush=True)
         progress.total_queries = len(serp_queries)
 
         all_learnings = learnings.copy()
@@ -583,6 +637,9 @@ Format each question on a new line starting with 'Question: '"""}
                         on_progress(progress)
 
                     return {
+                        # the covered ground below is keyed by it; researchGoal is not
+                        # the query and serp_queries cannot be zipped (None-filtered)
+                        'query': serp_query['query'],
                         'learnings': results['learnings'],
                         'visited_urls': list(visited),
                         'followUpQuestions': results['followUpQuestions'],
@@ -661,16 +718,83 @@ Format each question on a new line starting with 'Question: '"""}
                 progress.current_depth += 1
                 new_breadth = max(2, breadth // 2)
                 new_depth = depth - 1
+                # EVERY sibling's findings, not just the branch's own: each branch's
+                # follow-ups were proposed blind to the others, and this list is the one
+                # place the whole level is visible. Accumulates across levels, so a
+                # depth-3 branch sees depths 1 and 2.
+                # ponytail: 400 chars of findings per sub-query, as the tree does; the
+                # prompt grows linearly with sub-queries, fine at the depths this path runs.
+                covered_here = list(covered or []) + [
+                    (f"- Q: {r['query']}\n  Found: {' '.join(r['learnings'])[:400]}"
+                     if r['learnings'] else f"- Q: {r['query']}")
+                    for r in results]
 
-                async def _go_deeper(result):
+                # PLANNED one branch at a time, RESEARCHED all at once.
+                #
+                # Measured 2026-09-21: with every branch planning concurrently against the
+                # same covered ground, all three stage-2 branches picked the SAME gap
+                # (consumer idempotency) -- each could see what stage 1 found, but not
+                # what its siblings were about to plan. That is the tree's QUEUED problem
+                # (TreeResearchSkill._queued_ground) and the fix is the same: a later
+                # branch is shown what earlier branches already planned. It costs latency
+                # only -- a planning call takes seconds, the research it plans takes
+                # minutes -- and no extra LLM call; the research itself stays concurrent.
+                #
+                # ponytail: siblings are ordered only WITHIN one parent. At depth >= 3 the
+                # grandchildren of different parents still plan concurrently; the shipped
+                # depth is 2, where there is exactly one parent.
+                plans, queued = [], []
+                for result in results:
+                    # The round keeps what is already planned; what it cannot plan is
+                    # named, so the report is marked partial.
+                    if research_should_stop(reserve=synthesis_reserve):
+                        self.budget_exhausted = True
+                        logger.warning("CLI-session allowance spent while planning depth "
+                                       "%s: the remaining branches are not planned", depth - 1)
+                        break
+                    if self._out_of_time():
+                        self.time_exhausted = True
+                        logger.warning("time budget of %.0fs spent while planning depth "
+                                       "%s: the remaining branches are not planned",
+                                       self.time_budget_s, depth - 1)
+                        break
                     next_query = f"""
                 Previous research goal: {result['researchGoal']}
                 Follow-up questions: {' '.join(result['followUpQuestions'])}
                 """
+                    try:
+                        planned = await self.generate_search_queries(
+                            next_query, num_queries=new_breadth,
+                            covered=covered_here, queued=queued)
+                    except Exception as e:
+                        # One branch's planning failure costs that branch, not the round
+                        # -- the contract the concurrent version had through gather().
+                        logger.error("planning a depth-%s branch failed, it is skipped: %s",
+                                     depth - 1, e)
+                        continue
+                    print(f"✅ Generated {len(planned)} queries: {[q['query'] for q in planned]}", flush=True)
+                    if not planned:
+                        # Not a truncation and not a failure: the planner saw everything
+                        # covered and queued and judged this branch had nothing to add.
+                        # Logged because a round that silently plans nothing is otherwise
+                        # indistinguishable from one that broke.
+                        logger.info("depth-%s branch planned 0 queries: coverage judged "
+                                    "complete against %d covered, %d queued",
+                                    depth - 1, len(covered_here), len(queued))
+                        continue
+                    queued.extend(q['query'] for q in planned)
+                    plans.append((next_query, planned))
+
+                async def _go_deeper(next_query, planned):
                     # Empty accumulators, NOT the shared ones. Each sibling returns its
                     # accumulator in full, so handing all of them the same prefix would
-                    # bring back N copies of it to merge. The nested researchers still
-                    # share URL dedup -- that rides `self.visited_urls`, not this.
+                    # bring back N copies of it to merge.
+                    #
+                    # NOTE: there is no cross-researcher URL dedup on this path, and there
+                    # never was. GPTResearcher does `visited_urls or set()`, so the skill's
+                    # shared set -- empty at the start -- is replaced by a fresh one in
+                    # every nested researcher, and conduct_research() clears it anyway.
+                    # Measured 2026-09-21: one overview page fetched 6 times in one run.
                     return await self.deep_research(
                         query=next_query,
                         breadth=new_breadth,
@@ -679,12 +803,15 @@ Format each question on a new line starting with 'Question: '"""}
                         citations={},
                         visited_urls=set(),
                         on_progress=on_progress,
+                        covered=covered_here,
+                        planned_queries=planned,
                     )
 
                 # return_exceptions: one failed branch must not lose the siblings that
                 # succeeded, which is what an un-caught raise out of gather() would do.
                 deeper_all = await asyncio.gather(
-                    *(_go_deeper(r) for r in results), return_exceptions=True)
+                    *(_go_deeper(nq, planned) for nq, planned in plans),
+                    return_exceptions=True)
                 for deeper_results in deeper_all:
                     if isinstance(deeper_results, BaseException):
                         logger.error("a depth-%s branch failed and its findings are "

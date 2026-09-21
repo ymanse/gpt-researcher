@@ -14,7 +14,11 @@ sequentially although each reads only its own result: 8 minutes of parallel work
 
 So this file pins:
   - stage 2 is dispatched at once, bounded by the RUN's semaphore (not one per level);
-  - a failed branch costs its own findings, never its siblings'.
+  - a failed branch costs its own findings, never its siblings';
+  - each stage-2 branch PLANS against what every sibling already found, and may plan
+    nothing when the root query is answered -- the one place a round can shrink;
+  - branches plan ONE AFTER ANOTHER, each shown what earlier siblings already planned,
+    so they do not all converge on the same gap -- then research concurrently.
 
 A judge that filtered these follow-ups lived here briefly and was removed on 2026-09-21:
 it could only save WHOLE branches (`new_breadth` does not shrink with the number of
@@ -64,11 +68,22 @@ QUERY_BLOB = (
 )
 
 
+# What each stage-1 branch finds. Distinct per branch, so a stage-2 planning prompt that
+# carries only its OWN branch's findings is distinguishable from one that carries all.
+STAGE1 = [
+    ("how production teams bound outbox table growth",
+     "Teams partition the outbox by day and drop old partitions."),
+    ("which brokers deduplicate replayed outbox messages",
+     "Consumers deduplicate replays with an inbox table keyed by message id."),
+]
+
+
 def _answer_blob(prompt: str) -> str:
     """Learnings plus the follow-up belonging to whichever branch is answering."""
-    question = FOLLOW_UPS[1] if "deduplicate" in prompt else FOLLOW_UPS[0]
-    return (f"Learning [{DOC_URL}]: The outbox table grows without bound unless a job "
-            f"trims it.\nQuestion: {question}\n")
+    dedup = "deduplicate" in prompt
+    learning = STAGE1[1][1] if dedup else STAGE1[0][1]
+    question = FOLLOW_UPS[1] if dedup else FOLLOW_UPS[0]
+    return f"Learning [{DOC_URL}]: {learning}\nQuestion: {question}\n"
 
 
 def _cfg(**over):
@@ -105,6 +120,16 @@ class _Trace:
         self.live = 0
         self.max_live = 0
         self.fail_branch: str | None = None
+        self.failed = 0
+        self.completed: list = []
+        self.plan_prompts: list = []
+        # What stage-2 PLANNING returns. None = two queries unique to that planning call
+        # ("stage2 plan <n> a/b"), so a later branch's prompt can be checked for an
+        # earlier branch's plan; "" = the planner judged the root answered.
+        self.stage2_plan: str | None = None
+        self.stage2_plans_made = 0
+        # 1-based index of the stage-2 planning call that raises, or None.
+        self.fail_stage2_plan: int | None = None
 
     async def llm(self, *args, **kwargs):
         """One fake for every call site, told apart by what the prompt asks for."""
@@ -112,6 +137,17 @@ class _Trace:
         text = " ".join(str(m.get("content", "")) for m in messages)
         if "key learnings" in text:
             return _answer_blob(text)
+        if "search queries" in text:
+            self.plan_prompts.append(text)
+            if "ALREADY covered" in text:
+                self.stage2_plans_made += 1
+                n = self.stage2_plans_made
+                if self.fail_stage2_plan == n:
+                    raise RuntimeError(f"stage-2 planning call {n} failed")
+                if self.stage2_plan is not None:
+                    return self.stage2_plan
+                return (f"Query: stage2 plan {n} a\nGoal: goal {n}a\n"
+                        f"Query: stage2 plan {n} b\nGoal: goal {n}b\n")
         return QUERY_BLOB
 
 
@@ -135,7 +171,9 @@ def _nested_class(trace: _Trace):
                 await asyncio.sleep(0)
                 await asyncio.sleep(0)
                 if trace.fail_branch and trace.fail_branch in str(self.query):
+                    trace.failed += 1
                     raise RuntimeError("branch exploded")
+                trace.completed.append(str(self.query))
                 return CONTEXT
             finally:
                 trace.live -= 1
@@ -211,12 +249,125 @@ async def test_concurrency_is_bounded_by_the_run_not_by_the_level(unbudgeted):
 
 @pytest.mark.asyncio
 async def test_one_failed_branch_does_not_take_its_siblings_down(unbudgeted):
-    """`asyncio.gather` without return_exceptions raises on the first failure and
-    discards the rest -- including branches that had already finished."""
+    """A failed branch costs its own findings, never its siblings'.
+
+    Targets the FIRST stage-2 branch's planned queries by name. (An earlier version of
+    this test targeted a research goal, which never appears in a query string, so no
+    branch ever failed and the test passed vacuously.)"""
     trace = _Trace()
-    trace.fail_branch = "retention practice"
+    trace.fail_branch = "stage2 plan 1"
     _, result = await _run(trace)
 
+    assert trace.failed > 0, (
+        "non-vacuity: no nested researcher failed, so this test checks nothing")
+    assert any("stage2 plan 2" in q for q in trace.completed), (
+        f"the sibling branch's research did not complete after branch 1 failed "
+        f"(completed: {trace.completed}) -- one failure took the round down")
     assert result["learnings"], (
-        "one stage-2 branch raised and the whole run came back empty; the siblings' "
-        "findings were discarded with it")
+        "one stage-2 branch failed and the whole run came back empty; the siblings' "
+        "and stage 1's findings were discarded with it")
+
+
+# --------------------------------------------------------------------------- steering
+# Stage-2 planning used to see only its OWN branch's follow-up questions -- each proposed
+# blind to the siblings -- so a branch could spend its round on ground a sibling had
+# already answered. A filter after planning cannot fix that: the number of queries is
+# fixed by then (see git history for the judge that tried). So the planner is steered
+# instead, the way TreeResearchSkill.generate_child_questions is: shown what the WHOLE
+# level found, asked for what is still missing, allowed to plan fewer or none.
+
+
+@pytest.mark.asyncio
+async def test_each_stage_two_branch_plans_against_every_siblings_findings(unbudgeted):
+    """The defect: a branch planned from its own follow-ups alone. Every stage-2
+    planning prompt must carry BOTH stage-1 branches -- the query and what it found."""
+    trace = _Trace()
+    await _run(trace)
+
+    stage2 = [p for p in trace.plan_prompts if "ALREADY covered" in p]
+    assert len(stage2) == BREADTH, (
+        f"{len(stage2)} stage-2 planning calls carried the covered ground, expected one "
+        f"per branch ({BREADTH}) -- a branch planned blind to what the run already found")
+    for prompt in stage2:
+        for query, learning in STAGE1:
+            assert query in prompt and learning in prompt, (
+                f"a stage-2 branch planned without seeing sibling {query!r} and what it "
+                f"found ({learning!r}) -- it can re-research that ground and nothing "
+                "would notice")
+
+
+@pytest.mark.asyncio
+async def test_the_top_level_plan_is_the_prompt_it_always_was(unbudgeted):
+    """Nothing is covered before stage 1, so the first call must not change: a steered
+    prompt there would redefine the run's opening for no information."""
+    trace = _Trace()
+    await _run(trace)
+
+    top = [p for p in trace.plan_prompts if "ALREADY covered" not in p]
+    assert len(top) == 1, f"expected exactly one unsteered (top-level) plan, got {len(top)}"
+    assert (f"generate {BREADTH} unique search queries to research the topic thoroughly"
+            in top[0]), "the top-level planning prompt changed"
+
+
+@pytest.mark.asyncio
+async def test_a_branch_the_planner_calls_answered_researches_nothing_more(unbudgeted):
+    """What the steering buys that a filter could not: the round can SHRINK. A planner
+    that judges the root answered plans no queries, and the run still returns stage 1."""
+    trace = _Trace()
+    trace.stage2_plan = ""
+    _, result = await _run(trace)
+
+    assert len(trace.built) == BREADTH, (
+        f"{len(trace.built)} nested researchers ran after every stage-2 planner planned "
+        f"nothing; only the {BREADTH} stage-1 queries should have")
+    assert result["learnings"], "a round that planned nothing threw away stage 1 too"
+
+
+@pytest.mark.asyncio
+async def test_steering_costs_no_extra_llm_call(unbudgeted):
+    """The coverage rides the planning call that already existed. One more call per
+    level would be the judge's cost again under another name."""
+    trace = _Trace()
+    await _run(trace)
+
+    assert len(trace.plan_prompts) == 1 + BREADTH, (
+        f"{len(trace.plan_prompts)} planning calls for 1 top-level plan + {BREADTH} "
+        "branches -- the steering added a call instead of riding the existing one")
+
+
+# ------------------------------------------------------------------ planning in order
+# Measured 2026-09-21, live: with every stage-2 branch planning concurrently against the
+# same covered ground, all three picked the SAME gap (consumer idempotency). Each could
+# see what stage 1 found but not what its siblings were about to plan. So branches now
+# plan one after another, each shown the queries already planned, and research at once.
+
+
+@pytest.mark.asyncio
+async def test_a_later_branch_plans_around_what_earlier_branches_already_planned(unbudgeted):
+    """The defect: sibling branches could not see each other's plans, so they converged.
+    The first branch has nothing queued; the second must be shown the first's plan."""
+    trace = _Trace()
+    await _run(trace)
+
+    stage2 = [p for p in trace.plan_prompts if "ALREADY covered" in p]
+    assert len(stage2) == BREADTH, f"expected {BREADTH} stage-2 plans, got {len(stage2)}"
+    assert "ALREADY PLANNED" not in stage2[0], (
+        "the first branch was shown sibling plans that cannot exist yet")
+    for planned in ("stage2 plan 1 a", "stage2 plan 1 b"):
+        assert planned in stage2[1], (
+            f"the second branch planned without seeing {planned!r}, which the first "
+            "branch had already planned -- nothing stops both from picking the same gap")
+
+
+@pytest.mark.asyncio
+async def test_a_branch_whose_planning_fails_costs_only_that_branch(unbudgeted):
+    """Planning moved out of the concurrent recursion into a loop, where an uncaught
+    raise would end the whole round. It must cost that one branch, as it did before."""
+    trace = _Trace()
+    trace.fail_stage2_plan = 1
+    _, result = await _run(trace)
+
+    assert len(trace.built) == BREADTH + max(2, BREADTH // 2), (
+        f"{len(trace.built)} nested researchers ran; expected stage 1 ({BREADTH}) plus "
+        "the one branch whose planning succeeded")
+    assert result["learnings"], "a single planning failure discarded the run"
