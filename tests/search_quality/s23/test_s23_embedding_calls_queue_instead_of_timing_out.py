@@ -36,11 +36,13 @@ import time
 
 import pytest
 
+from langchain_core.embeddings import Embeddings
+
 from gpt_researcher.memory import throttle
 from gpt_researcher.memory.throttle import ThrottledEmbeddings, throttled
 
 
-class _Encoder:
+class _Encoder(Embeddings):
     """A fake embeddings object that records how many calls overlap inside it.
 
     `server_slots` is what the real one has: exceed it and the call fails the way an
@@ -302,3 +304,40 @@ def test_memory_hands_out_a_throttled_encoder(monkeypatch):
     assert isinstance(memory.get_embeddings(), ThrottledEmbeddings), (
         "Memory returned a raw embeddings object, so every caller that goes through it "
         "-- the compressors, the router, the tree -- is unbounded again")
+
+
+# ------------------------------------------------- the seam the unit tests did not reach
+
+@pytest.mark.asyncio
+async def test_a_throttled_encoder_still_drives_the_real_compressor(monkeypatch):
+    """The integration this file originally missed, and it cost a live run.
+
+    `EmbeddingsFilter` is a Pydantic model whose `embeddings` field is typed
+    `Embeddings`, so a duck-typed wrapper is rejected at CONSTRUCTION -- "Input should
+    be an instance of Embeddings". Measured 2026-09-21: every compression in a live run
+    raised that ValidationError, each sub-query came back with an empty context, and the
+    run still reported success with a report written from 225 characters.
+
+    Every test above used the wrapper directly and passed throughout. This one puts it
+    where production puts it.
+    """
+    monkeypatch.setenv("EMBEDDING_MAX_CONCURRENCY", "4")
+    from gpt_researcher.context.compression import ContextCompressor
+
+    documents = [
+        {"url": f"https://example.invalid/{i}", "title": f"doc {i}",
+         "raw_content": ("The outbox table grows without bound unless a cleanup job "
+                         "trims it. " * 200)}
+        for i in range(4)
+    ]
+    encoder = _Encoder()
+    compressor = ContextCompressor(documents=documents, embeddings=throttled(encoder))
+
+    context = await compressor.async_get_context("what bounds outbox growth?")
+
+    assert context and context.strip(), (
+        "the compressor produced no context with a throttled encoder -- in production "
+        "this is a sub-query whose evidence vanishes while the run reports success")
+    assert encoder.calls > 0, (
+        "the compressor never reached the encoder, so this test would pass even if the "
+        "embeddings object were ignored entirely")

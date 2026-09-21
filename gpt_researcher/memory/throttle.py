@@ -38,6 +38,8 @@ import threading
 import time
 from typing import Any
 
+from langchain_core.embeddings import Embeddings
+
 logger = logging.getLogger(__name__)
 
 # How many embedding requests may be in flight process-wide. The default matches the
@@ -86,13 +88,21 @@ def _get_semaphore() -> threading.BoundedSemaphore | None:
         return _semaphore
 
 
-class ThrottledEmbeddings:
+class ThrottledEmbeddings(Embeddings):
     """An embeddings object that holds a slot for the duration of each call.
 
-    Wraps rather than subclasses: LangChain embeddings are Pydantic models with
-    provider-specific fields, and this has to work for every provider `Memory` builds.
-    Everything it does not name is delegated, so callers that read `.model` or hand the
-    object to `EmbeddingsFilter` see no difference.
+    Wraps the provider's object rather than subclassing it: LangChain embeddings are
+    Pydantic models with provider-specific fields, and this has to work for every
+    provider `Memory` builds. Everything not named here is delegated, so callers that
+    read `.model` see no difference.
+
+    It DOES subclass langchain_core's `Embeddings` interface, and that is load-bearing,
+    not decoration: `EmbeddingsFilter` is a Pydantic model whose `embeddings` field is
+    typed `Embeddings`, so a plain duck-typed wrapper is rejected at construction --
+    "Input should be an instance of Embeddings". Measured 2026-09-21: with the wrapper
+    not subclassing, every compression in a live run raised that ValidationError, each
+    sub-query returned an empty context, and the run still reported success. The
+    interface is an ABC (not a Pydantic model), so inheriting costs nothing.
     """
 
     def __init__(self, inner: Any):
